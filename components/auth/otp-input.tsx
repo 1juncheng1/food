@@ -27,10 +27,11 @@ export function OtpInput({ value, onChange, disabled, length = 6 }: OtpInputProp
   }
 
   const handleChange = (i: number, char: string) => {
+    const digit = char.replace(/\D/g, '').slice(-1) // 只取最后 1 位数字
     const next = chars.slice()
-    next[i] = char.slice(-1) // 只取最后 1 位,防止 maxLength 不拦截
+    next[i] = digit
     onChange(next.join(''))
-    if (char && i < length - 1) {
+    if (digit && i < length - 1) {
       focusAt(i + 1)
     }
   }
@@ -57,7 +58,8 @@ export function OtpInput({ value, onChange, disabled, length = 6 }: OtpInputProp
 
   const handlePaste = (e: ClipboardEvent<HTMLInputElement>) => {
     e.preventDefault()
-    const pasted = e.clipboardData.getData('text').trim().slice(0, length)
+    // 过滤非数字,只保留 digits,截断到 length 长度
+    const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, length)
     if (pasted) {
       onChange(pasted)
       // 焦点跳到已填充末尾或最后一格

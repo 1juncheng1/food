@@ -60,4 +60,37 @@ describe('OtpInput', () => {
     expect(onChange).toHaveBeenCalledWith('')
     expect(inputs[0]).toHaveFocus()
   })
+
+  it('粘贴含非数字字符:过滤非数字后填充', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<OtpInput value="" onChange={onChange} />)
+    const inputs = screen.getAllByLabelText(/验证码第/)
+    inputs[0].focus()
+    // 粘贴 "12a34b" 应过滤为 "1234"(非数字被移除)
+    await user.paste('12a34b')
+    expect(onChange).toHaveBeenCalledWith('1234')
+  })
+
+  it('粘贴含空格的 OTP:过滤空格后填充', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<OtpInput value="" onChange={onChange} />)
+    const inputs = screen.getAllByLabelText(/验证码第/)
+    inputs[0].focus()
+    // 粘贴 "123 456" 应过滤为 "123456"
+    await user.paste('123 456')
+    expect(onChange).toHaveBeenCalledWith('123456')
+  })
+
+  it('粘贴全非数字:onChange 不触发', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<OtpInput value="" onChange={onChange} />)
+    const inputs = screen.getAllByLabelText(/验证码第/)
+    inputs[0].focus()
+    // 粘贴 "abcdef" 应过滤为空字符串,onChange 不被调用
+    await user.paste('abcdef')
+    expect(onChange).not.toHaveBeenCalled()
+  })
 })
