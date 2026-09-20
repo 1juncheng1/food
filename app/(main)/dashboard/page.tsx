@@ -28,6 +28,8 @@ interface Inspiration {
   core_question?: string | null
   related_knowledge?: string[] | null
   reason_source?: string | null
+  /** WF11 P2：跨界灵感标记（evidence.cross_exploration） */
+  cross_exploration?: boolean
 }
 
 export default function DashboardPage() {
@@ -397,6 +399,14 @@ export default function DashboardPage() {
                   <span className="inner-item-tag" style={{ marginTop: '8px', display: 'inline-block' }}>
                     {view.reasonSource === 'ai' ? '基于你的创作行为' : '大众创作方向'}
                   </span>
+                  {ins.cross_exploration && (
+                    <span
+                      className="ml-2 inline-block rounded-full bg-purple-500/20 px-2 py-0.5 text-xs font-medium text-purple-300"
+                      style={{ marginTop: '8px' }}
+                    >
+                      跨界灵感
+                    </span>
+                  )}
                 </div>
                 <svg className="shrink-0 text-zinc-600 mt-1" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M5 12h14M12 5l7 7-7 7" />
@@ -420,6 +430,21 @@ export default function DashboardPage() {
           <div className="inner-empty">
             <p>暂无灵感推荐</p>
             <p className="sub">多生成几篇作品后，系统会根据你的偏好推荐选题</p>
+          </div>
+        )}
+
+        {/* WF11 P2：看更多灵感入口 → 全屏竖滑 Feed */}
+        {inspirations.length > 0 && (
+          <div className="mt-3 flex justify-center">
+            <Link
+              href="/inspiration-feed"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800/50 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-600 hover:bg-zinc-800"
+            >
+              看更多灵感
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c-1.5-1.5-2-4.5-2-9s.5-7.5 2-9M3 12a9 9 0 0 1 9-9" />
+              </svg>
+            </Link>
           </div>
         )}
 
