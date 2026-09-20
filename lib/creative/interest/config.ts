@@ -161,6 +161,15 @@ export const CLUSTER_MIN_MEMBERS = 2
 export const CLUSTER_INHERIT_SIMILARITY = 0.72
 export const MAX_ACTIVE_CLUSTERS = 12
 
+// ── WF11 P1：多兴趣广度（S4 exploration 消费） ──
+// 单簇探索种子上限：一次 build 喂给 LLM 的用户兴趣方向数（core 优先，不足补 exploration 层）
+export const EXPLORATION_MAX_SEEDS = 6
+// S4 批量生成条数：新用户场景 S1/S3/S5 全空，队列全靠 S4 独撑，
+// 16 条实测不满足 AC-2（≥20），提到 24 保证 hardFilter 后仍 ≥20。
+export const EXPLORATION_BATCH_SIZE = 24
+// AI 理由生成的候选卡数量上限：扩批后理由 LLM 覆盖面同步从 6 扩到 20
+export const AI_REASON_TOP_N = 20
+
 // ── Build 调度（M2/M3/M4 消费） ──
 // 2026-09-18 数据闭环修复：增量 build 已改为全窗口确定性重算（fetchEvents 不再按
 // 游标截断），单次 build 成本上升但结果可复现；触发阈值相应放宽，让新增/删除少量

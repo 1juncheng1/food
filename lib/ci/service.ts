@@ -56,7 +56,9 @@ const MIN_FRESH_FOR_CACHE = 6 // 缓存里至少有这么多新鲜条目才免�
 const SEARCH_LIMIT = 8 // 每个 Adapter 请求条数（Top N 语义）
 
 export async function ciSearch(query: CIQuery): Promise<CISearchResult> {
-  const hash = queryHashOf(query.topic, query.content_domain)
+  // P1：全局热点摄取传 hashOverride（global:v1:<date>），让各大类共享日分区；
+  // 普通用户窄搜缺省走 topic+content_domain 计算 hash，语义不变。
+  const hash = query.hashOverride ?? queryHashOf(query.topic, query.content_domain)
   const adapters = getEnabledAdapters()
   const adapterIds = adapters.map((a) => a.id)
 

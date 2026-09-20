@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // WF9：任务书 4 个规定测试 —— 远程真实链路收口验证
 //
 // 默认跳过（日常 npm test 零影响、零远程调用、零 LLM 花费）。
@@ -6,7 +6,7 @@
 // 标准运行命令（Windows PowerShell）：
 //   Get-Content .env.local | ForEach-Object {
 //     if ($_ -match '^([A-Z_]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
-//   }; $env:WF9_REMOTE='1'; npx vitest run lib/creative/interest/wf9.scenarios.test.ts
+//   }; $env:WF9_REMOTE='1'; $env:NODE_OPTIONS='--dns-result-order=ipv4first'; npx vitest run lib/creative/interest/wf9.scenarios.test.ts
 //
 // 可重复性：beforeAll 会用 service_role 删除 qq 账号下全部 target_id like 'WF9TEST%'
 // 事件，T1-T4 从干净账本按序串行跑（T2 依赖 T1 建簇、T4 读队列依赖 T3）。

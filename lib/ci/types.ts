@@ -74,6 +74,11 @@ export interface CIQuery {
   /** 内容领域（来自灵感分析 content_domain），辅助搜索词构造 */
   content_domain?: string
   maxItems?: number
+  /**
+   * 缓存/落库 hash 覆盖（P1 全局热点用）：多个大类查询共享同一日分区
+   * `global:v1:<date>`；缺省按 topic+content_domain 计算（用户窄搜语义不变）。
+   */
+  hashOverride?: string
 }
 
 /** 统一数据源适配器接口——所有平台实现它，消费方零感知 */

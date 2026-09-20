@@ -19,6 +19,17 @@ export interface Candidate {
   marketRefs: Array<{ platform: string; url: string }> | null
   /** 关联的项目 id（S5 用，builder 可据此直接关联簇，无需向量猜测） */
   projectId?: string | null
+  /**
+   * WF11 P1：跨簇探索标记。S4 产出的候选若来自两个兴趣方向的融合种子则为 true，
+   * builder 透传到 suggestions.evidence.cross_exploration 供前端打"跨界灵感"标。
+   */
+  crossSeed?: boolean
+  /**
+   * WF11 P1：S4 内部字段——LLM 回射的来源种子方向名（须原样等于某个种子 label）。
+   * builder 据此把单簇探索卡关联回来源簇（获得簇事实/理由覆盖）；
+   * 不落库（SuggestionInsertInput 不含此字段），cross 卡即便带 label 也不绑簇。
+   */
+  seedLabel?: string
 }
 
 const WRITTEN_THRESHOLD = 0.85

@@ -77,7 +77,7 @@ function str(v: unknown, max: number): string | null {
 
 /**
  * 批量生成推荐理由。
- * @param items 候选列表（≤6；调用方保证已按分排序）
+ * @param items 候选列表（≤20；调用方保证已按分排序，WF11 P1 起由 6 扩到 20）
  * @returns 与 items 等长的输出数组，逐条 ai/template 标注，永不抛错
  */
 export async function generateAiReasons(items: AiReasonInput[]): Promise<AiReasonOutput[]> {
@@ -137,7 +137,10 @@ export async function generateAiReasons(items: AiReasonInput[]): Promise<AiReaso
           },
         ],
         temperature: 0.7,
-        max_tokens: 1400,
+        // token 预算口径 = 每条理由约 230 token（旧 6 条/1400 的实测均值）+ 200 结构余量。
+        // WF11 P1：理由覆盖扩到 20 条（≈4800 token），预算不跟着涨会 JSON 截断，
+        // 后半批量在解析处静默降级为模板（表面不报错但理由质量塌方）。
+        max_tokens: 200 + eligibleIdx.length * 230,
         response_format: { type: 'json_object' },
       }),
     })

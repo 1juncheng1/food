@@ -18,6 +18,7 @@ import { BUILD_MAX_AGE_HOURS, BUILD_DIRTY_EVENT_COUNT, FIRST_BUILD_MIN_EVENTS } 
 import { getLastBuild, findRunningBuild } from '@/lib/creative/interest/interestRepo'
 import { resolveDegradeReason, type DegradeReason } from '@/lib/creative/interest/degrade'
 import { buildReasonText } from '@/lib/creative/interest/reasonAi'
+import { getGlobalTrending, ingestGlobalTrending } from '@/lib/ci/globalTrending'
 
 export const maxDuration = 30
 export const dynamic = 'force-dynamic'
@@ -57,13 +58,37 @@ const FALLBACK_REASON_COPY: Record<DegradeReason, string> = {
   error: '暂时无法获取个性化推荐，先看看热门选题',
 }
 
-/** 构造降级响应：模板卡 + 机器可读原因码（WF0，取代无差别的静默 fallback） */
-function fallbackResponse(reason: DegradeReason, building = false, stale = false) {
-  const picks = getFallbackInspirations(3)
+/**
+ * 构造降级响应：优先当日真实全局热点（P1，仅 guest/cold_start 两个冷启动场景消费），
+ * 不足/其他原因 → 静态模板卡 + 机器可读原因码（WF0）。
+ * fallback_source 供前端区分"真实大众热点"与手写模板（WF10 的诚实口径延续）。
+ */
+async function fallbackResponse(reason: DegradeReason, building = false, stale = false) {
+  let picks: Array<{ title: string; description: string; category: string }> = getFallbackInspirations(3)
+  let fallbackSource: 'trending' | 'mixed' | 'template' = 'template'
+
+  // empty_queue（有画像但队列空）/auth_expired/error 不混入大众热点流：
+  // 有画像用户等重建更合理；失效会话不应触发全局搜索成本。
+  if (reason === 'guest' || reason === 'cold_start') {
+    const trending = await getGlobalTrending(3)
+    if (trending.length >= 3) {
+      // 当日热点充足：整组真实热点
+      picks = trending
+      fallbackSource = 'trending'
+    } else if (trending.length > 0) {
+      // 热点不足 3 张（首轮摄取进行中/部分类别失败）：热点优先，模板补齐
+      const usedTitles = new Set(trending.map((t) => t.title))
+      const fill = getFallbackInspirations(3).filter((t) => !usedTitles.has(t.title))
+      picks = [...trending, ...fill].slice(0, 3)
+      fallbackSource = 'mixed'
+    }
+  }
+
   return NextResponse.json({
     personalized: false,
     stale,
     building,
+    fallback_source: fallbackSource,
     degrade_reason: reason,
     inspirations: picks.map((p) => ({
       title: p.title,
@@ -79,15 +104,18 @@ export async function GET(req: Request) {
     const authHeader = req.headers.get('authorization') ?? ''
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
     if (!token) {
-      // 游客路径：大众方向模板（D1）
-      return fallbackResponse('guest')
+      // 游客路径：大众方向——P1 起为当日真实全局热点（无数据时 reader 回退模板），
+      // 并懒触发后台摄取（日闸门+在途锁保证全平台一天一轮，不阻塞本次响应）
+      void ingestGlobalTrending().catch(() => {})
+      return await fallbackResponse('guest')
     }
 
     const supabase = createServerClient(token)
     const { data: userData, error: authErr } = await supabase.auth.getUser()
     if (authErr || !userData.user) {
-      // token 失效/过期：与游客同样展示模板，但原因码区分，便于统计僵尸会话比例
-      return fallbackResponse('auth_expired')
+      // token 失效/过期：与游客同样展示模板，但原因码区分，便于统计僵尸会话比例。
+      // 不触发全局摄取（无效会话不应放大搜索成本）。
+      return await fallbackResponse('auth_expired')
     }
     const userId = userData.user.id
 
@@ -147,12 +175,14 @@ export async function GET(req: Request) {
     // ── 读 active 推荐卡 ──
     const suggestions = await getActiveSuggestions(supabase, userId, 6)
 
-    // ── 冷启动 / 队列空 → 降级模板（两种原因严格区分，便于可观测） ──
+    // ── 冷启动 / 队列空 → 降级（两种原因严格区分，便于可观测） ──
     if (!hasProfile) {
-      return fallbackResponse('cold_start', building, stale)
+      // 无画像登录用户同享当日真实热点；懒触发摄取（fire-and-forget）
+      void ingestGlobalTrending().catch(() => {})
+      return await fallbackResponse('cold_start', building, stale)
     }
     if (!suggestions.length) {
-      return fallbackResponse('empty_queue', building, stale)
+      return await fallbackResponse('empty_queue', building, stale)
     }
 
     // ── 分槽配额：从 active 卡中选 3 张 ──
@@ -218,6 +248,6 @@ export async function GET(req: Request) {
     // WF0：任何未预期异常都带 error 原因码，且日志保留原始 message——
     // 旧版 catch-all 静默吞错是 D2（权限/表故障被伪装成普通模板推荐）的放大器。
     console.error('inspirations API 错误:', error instanceof Error ? error.message : error)
-    return fallbackResponse('error')
+    return await fallbackResponse('error')
   }
 }

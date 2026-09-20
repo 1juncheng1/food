@@ -15,7 +15,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { generateEmbedding } from '@/lib/storage'
-import { CLUSTER_INHERIT_SIMILARITY, CLUSTER_MIN_MEMBERS, MAX_ACTIVE_CLUSTERS } from './config'
+import { CLUSTER_INHERIT_SIMILARITY, CLUSTER_MIN_MEMBERS, MAX_ACTIVE_CLUSTERS, EXPLORATION_BATCH_SIZE, AI_REASON_TOP_N } from './config'
 import { scoreClusters, type ScoredCluster } from './scoring'
 import { decideLayer, detectBurst } from './layering'
 import { windowScores, trendDirection, ewma } from './trends'
@@ -42,7 +42,7 @@ import { ageDays, needsInterpret, effectiveWeight } from './weights'
 import { cosineSimilarity, parseVectorColumn } from './vectorMath'
 import type { EngineEvent, InterestLayer, TagDims, TrendDirection } from './types'
 import { hardFilter, getOwnInspirationCandidates, getSavedMaterialCandidates, getActiveProjectCandidates, type Candidate } from './candidates'
-import { getMarketCandidates, getExplorationCandidates } from './suggestionSynthesizer'
+import { getMarketCandidates, getExplorationCandidates, buildExplorationSeeds } from './suggestionSynthesizer'
 import { scoreCandidate } from './ranking'
 import { insertSuggestions, supersedeOldBuild, type SuggestionInsertInput } from './suggestionRepo'
 import { buildFirstWorkSeedCard } from './firstWorkSeed'
@@ -449,33 +449,43 @@ export async function runBuild(
     const topCore = positiveClusters.find((c) => c.layer === 'core') ?? positiveClusters[0]
     const topCoreCentroid = topCore?.centroid?.length ? topCore.centroid : null
 
-    const coreViews = clusterViews.filter((c) => c.layer === 'core' && !c.isNegative)
-    // 回退：无 core 簇时取权重最高的 2 个任意层簇做探索种子（新用户/回填场景）
-    const seedViews = (coreViews.length ? coreViews : clusterViews.filter((c) => !c.isNegative))
-      .sort((a, b) => b.weight - a.weight)
-      .slice(0, 2)
-    const coreSeeds = seedViews.map((c) => ({ label: c.label, summary: c.summary, keywords: c.keywords }))
-    const seedCodes = new Set(seedViews.map((c) => c.code))
-    const nonCoreLabels = clusterViews.filter((c) => !seedCodes.has(c.code)).map((c) => c.label)
+    // WF11 P1：多兴趣探索种子——从旧版"最强 2 簇 × 2 条"扩到"≤6 簇 + 跨簇融合 × 16 条"。
+    // 纯函数内聚排序口径（core 优先 → weight → code），无 core 时自动回退任意层非负簇，
+    // 新用户/回填场景 S4 不再缺席；跨簇 combo 不占 6 个单簇名额。
+    const { seeds: explorationSeeds, nonCoreLabels, seedClusters } = buildExplorationSeeds(clusterViews)
 
     const [s1, s2, s3, s4raw, s5] = await Promise.all([
       getOwnInspirationCandidates(supabase, userId),
       getMarketCandidates(topCoreCentroid, 4),
       getSavedMaterialCandidates(supabase, userId),
-      getExplorationCandidates(coreSeeds, nonCoreLabels),
+      getExplorationCandidates(explorationSeeds, nonCoreLabels, { count: EXPLORATION_BATCH_SIZE }),
       getActiveProjectCandidates(supabase, userId),
     ])
 
-    // S4 首张升级为 core_gap：同核新角度（绑定最强种子簇，带真实证据）；
-    // 其余保持 exploration（跨簇相邻方向，不绑簇）。
-    // 解决"有簇但 core_gap 槽永远空（ci_market 缺 key）+ exploration 卡无簇证据"两个问题。
+    // S4 探索卡的簇关联策略（WF11 P1 扩批后必须覆盖多种子，否则 16 张卡只有 1 张有簇事实）：
+    //   1. 首张【单簇】卡升级 core_gap：同核新角度，强制绑定最强种子簇（保留 WF10 行为）
+    //   2. 其余单簇卡：LLM 回射的 seed_label 精确命中某个入选种子簇 → 绑该簇（slot 仍 exploration）。
+    //      命中失败（模型改写了 label）就保持无簇，绝不模糊匹配。
+    //   3. crossSeed 跨簇融合卡永不绑单一簇（evidence 只带 cross_exploration 标记）。
+    // 注意：必须绑定到展开后的新对象——步骤 14 用同一引用查 forceBind（WeakMap）。
     const forceBind = new WeakMap<Candidate, { clusterId: string }>()
+    const firstSingleIdx = s4raw.findIndex((c) => !c.crossSeed)
+    const bindTarget = firstSingleIdx >= 0 ? seedClusters[0] : null
     const s4: Candidate[] = s4raw.map((cand, i) => {
-      if (i === 0 && seedViews[0]) {
-        // 注意：必须绑定到展开后的新对象——步骤 14 用同一引用查 forceBind（WeakMap）
+      if (cand.crossSeed) return cand
+      if (i === firstSingleIdx && bindTarget) {
         const upgraded = { ...cand, slot: 'core_gap' as const }
-        forceBind.set(upgraded, { clusterId: seedViews[0].clusterId })
+        forceBind.set(upgraded, { clusterId: bindTarget.clusterId })
         return upgraded
+      }
+      if (cand.seedLabel) {
+        // combo 种子名（「a」×「b」）不在 seedClusters 中，天然命中不了
+        const hit = seedClusters.find((c) => c.label === cand.seedLabel)
+        if (hit) {
+          const upgraded = { ...cand }
+          forceBind.set(upgraded, { clusterId: hit.clusterId })
+          return upgraded
+        }
       }
       return cand
     })
@@ -557,6 +567,8 @@ export async function runBuild(
       })
 
       // evidence 事实包（推荐解释用，M5 升级）
+      // WF11 P1：crossSeed 候选在两分支都打 cross_exploration 标记，
+      // 供前端识别"跨界灵感"（AC-3 验收点：融合两个兴趣簇的选题可被显式区分）
       const evidence: Record<string, unknown> = matchedCluster
         ? {
           cluster_label: matchedCluster.label,
@@ -569,11 +581,13 @@ export async function runBuild(
           gap_reason: cand.slot === 'core_gap' ? `你在「${matchedCluster.label}」关注但还未写过` : null,
           source: cand.source,
           matched_similarity: semanticSim,
+          ...(cand.crossSeed ? { cross_exploration: true } : {}),
         }
         : {
           facts: [],
           source: cand.source,
           gap_reason: cand.source === 'exploration' ? '探索性方向：基于你的兴趣扩展' : null,
+          ...(cand.crossSeed ? { cross_exploration: true } : {}),
         }
 
       return {
@@ -591,14 +605,16 @@ export async function runBuild(
       }
     })
 
-    // ── 步骤 14.5（WF6）：Top 6 批量 AI 推荐理由预制 ──
+    // ── 步骤 14.5（WF6 / WF11 P1 扩面）：Top N 批量 AI 推荐理由预制 ──
     // 算法先筛选（v2 评分排序），AI 只解释不筛选。一次 DeepSeek 调用；
     // 失败逐条模板降级，绝不丢卡。素材闭集取自 S3 收藏素材标题。
+    // WF11：S4 扩批 16 后队列供给量增大，理由覆盖面同步从 6 扩到 AI_REASON_TOP_N(20)，
+    // 否则无限流下滑到第 7 张以后全部退回模板理由（可观测口径：reason_source）。
     const materialTitles = [...new Set(s3.map((c) => c.title))]
     const topIdx = itemsToInsert
       .map((it, i) => ({ it, i }))
       .sort((a, b) => b.it.score - a.it.score)
-      .slice(0, 6)
+      .slice(0, AI_REASON_TOP_N)
     if (topIdx.length) {
       const reasonOutputs = await generateAiReasons(
         topIdx.map(({ it }) => ({
