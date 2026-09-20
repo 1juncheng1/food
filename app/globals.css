@@ -1511,3 +1511,32 @@ html, body {
     transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease !important;
   }
 }
+
+/* ──────────────── WF11 P3：灵感 Feed 页动画 ──────────────── */
+
+/* 卡片渐入：每次进入视口时淡入上移 */
+@keyframes feed-card-in {
+  from { opacity: 0; transform: translateY(24px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.feed-card {
+  animation: feed-card-in 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* 骨架屏脉动 */
+@keyframes feed-skeleton-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.15; }
+}
+.feed-skeleton {
+  animation: feed-skeleton-pulse 1.8s ease-in-out infinite;
+}
+
+/* 收尾态渐入 */
+@keyframes feed-end-in {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.feed-end {
+  animation: feed-end-in 0.6s 0.2s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}

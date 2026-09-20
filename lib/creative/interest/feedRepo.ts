@@ -22,6 +22,9 @@ export const FEED_PAGE_SIZE = 10
 /** 补卡触发阈值：剩余 active 库存低于此值时 fire-and-forget 触发增量 build */
 export const FEED_TOPUP_THRESHOLD = 8
 
+/** 每 10 张卡中 exploration 槽位的最低数量（spec AC-10） */
+export const EXPLORE_QUOTA_PER_10 = 2
+
 // ── 游标编码/解码 ──
 
 /**
@@ -75,6 +78,53 @@ async function getTodayExcludedIds(
   )
 }
 
+// ── explore/exploit 配额（AC-10）──
+
+/**
+ * 每 10 张保证 ≥2 张 exploration 槽位卡（spec P3 AC-10）。
+ *
+ * 策略：按 slot 分桶（exploration vs 其他），两桶各自已按 score DESC 排好序。
+ * 每 10 张窗口放 8 张 nonExploration + 2 张 exploration；
+ * exploration 不足时全部放入，剩余位置用 nonExploration 补（不造水卡）。
+ *
+ * 返回重排后的完整列表，游标基于此最终顺序。
+ */
+export function applyExploreQuota<T extends { slot: string; score: number; id: string }>(
+  rows: T[]
+): T[] {
+  if (rows.length === 0) return []
+
+  const exploration = rows.filter((r) => r.slot === 'exploration')
+  const nonExploration = rows.filter((r) => r.slot !== 'exploration')
+
+  // 两桶各自已按 score DESC（DB 查询排序保证），直接按索引取
+  const result: T[] = []
+  let ei = 0 // exploration 指针
+  let ni = 0 // nonExploration 指针
+
+  while (ni < nonExploration.length || ei < exploration.length) {
+    // 当前窗口位置（0-indexed in result）
+    const posInWindow = result.length % 10
+
+    // 每 10 张窗口的最后 EXPLORE_QUOTA_PER_10 个位置留给 exploration
+    // 例如 EXPLORE_QUOTA_PER_10=2：窗口位置 8、9 优先取 exploration
+    const isExploreSlot = posInWindow >= (10 - EXPLORE_QUOTA_PER_10)
+
+    if (isExploreSlot && ei < exploration.length) {
+      result.push(exploration[ei++])
+    } else if (ni < nonExploration.length) {
+      result.push(nonExploration[ni++])
+    } else if (ei < exploration.length) {
+      // nonExploration 耗尽，用 exploration 补位
+      result.push(exploration[ei++])
+    } else {
+      break
+    }
+  }
+
+  return result
+}
+
 // ── 读取接口 ──
 
 /**
@@ -85,6 +135,7 @@ async function getTodayExcludedIds(
  *
  * 排序：score DESC + id ASC（与 selectSlots 的 stableOrder 同方向，
  * 保证高分卡优先、同分卡稳定有序）。
+ * P3 起：分页前先经 applyExploreQuota 重排，保证每 10 张 ≥2 张 exploration。
  *
  * 游标：{ s: last_score, i: last_id }，定位"上一页最后一条"，
  * 下一页从该条之后开始。
@@ -128,11 +179,14 @@ export async function getFeedPage(
   }
 
   // 3. JS 层排除当日已 dismiss/已曝光的卡
-  const rows = ((data ?? []) as unknown as SuggestionRow[]).filter(
+  const excludedRows = ((data ?? []) as unknown as SuggestionRow[]).filter(
     (r) => !excludedIds.has(r.id)
   )
 
-  // 4. 游标定位：找到 cursor 指定的起始位置
+  // 4. P3 AC-10：applyExploreQuota 重排，保证每 10 张 ≥2 张 exploration
+  const rows = applyExploreQuota(excludedRows)
+
+  // 5. 游标定位：找到 cursor 指定的起始位置
   let startIndex = 0
   if (cursor) {
     const idx = rows.findIndex((r) => r.score === cursor.s && r.id === cursor.i)

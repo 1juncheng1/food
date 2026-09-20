@@ -15,8 +15,10 @@ import {
   decodeCursor,
   getFeedPage,
   getDailySuggestionCount,
+  applyExploreQuota,
   FEED_DAILY_CAP,
   FEED_TOPUP_THRESHOLD,
+  EXPLORE_QUOTA_PER_10,
 } from './feedRepo'
 import type { SuggestionRow } from './suggestionRepo'
 
@@ -225,5 +227,90 @@ describe('常量', () => {
   })
   it('FEED_TOPUP_THRESHOLD = 8', () => {
     expect(FEED_TOPUP_THRESHOLD).toBe(8)
+  })
+  it('EXPLORE_QUOTA_PER_10 = 2', () => {
+    expect(EXPLORE_QUOTA_PER_10).toBe(2)
+  })
+})
+
+// ── applyExploreQuota（AC-10）──
+
+describe('applyExploreQuota', () => {
+  type TestRow = { slot: string; score: number; id: string }
+
+  function makeRows(nCore: number, nExplore: number): TestRow[] {
+    const rows: TestRow[] = []
+    for (let i = 0; i < nCore; i++) {
+      rows.push({ slot: 'core_gap', score: 1 - i * 0.01, id: `core-${i}` })
+    }
+    for (let i = 0; i < nExplore; i++) {
+      rows.push({ slot: 'exploration', score: 0.5 - i * 0.01, id: `exp-${i}` })
+    }
+    // 已按 score DESC 排好
+    return rows.sort((a, b) => b.score - a.score)
+  }
+
+  it('空数组原样返回', () => {
+    expect(applyExploreQuota([])).toEqual([])
+  })
+
+  it('20 张（15 core + 5 exploration）limit=10 → 首 10 张至少 2 张 exploration', () => {
+    const rows = makeRows(15, 5)
+    const result = applyExploreQuota(rows)
+    const first10 = result.slice(0, 10)
+    const exploreCount = first10.filter((r) => r.slot === 'exploration').length
+    expect(exploreCount).toBeGreaterThanOrEqual(2)
+  })
+
+  it('10 张（8 core + 2 exploration）→ 恰好 2 张 exploration', () => {
+    const rows = makeRows(8, 2)
+    const result = applyExploreQuota(rows)
+    expect(result).toHaveLength(10)
+    const exploreCount = result.filter((r) => r.slot === 'exploration').length
+    expect(exploreCount).toBe(2)
+    // exploration 在窗口位置 8、9
+    expect(result[8].slot).toBe('exploration')
+    expect(result[9].slot).toBe('exploration')
+  })
+
+  it('无 exploration → 全部 nonExploration，不造水卡', () => {
+    const rows = makeRows(10, 0)
+    const result = applyExploreQuota(rows)
+    expect(result).toHaveLength(10)
+    expect(result.every((r) => r.slot !== 'exploration')).toBe(true)
+  })
+
+  it('全 exploration → 全部保留', () => {
+    const rows = makeRows(0, 10)
+    const result = applyExploreQuota(rows)
+    expect(result).toHaveLength(10)
+    expect(result.every((r) => r.slot === 'exploration')).toBe(true)
+  })
+
+  it('30 张（20 core + 10 exploration）→ 每 10 张窗口 ≥2 exploration', () => {
+    const rows = makeRows(20, 10)
+    const result = applyExploreQuota(rows)
+    for (let w = 0; w < 3; w++) {
+      const window = result.slice(w * 10, (w + 1) * 10)
+      const exploreCount = window.filter((r) => r.slot === 'exploration').length
+      expect(exploreCount).toBeGreaterThanOrEqual(2)
+    }
+  })
+
+  it('exploration 不足 2 张时全部放入，不造水卡', () => {
+    const rows = makeRows(20, 1)
+    const result = applyExploreQuota(rows)
+    const exploreCount = result.filter((r) => r.slot === 'exploration').length
+    expect(exploreCount).toBe(1) // 只 1 张，全放入
+    expect(result).toHaveLength(21)
+  })
+
+  it('所有输入行都在结果中（无丢失）', () => {
+    const rows = makeRows(15, 5)
+    const result = applyExploreQuota(rows)
+    const inputIds = new Set(rows.map((r) => r.id))
+    const outputIds = new Set(result.map((r) => r.id))
+    expect(result.length).toBe(rows.length)
+    expect(outputIds.size).toBe(inputIds.size)
   })
 })

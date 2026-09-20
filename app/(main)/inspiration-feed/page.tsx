@@ -203,8 +203,26 @@ export default function InspirationFeedPage() {
 
   if (loading) {
     return (
-      <div className="flex h-[100dvh] items-center justify-center">
-        <div className="text-zinc-400 animate-pulse">正在为你准备选题…</div>
+      <div className="h-[100dvh] overflow-y-auto snap-y snap-mandatory bg-zinc-950">
+        {[0, 1, 2].map((i) => (
+          <div
+            key={i}
+            className="snap-start flex min-h-[100dvh] items-center justify-center px-4 py-8"
+          >
+            <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6">
+              <div className="mb-3 h-5 w-20 rounded-full bg-zinc-800 feed-skeleton" />
+              <div className="h-6 w-3/4 rounded bg-zinc-800 feed-skeleton" />
+              <div className="mt-3 h-4 w-full rounded bg-zinc-800/70 feed-skeleton" />
+              <div className="mt-2 h-4 w-5/6 rounded bg-zinc-800/70 feed-skeleton" />
+              <div className="mt-4 h-4 w-2/3 rounded bg-zinc-800/50 feed-skeleton" />
+              <div className="mt-4 h-4 w-1/2 rounded bg-zinc-800/40 feed-skeleton" />
+              <div className="mt-5 flex items-center justify-between">
+                <div className="h-4 w-20 rounded bg-zinc-800/60 feed-skeleton" />
+                <div className="h-4 w-24 rounded bg-zinc-800/60 feed-skeleton" />
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
     )
   }
@@ -229,7 +247,7 @@ export default function InspirationFeedPage() {
 
   if (cards.length === 0 && noMore) {
     return (
-      <div className="flex h-[100dvh] flex-col items-center justify-center gap-3">
+      <div className="feed-end flex h-[100dvh] flex-col items-center justify-center gap-3">
         <p className="text-lg text-zinc-300">今天的新选题先刷到这</p>
         <p className="text-sm text-zinc-500">明天再来，AI 会为你准备新的创作灵感</p>
         <Link
@@ -259,7 +277,7 @@ export default function InspirationFeedPage() {
           >
             <div
               onClick={() => handleClick(card)}
-              className="clickable w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-900/80 p-6 backdrop-blur-sm transition hover:border-zinc-700 cursor-pointer"
+              className="feed-card clickable w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-900/80 p-6 backdrop-blur-sm transition-all duration-300 hover:border-zinc-600 hover:bg-zinc-800/80 hover:scale-[1.02] cursor-pointer"
             >
               {/* 标签行 */}
               <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -355,7 +373,7 @@ export default function InspirationFeedPage() {
 
       {/* 末尾收尾 */}
       {noMore && cards.length > 0 && (
-        <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-3">
+        <div className="feed-end flex min-h-[100dvh] flex-col items-center justify-center gap-3">
           <p className="text-lg text-zinc-300">今天的新选题先刷到这</p>
           <p className="text-sm text-zinc-500">明天再来，AI 会为你准备新的创作灵感</p>
           <Link

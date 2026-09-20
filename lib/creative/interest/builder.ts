@@ -508,8 +508,21 @@ export async function runBuild(
       .map((r) => parseVectorColumn(r.embedding))
       .filter((e): e is number[] => !!e)
 
+    // WF11 P3 AC-9：查近 30 天 recommend_dismiss 事件 embedding，
+    // 过滤用户明确点 ✕ 的主题向量相似候选（与"已写过"同构查询，阈值复用 DISMISSED_THRESHOLD=0.30）
+    const { data: dismissedRows } = await supabase
+      .from('creator_events')
+      .select('embedding')
+      .eq('user_id', userId)
+      .eq('event_type', 'recommend_dismiss')
+      .gte('occurred_at', thirtyDaysAgo.toISOString())
+      .limit(50)
+    const dismissedEmbeddings = (dismissedRows ?? [])
+      .map((r) => parseVectorColumn(r.embedding))
+      .filter((e): e is number[] => !!e)
+
     // 队列已 supersede 在 14 步开始处做；此处 active 队列视为空
-    const filtered = hardFilter(allCandidates, writtenEmbeddings, [], [])
+    const filtered = hardFilter(allCandidates, writtenEmbeddings, dismissedEmbeddings, [])
 
     // ── 步骤 14: 五因子打分 + 落 interest_suggestions 队列 ──
     await supersedeOldBuild(supabase, userId)
