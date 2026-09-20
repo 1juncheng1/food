@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabaseServer'
 import { parseDiagnosis } from '@/lib/creative/diagnosis'
 import { recordVersionSignal } from '@/lib/creative/styleLearning'
+import { trackEvent } from '@/lib/creative/interest/eventTracker'
 
 export const maxDuration = 30
 export const dynamic = 'force-dynamic'
@@ -107,7 +108,7 @@ export async function POST(req: Request) {
       if (targetId) {
         const { data: histRow } = await auth.supabase
           .from('generation_history')
-          .select('analysis')
+          .select('analysis, project_id')
           .eq('id', targetId)
           .maybeSingle()
         if (histRow) {
@@ -117,7 +118,29 @@ export async function POST(req: Request) {
             feedbackType,
             parseDiagnosis((histRow as Record<string, unknown>).analysis)
           )
+          // M1：显式评价事件。👎 仅弱负分（-0.3）——多数时候否定的是生成质量而非主题；
+          // project_id 透传给 M2 项目封顶；取消点赞/点踩不发事件
+          await trackEvent(auth.supabase, auth.userId, {
+            type: feedbackType === 'like' ? 'feedback_like' : 'feedback_dislike',
+            targetType: 'generation',
+            targetId,
+            projectId: (histRow as { project_id?: string | null }).project_id ?? null,
+          })
         }
+      }
+    }
+
+    // M1：编辑/重做 = 迭代投入（弱正信号 0.3）。按天幂等，允许对同一作品反复迭代
+    if (feedbackType === 'edit' || feedbackType === 'regenerate') {
+      const targetId = result.generationId || str(body.generationId, 100)
+      if (targetId) {
+        await trackEvent(auth.supabase, auth.userId, {
+          type: feedbackType === 'edit' ? 'work_edit' : 'work_regenerate',
+          targetType: 'generation',
+          targetId,
+          topicExcerpt: str(body.topic, 500) || null,
+          dailyKey: true,
+        })
       }
     }
 

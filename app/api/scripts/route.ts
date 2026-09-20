@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { toCategory } from '@/lib/constants'
 import { rateLimit } from '@/lib/rateLimit'
 import { updateUserStyleVector } from '@/lib/styleVector'
+import { trackEvent } from '@/lib/creative/interest/eventTracker'
 
 // 防止 Vercel 函数超时，设置最大执行时间为 60 秒
 export const maxDuration = 60
@@ -93,17 +94,35 @@ export async function POST(req: Request) {
     }
 
     // 插入数据库，user_id 使用当前用户 ID，category 为前端选择的分类
-    const { error: insertError } = await supabase.from('scripts').insert({
-      user_id: user.id,
-      content: content.trim(),
-      type: 'text',
-      category,
-      embedding,
-    })
+    const { data: inserted, error: insertError } = await supabase
+      .from('scripts')
+      .insert({
+        user_id: user.id,
+        content: content.trim(),
+        type: 'text',
+        category,
+        embedding,
+      })
+      .select('id')
+      .single()
 
     if (insertError) {
       console.error('插入数据库错误:', insertError)
       return NextResponse.json({ error: '保存失败，请稍后重试' }, { status: 500 })
+    }
+
+    // M1：素材保存事件（中强信号 1.2）。复用当次已算好的 embedding，零新增成本；
+    // 原因分析在 M2 按抽样挑选（量大），此处不直接置 pending
+    if (inserted?.id) {
+      await trackEvent(supabase, user.id, {
+        type: 'material_save',
+        targetType: 'script',
+        targetId: inserted.id as string,
+        category,
+        embedding,
+        topicExcerpt: content.trim(),
+        payload: { category },
+      })
     }
 
     // ── 更新用户风格向量（后置操作，失败不阻断保存）──

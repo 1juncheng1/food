@@ -114,6 +114,33 @@ html, body {
   background: transparent; /* 深色底由 body 提供，透出全站极光氛围层 */
   color: #ffffff;
 }
+/* 凡 .inner-page.gen-stage 自动获得星空底色（CSS-only，无需 StarField HTML）
+   排除 generate/add 页面——它们有自己的 .gen-mode-ambient HTML 星空层 */
+.inner-page.gen-stage:not(:has(.gen-mode-ambient))::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(1px 1px at 22% 78%, rgba(255,255,255,0.7), transparent),
+    radial-gradient(1px 1px at 34% 36%, rgba(255,255,255,0.5), transparent),
+    radial-gradient(1px 1px at 12% 58%, rgba(255,255,255,0.6), transparent),
+    radial-gradient(1px 1px at 46% 8%, rgba(255,255,255,0.4), transparent),
+    radial-gradient(1px 1px at 28% 92%, rgba(255,255,255,0.5), transparent),
+    radial-gradient(1px 1px at 58% 68%, rgba(255,255,255,0.6), transparent),
+    radial-gradient(1px 1px at 66% 24%, rgba(255,255,255,0.4), transparent),
+    radial-gradient(1px 1px at 74% 84%, rgba(255,255,255,0.5), transparent),
+    radial-gradient(1px 1px at 18% 46%, rgba(255,255,255,0.4), transparent),
+    radial-gradient(1px 1px at 52% 50%, rgba(255,255,255,0.3), transparent),
+    radial-gradient(1px 1px at 84% 10%, rgba(255,255,255,0.4), transparent),
+    radial-gradient(1px 1px at 80% 58%, rgba(255,255,255,0.5), transparent),
+    radial-gradient(1px 1px at 40% 88%, rgba(255,255,255,0.3), transparent),
+    radial-gradient(1px 1px at 90% 34%, rgba(255,255,255,0.4), transparent),
+    radial-gradient(120% 90% at 50% 0%, #09090f 0%, #050508 58%, #030304 100%);
+}
+/* 确保内容在星空之上 */
+.inner-page.gen-stage > * { position: relative; z-index: 1; }
 .inner-container {
   max-width: 1024px;
   margin: 0 auto;
@@ -133,39 +160,46 @@ html, body {
   pointer-events: none;
   overflow: hidden;
 }
-/* ── 场景底色：黑夜 ↔ 银河深蓝紫 ── */
+/* ── 暗夜微光雾（灵感模式氛围底，流星划过时更立体） ── */
+.gm-nebula {
+  position: absolute;
+  inset: 0;
+  opacity: 0.4;
+  transition: opacity 1.2s cubic-bezier(0.22, 1, 0.36, 1);
+  background:
+    radial-gradient(50% 40% at 30% 20%, rgba(99, 102, 241, 0.04), transparent 70%),
+    radial-gradient(40% 35% at 75% 55%, rgba(129, 140, 248, 0.03), transparent 70%);
+}
+.gen-stage[data-mode='creator'] .gm-nebula { opacity: 0; }
+
+/* ── 场景底色：黑夜 ↔ 銀河深蓝紫 ── */
 .gen-mode-ambient::before {
   content: '';
   position: absolute;
   inset: 0;
-  /* 灵感模式：接近纯黑的夜空，微微冷调 */
   background: radial-gradient(120% 90% at 50% 0%, #09090f 0%, #050508 58%, #030304 100%);
-  transition: opacity 1s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 1.2s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .gen-stage[data-mode='creator'] .gen-mode-ambient::before {
-  /* 我的模式：银河系的蓝紫星海 */
   background: radial-gradient(130% 100% at 50% 0%, #12102b 0%, #0b0a1e 52%, #060614 100%);
 }
-/* ── 银河带（仅我的模式）：斜贯画面的雾状光带 + 星云光斑 ── */
+/* ── 銀河带（仅我的模式）：斜贯画面的雾状光带 + 星云光斑 ── */
 .gen-mode-ambient::after {
   content: '';
   position: absolute;
   inset: -12%;
   opacity: 0;
-  transition: opacity 1s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 1.2s cubic-bezier(0.22, 1, 0.36, 1);
   background:
-    /* 主银河带：左上→右下的雾状光河 */
     linear-gradient(118deg,
-      transparent 22%,
-      rgba(129, 140, 248, 0.055) 36%,
-      rgba(196, 181, 253, 0.085) 47%,
-      rgba(165, 180, 252, 0.06) 58%,
-      transparent 74%),
-    /* 银河核心亮斑 */
-    radial-gradient(30% 20% at 56% 38%, rgba(221, 214, 254, 0.10), transparent 72%),
-    /* 两侧星云染色 */
-    radial-gradient(36% 30% at 20% 70%, rgba(168, 85, 247, 0.06), transparent 74%),
-    radial-gradient(32% 26% at 84% 20%, rgba(56, 189, 248, 0.05), transparent 74%);
+      transparent 18%,
+      rgba(129, 140, 248, 0.08) 34%,
+      rgba(196, 181, 253, 0.12) 47%,
+      rgba(165, 180, 252, 0.08) 60%,
+      transparent 78%),
+    radial-gradient(30% 20% at 56% 38%, rgba(221, 214, 254, 0.14), transparent 72%),
+    radial-gradient(36% 30% at 20% 70%, rgba(168, 85, 247, 0.08), transparent 74%),
+    radial-gradient(32% 26% at 84% 20%, rgba(56, 189, 248, 0.06), transparent 74%);
   transform: rotate(-2deg);
 }
 .gen-stage[data-mode='creator'] .gen-mode-ambient::after { opacity: 1; }
@@ -181,15 +215,15 @@ html, body {
   animation: gm-twinkle 3.6s ease-in-out infinite alternate;
 }
 @keyframes gm-twinkle {
-  from { opacity: 0.18; transform: scale(0.85); }
-  to { opacity: 0.65; transform: scale(1.12); }
+  from { opacity: 0.15; transform: scale(0.8); }
+  to { opacity: 0.6; transform: scale(1.1); }
 }
-/* 我的模式：星星更亮（置身银河，繁星环绕），并加十字星芒 */
+/* 我的模式：星星更亮（置身银河，繁星环绕），加十字星芒 + 光晕呼吸 */
 .gen-stage[data-mode='creator'] .gm-star {
-  opacity: 0.85;
+  opacity: 0.9;
   background: #ffffff;
-  box-shadow: 0 0 6px 1px rgba(199, 210, 254, 0.55);
-  animation-duration: 2.6s;
+  box-shadow: 0 0 6px 1px rgba(199, 210, 254, 0.6), 0 0 12px 2px rgba(165, 180, 252, 0.2);
+  animation-duration: 2.4s;
 }
 /* ── 流星（仅灵感模式）：黑夜中划落的灵感 ── */
 .gm-meteor {
@@ -199,10 +233,11 @@ html, body {
   width: 2px;
   height: var(--len, 100px);
   border-radius: 999px;
-  background: linear-gradient(to bottom, rgba(224, 231, 255, 0), rgba(224, 231, 255, 0.85));
+  background: linear-gradient(to bottom, rgba(224, 231, 255, 0), rgba(165, 180, 252, 0.4) 40%, rgba(224, 231, 255, 0.9));
   opacity: 0;
   animation: gm-fall var(--dur, 9s) linear infinite;
   animation-delay: var(--delay, 0s);
+  filter: drop-shadow(0 0 3px rgba(165, 180, 252, 0.6));
 }
 .gm-meteor::before {
   content: '';
@@ -213,15 +248,14 @@ html, body {
   height: 6px;
   border-radius: 50%;
   background: #ffffff;
-  box-shadow: 0 0 8px 2px rgba(165, 180, 252, 0.75);
+  box-shadow: 0 0 8px 2px rgba(165, 180, 252, 0.75), 0 0 16px 4px rgba(129, 140, 248, 0.25);
 }
 @keyframes gm-fall {
   0% { transform: translate3d(0, 0, 0) rotate(35deg); opacity: 0; }
-  3% { opacity: 1; }
-  10% { transform: translate3d(var(--dx, -280px), var(--dy, 400px), 0) rotate(35deg); opacity: 0; }
+  2% { opacity: 1; }
+  12% { transform: translate3d(var(--dx, -280px), var(--dy, 400px), 0) rotate(35deg); opacity: 0; }
   100% { transform: translate3d(var(--dx, -280px), var(--dy, 400px), 0) rotate(35deg); opacity: 0; }
 }
-/* 灵感模式下银河元素隐匿，我的模式下流星隐匿（透明度由父级场景控制不够彻底，元素级再保险） */
 .gen-stage[data-mode='creator'] .gm-meteor { animation-play-state: paused; opacity: 0; }
 
 /* 模式分段器：玻璃轨道 + 滑动指示块（配色回归品牌靛蓝，不随模式换色） */
@@ -1120,8 +1154,8 @@ html, body {
   padding: 52px 28px 120px !important;
 }
 .gen-sheet .inner-header {
-  align-items: center;
-  text-align: center;
+  align-items: flex-start;
+  text-align: left;
   margin-bottom: 32px;
 }
 .gen-sheet .inner-back {
@@ -1132,7 +1166,7 @@ html, body {
   font-size: 30px;
 }
 .gen-sheet .inner-header-sub {
-  margin: 6px auto 0;
+  margin: 6px 0 0;
   max-width: 440px;
 }
 

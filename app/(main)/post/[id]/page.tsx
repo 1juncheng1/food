@@ -81,7 +81,7 @@ export default function PostDetailPage() {
   const isArchive = post?.post_type === 'archive' && post.archive
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-8">
+    <div className="inner-page gen-stage" data-mode="inspiration">
       <Link
         href="/explore"
         className="inline-flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition mb-6"

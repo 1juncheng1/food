@@ -146,7 +146,7 @@ export default function SettingsPage() {
 
   if (loading) {
     return (
-      <div className="inner-page">
+      <div className="inner-page gen-stage" data-mode="inspiration">
         <div className="inner-container">
           <div className="animate-pulse space-y-6">
             <div className="h-8 bg-zinc-900 rounded-lg w-48" />

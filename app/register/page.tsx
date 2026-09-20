@@ -43,7 +43,7 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen bg-transparent flex items-center justify-center p-4">
+    <div className="inner-page gen-stage flex items-center justify-center p-4" data-mode="inspiration">
       <div className="glass w-full max-w-md rounded-2xl p-8">
         <h1 className="text-2xl font-bold text-white mb-2">注册</h1>
         <p className="text-zinc-400 text-sm mb-6">创建你的视界账号</p>

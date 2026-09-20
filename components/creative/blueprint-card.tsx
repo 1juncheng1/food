@@ -21,6 +21,12 @@ type BlueprintLike = CreativeBlueprint & {
     user_identity?: string
     success_criteria?: string
   }
+  market_constraints?: {
+    avoid_points: string[]
+    target_gaps: string[]
+    strategy_action: 'reference' | 'upgrade' | 'avoid'
+    strategy_reason: string
+  }
 }
 
 /** 旧 10 字段行配置（顺序即展示顺序） */
@@ -127,8 +133,8 @@ export function BlueprintCard({ bp }: { bp: BlueprintLike }) {
           )
         })}
 
-        {/* 叙事结构：步骤列表 */}
-        {bp.structure.length > 0 && (
+        {/* 叙事结构：步骤列表（Array.isArray 守卫：localStorage 数据损坏时不整页崩溃） */}
+        {Array.isArray(bp.structure) && bp.structure.length > 0 && (
           <div>
             <p className="text-xs text-zinc-500 mb-1.5">叙事结构</p>
             <ol className="space-y-1.5">
@@ -141,6 +147,27 @@ export function BlueprintCard({ bp }: { bp: BlueprintLike }) {
                 </li>
               ))}
             </ol>
+          </div>
+        )}
+
+        {/* 市场硬约束：方案确认时 AI 提炼的"避开同质化 / 瞄准内容缺口"，正文生成已按此执行，展示给用户增强信任 */}
+        {bp.market_constraints && (
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+            <p className="text-xs text-amber-300/80 mb-2">🎯 市场约束（正文已按此规避/覆盖）</p>
+            <div className="space-y-1.5">
+              {Array.isArray(bp.market_constraints.avoid_points) &&
+                bp.market_constraints.avoid_points.map((p, i) => (
+                  <p key={`a${i}`} className="text-xs text-zinc-300 leading-relaxed">
+                    <span className="text-amber-400/90">避开：</span>{p}
+                  </p>
+                ))}
+              {Array.isArray(bp.market_constraints.target_gaps) &&
+                bp.market_constraints.target_gaps.map((g, i) => (
+                  <p key={`g${i}`} className="text-xs text-zinc-300 leading-relaxed">
+                    <span className="text-emerald-400/90">瞄准：</span>{g}
+                  </p>
+                ))}
+            </div>
           </div>
         )}
       </div>

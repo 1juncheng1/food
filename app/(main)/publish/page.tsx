@@ -117,7 +117,7 @@ export default function PublishPage() {
   }
 
   return (
-    <div className="inner-page">
+    <div className="inner-page gen-stage" data-mode="inspiration">
       <div className="inner-container">
         {/* ── 顶部 ── */}
         <div className="inner-header">

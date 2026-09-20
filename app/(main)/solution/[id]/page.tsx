@@ -391,7 +391,7 @@ export default function SolutionPage() {
   const progressSteps = mode === 'strengthen' ? STRENGTHEN_STEPS : SOLVING_STEPS
 
   return (
-    <div className="inner-page">
+    <div className="inner-page gen-stage" data-mode="inspiration">
       <div className="inner-container">
         <div className="inner-header">
           <div className="text-center">

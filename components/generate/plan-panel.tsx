@@ -16,6 +16,7 @@ import type {
   PlanDirection,
   PlanEdits,
   PlanLanguageStyle,
+  StrategyMode,
 } from '@/lib/creative/plan'
 
 interface PlanPanelProps {
@@ -92,6 +93,89 @@ function EditableRow({
 
 const inputCls =
   'w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:border-indigo-500 focus:outline-none transition'
+
+/** 战略模式元数据：标签文案 + 配色 */
+const STRATEGY_MODE_META: Record<StrategyMode, { label: string; desc: string; className: string }> = {
+  market_ref: {
+    label: '模式A · 市场参考',
+    desc: '学习爆款结构',
+    className: 'bg-sky-500/10 border-sky-500/30 text-sky-200',
+  },
+  differentiation: {
+    label: '模式B · 差异化',
+    desc: '换切入角度避开红海',
+    className: 'bg-violet-500/10 border-violet-500/30 text-violet-200',
+  },
+  personal_ip: {
+    label: '模式C · 个人IP',
+    desc: '强化你的创作风格',
+    className: 'bg-amber-500/10 border-amber-500/30 text-amber-200',
+  },
+}
+
+/** 内容战略块："为什么这样写"（创作目标 / 推荐模式 / 需要资料 / 风险提醒） */
+function StrategyBlock({ plan }: { plan: CreativePlan }) {
+  const strategy = plan.strategy
+  if (!strategy) return null
+
+  const modeMeta = STRATEGY_MODE_META[strategy.recommended_mode]
+
+  return (
+    <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-5">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-[11px] font-medium text-emerald-300 tracking-wide uppercase">
+          内容战略 · 为什么这样写
+        </p>
+        <span className="text-[10px] text-zinc-500">
+          {strategy.goal_source === 'clarified' ? '创作目标来自你的确认' : '创作目标为 AI 推断，可在澄清时修正'}
+        </span>
+      </div>
+
+      {/* 创作目标 + 推荐模式 */}
+      <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+          <p className="text-xs text-zinc-500 mb-1">创作目标</p>
+          <p className="text-sm text-zinc-200 leading-relaxed">{strategy.goal}</p>
+        </div>
+        <div className={`rounded-lg border p-3 ${modeMeta.className}`}>
+          <p className="text-xs opacity-70 mb-1">推荐模式</p>
+          <p className="text-sm font-medium">{modeMeta.label}</p>
+          <p className="text-xs opacity-70 mt-1 leading-relaxed">{strategy.mode_reason}</p>
+        </div>
+      </div>
+
+      {/* 需要资料 */}
+      {strategy.materials_needed.length > 0 && (
+        <div className="mt-3">
+          <p className="text-xs text-zinc-500 mb-1.5">开始创作前建议准备</p>
+          <ul className="space-y-1">
+            {strategy.materials_needed.map((m, i) => (
+              <li key={i} className="text-xs text-zinc-300 flex items-start gap-1.5">
+                <span className="shrink-0 text-emerald-400/70">·</span>
+                <span>{m}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* 风险提醒 */}
+      {strategy.risk_warnings.length > 0 && (
+        <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+          <p className="text-xs text-amber-300 font-medium mb-1.5">风险提醒</p>
+          <ul className="space-y-1">
+            {strategy.risk_warnings.map((r, i) => (
+              <li key={i} className="text-xs text-zinc-400 flex items-start gap-1.5">
+                <span className="shrink-0 text-amber-400/70">⚠</span>
+                <span>{r}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
 
 export function PlanPanel({
   plan,
@@ -267,6 +351,9 @@ export function PlanPanel({
         </div>
       )}
 
+      {/* 内容战略块：为什么这样写（LLM 偶发漏字段时整体省略） */}
+      <StrategyBlock plan={plan} />
+
       {/* ① 内容类型 */}
       <EditableRow
         label="内容类型"
@@ -314,6 +401,7 @@ export function PlanPanel({
           {plan.directions.map((d) => {
             const selected = d.key === dirKey
             const recommended = d.key === plan.recommended_direction_key
+            const modeMeta = d.strategy_mode ? STRATEGY_MODE_META[d.strategy_mode] : null
             return (
               <button
                 key={d.key}
@@ -336,6 +424,14 @@ export function PlanPanel({
                     {d.title}
                   </span>
                 </div>
+                {modeMeta && (
+                  <span
+                    className={`inline-block mt-2 text-[10px] px-1.5 py-0.5 rounded border ${modeMeta.className}`}
+                    title={modeMeta.desc}
+                  >
+                    {modeMeta.label}
+                  </span>
+                )}
                 <p className="text-xs text-zinc-500 mt-2 leading-relaxed line-clamp-4">{d.desc}</p>
                 {recommended && (
                   <span className="absolute top-3 right-3 text-[10px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded">

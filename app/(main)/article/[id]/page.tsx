@@ -26,6 +26,7 @@ import {
 } from '@/lib/creative/diagnosis'
 import { DiagnosisCard } from '@/components/creative/diagnosis-card'
 import { WorkFeedbackPanel } from '@/components/creative/work-feedback-panel'
+import { PerformanceCard } from '@/components/creative/performance-card'
 import type { FeedbackAnalysis } from '@/lib/creative/workAgent'
 import { formatFeedbackForPrompt } from '@/lib/creative/workAgent'
 import type { ModificationPatch } from '@/lib/creative/patchEngine'
@@ -173,7 +174,8 @@ export default function ArticlePage() {
       if (w) {
         // 2a：非内容类问题的解决方案误入正文页（如从作品库/历史点入）
         // → 无缝重定向到专属结果页（诊断/迭代等正文交互对解决方案不适用）
-        if (w.solution && w.solution.sections.length > 0) {
+        // Array.isArray 守卫：localStorage 数据损坏（sections 缺失/非数组）时按普通作品处理，不崩溃
+        if (w.solution && Array.isArray(w.solution.sections) && w.solution.sections.length > 0) {
           router.replace(`/solution/${params.id}`)
           return true
         }
@@ -909,7 +911,7 @@ export default function ArticlePage() {
     // 蓝图已就绪、V1 自动续写中：展示蓝图卡（用户可阅读，也可换个方向中断重构思）
     if (blueprint) {
       return (
-        <div className="min-h-screen bg-zinc-950 text-white px-6 py-16">
+        <div className="inner-page gen-stage px-6 py-16" data-mode="inspiration">
           <div className="max-w-2xl mx-auto">
             <div className="flex items-center gap-2 mb-6">
               <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:-0.3s]" />
@@ -941,7 +943,7 @@ export default function ArticlePage() {
       : null
     if (improveMeta) {
       return (
-        <div className="min-h-screen bg-zinc-950 text-white flex flex-col items-center justify-center px-6">
+        <div className="inner-page gen-stage text-white flex flex-col items-center justify-center px-6" data-mode="inspiration">
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:-0.3s]" />
             <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:-0.15s]" />
@@ -960,7 +962,7 @@ export default function ArticlePage() {
 
     // 无蓝图（蓝图构思中 / 游客单次生成）：沿用原思考动画
     return (
-      <div className="min-h-screen bg-zinc-950 text-white flex flex-col items-center justify-center px-6">
+      <div className="inner-page gen-stage text-white flex flex-col items-center justify-center px-6" data-mode="inspiration">
         {/* 思考中的三点跳动动画 */}
         <div className="flex items-center gap-2">
           <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:-0.3s]" />
@@ -978,7 +980,7 @@ export default function ArticlePage() {
   // ── 生成失败 / 链接无效：提供恢复表单与返回主页入口 ──
   if (error) {
     return (
-      <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center px-6">
+      <div className="inner-page gen-stage text-white flex items-center justify-center px-6" data-mode="inspiration">
         <div className="text-center max-w-sm">
           <p className="text-sm text-red-400 leading-relaxed">{error}</p>
           <div className="flex items-center justify-center gap-3 mt-6">
@@ -1003,7 +1005,7 @@ export default function ArticlePage() {
   // ── 兜底：数据为空（正常流程不会走到）──
   if (!work) {
     return (
-      <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center px-6">
+      <div className="inner-page gen-stage text-white flex items-center justify-center px-6" data-mode="inspiration">
         <div className="text-center">
           <p className="text-zinc-400 text-sm">文章不存在，或已被本地缓存清除</p>
           <Link
@@ -1086,7 +1088,7 @@ export default function ArticlePage() {
       : null
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
+    <div className="inner-page gen-stage text-white" data-mode="inspiration">
       <div className="max-w-3xl mx-auto px-6 py-12 sm:py-14">
         {/* 从素材库进入（有记忆）→ back 触发 popstate 恢复列表位置；生成页进入/直访 → push 主页 */}
         <button
@@ -1545,6 +1547,12 @@ export default function ArticlePage() {
             onFeedbackConfirmed={handleFeedbackConfirmed}
             onPatchDecision={handlePatchDecision}
           />
+        )}
+
+        {/* ── 发布表现回流（闭环最后一环）：站内 👍/👎 记录生成质量，
+            这里记录发布到平台后的真实市场表现，两者是不同的信号 ── */}
+        {!viewingVersion && (
+          <PerformanceCard generationId={work.versionId ?? work.id} />
         )}
 
         {/* 第三阶段：老作品纳入持续创作入口（无项目归属的最新版才显示；

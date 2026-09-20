@@ -215,7 +215,7 @@ export default function ProfilePage() {
 
   if (loading) {
     return (
-      <div className="inner-page">
+      <div className="inner-page gen-stage" data-mode="inspiration">
         <div className="inner-container">
           <div className="animate-pulse space-y-6">
             <div className="h-16 bg-zinc-900 rounded-xl" />
@@ -228,7 +228,7 @@ export default function ProfilePage() {
 
   if (error) {
     return (
-      <div className="inner-page">
+      <div className="inner-page gen-stage" data-mode="inspiration">
         <div className="inner-container">
           <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4">
             <p className="text-sm text-red-400">{error}</p>

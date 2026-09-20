@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
 import { getValidSession } from '@/lib/supabaseClient'
 import Link from 'next/link'
@@ -320,12 +320,39 @@ export default function AddPage() {
   const traits = knowledge ? extractKnowledgeTraits(knowledge) : []
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
-      <div className="max-w-[800px] mx-auto px-6 pt-[60px] pb-[80px]">
-        <div className="flex items-center justify-between">
-          <Link href="/materials" className="text-sm text-zinc-500 hover:text-white transition">
-            ← 返回素材库
-          </Link>
+    <div className="inner-page gen-stage" data-mode="inspiration">
+      {/* 星空氛围层 */}
+      <div className="gen-mode-ambient">
+        <i className="gm-star" style={{ top: '22%', left: '78%' }} />
+        <i className="gm-star" style={{ top: '34%', left: '36%' }} />
+        <i className="gm-star" style={{ top: '12%', left: '58%' }} />
+        <i className="gm-star" style={{ top: '46%', left: '8%' }} />
+        <i className="gm-star" style={{ top: '28%', left: '92%' }} />
+        <i className="gm-star" style={{ top: '58%', left: '68%' }} />
+        <i className="gm-star" style={{ top: '66%', left: '24%' }} />
+        <i className="gm-star" style={{ top: '74%', left: '84%' }} />
+        <i className="gm-star" style={{ top: '18%', left: '46%' }} />
+        <i className="gm-star" style={{ top: '52%', left: '50%' }} />
+        <i className="gm-star" style={{ top: '84%', left: '10%' }} />
+        <i className="gm-star" style={{ top: '80%', left: '58%' }} />
+        <i className="gm-star" style={{ top: '40%', left: '88%' }} />
+        <i className="gm-star" style={{ top: '90%', left: '34%' }} />
+        <i className="gm-meteor" style={{ '--m-top': '-4%', '--m-left': '22%', '--dur': '7s', '--delay': '-2s', '--dx': '-260px', '--dy': '380px', '--len': '90px' } as CSSProperties} />
+        <i className="gm-meteor" style={{ '--m-top': '-2%', '--m-left': '66%', '--dur': '9s', '--delay': '-6s', '--dx': '-300px', '--dy': '430px', '--len': '110px' } as CSSProperties} />
+        <i className="gm-meteor" style={{ '--m-top': '4%', '--m-left': '92%', '--dur': '8s', '--delay': '-4s', '--dx': '-240px', '--dy': '350px', '--len': '80px' } as CSSProperties} />
+      </div>
+
+      <div className="inner-container gen-sheet">
+        {/* ── 页眉 ── */}
+        <div className="inner-header">
+          <div>
+            <Link href="/materials" className="inner-back">← 返回素材库</Link>
+            <span className="gen-eyebrow">知识沉淀</span>
+            <h1 className="inner-header-title">添加素材</h1>
+            <p className="inner-header-sub">
+              粘贴文案或上传图片，AI 先理解素材的用途和意义，再帮你归档进知识库
+            </p>
+          </div>
           {(stage === 'clarify' || stage === 'confirming') && (
             <button
               type="button"
@@ -337,49 +364,61 @@ export default function AddPage() {
           )}
         </div>
 
-        <h1 className="text-2xl font-bold mt-6 mb-10">添加内容</h1>
-
-        <form onSubmit={handleAnalyze} className="space-y-8">
+        {/* ── 稿纸卡 ── */}
+        <form onSubmit={handleAnalyze} className="gen-paper glass anim-rise">
           {/* Tab 切换 */}
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => setActiveTab('text')}
-              disabled={stage !== 'idle'}
-              className={`flex-1 py-3 rounded-xl text-sm font-medium transition ${
-                activeTab === 'text' ? 'bg-indigo-600 text-white' : 'bg-zinc-800 text-zinc-400'
-              } disabled:opacity-50`}
-            >
-              文本
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('image')}
-              disabled={stage !== 'idle'}
-              className={`flex-1 py-3 rounded-xl text-sm font-medium transition ${
-                activeTab === 'image' ? 'bg-indigo-600 text-white' : 'bg-zinc-800 text-zinc-400'
-              } disabled:opacity-50`}
-            >
-              图片
-            </button>
+          <div>
+            <div className="mode-switch" role="group" aria-label="素材类型">
+              <span
+                className="mode-switch-thumb"
+                style={{ transform: `translateX(${(activeTab === 'image' ? 1 : 0) * 100}%)` }}
+                aria-hidden="true"
+              />
+              <button
+                type="button"
+                onClick={() => setActiveTab('text')}
+                disabled={stage !== 'idle'}
+                aria-pressed={activeTab === 'text'}
+                data-active={activeTab === 'text' || undefined}
+                className={`mode-switch-btn flex items-center justify-center gap-2 ${activeTab === 'text' ? 'text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+              >
+                <span className="mode-switch-ico">📝</span>
+                <span>文本</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('image')}
+                disabled={stage !== 'idle'}
+                aria-pressed={activeTab === 'image'}
+                data-active={activeTab === 'image' || undefined}
+                className={`mode-switch-btn flex items-center justify-center gap-2 ${activeTab === 'image' ? 'text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+              >
+                <span className="mode-switch-ico">🖼️</span>
+                <span>图片</span>
+              </button>
+            </div>
           </div>
 
           {/* 内容输入区 */}
           {activeTab === 'text' ? (
             <div>
-              <label className="block text-sm text-zinc-400 mb-3">粘贴你喜欢的文案</label>
+              <label className="gen-field-label">粘贴你喜欢的文案</label>
               <textarea
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 disabled={stage !== 'idle'}
                 rows={10}
-                className="w-full bg-zinc-900 border border-zinc-800 text-white rounded-xl px-4 py-3.5 outline-none focus:ring-2 focus:ring-indigo-500 resize-y disabled:opacity-50"
+                className={`gen-topic-input w-full resize-y ${content ? 'is-dirty' : ''}`}
+                style={{ lineHeight: '1.7' }}
                 placeholder="粘贴一段你欣赏的解说、故事、读书笔记……"
               />
+              <p className="gen-hint">
+                AI 会分析素材的意义、用途、风格维度，帮你把碎片信息变成结构化知识
+              </p>
             </div>
           ) : (
             <div>
-              <label className="block text-sm text-zinc-400 mb-3">选择图片（最大5MB）</label>
+              <label className="gen-field-label">选择图片（最大5MB）</label>
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/webp,image/gif"
@@ -393,71 +432,66 @@ export default function AddPage() {
               {preview && (
                 <img src={preview} alt="预览" className="mt-6 max-h-64 rounded-xl mx-auto" />
               )}
+              <p className="gen-hint">支持 JPG / PNG / WebP / GIF，上传后自动存入素材库</p>
             </div>
           )}
 
-          {error && <p className="text-red-400 text-sm">{error}</p>}
-          {success && <p className="text-emerald-400 text-sm">{success}</p>}
+          {error && <p className="text-red-400 text-sm text-center">{error}</p>}
+          {success && <p className="text-emerald-400 text-sm text-center">{success}</p>}
 
-          {/* ── 状态机各阶段 UI ── */}
+          {/* ── 状态机各阶段 ── */}
 
           {/* idle：提交按钮 */}
           {stage === 'idle' && (
-            <div className="pt-10">
-              <button
-                type="submit"
-                className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-3.5 rounded-xl transition"
-              >
+            <div className="pt-2">
+              <button type="submit" className="w-full btn-shine bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-3.5 rounded-xl transition">
                 添加
               </button>
             </div>
           )}
 
-          {/* analyzing：分析中 */}
+          {/* analyzing */}
           {stage === 'analyzing' && (
-            <div className="pt-10">
-              <div className="w-full bg-zinc-800 text-zinc-400 font-medium py-3.5 rounded-xl text-center">
+            <div className="pt-2">
+              <div className="w-full glass text-zinc-400 font-medium py-3.5 rounded-xl text-center">
                 AI 正在理解素材...
               </div>
             </div>
           )}
 
-          {/* clarify：回答问题 */}
+          {/* clarify */}
           {stage === 'clarify' && questions.length > 0 && (
-            <div className="space-y-6 pt-6">
-              <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-4">
+            <div className="space-y-6">
+              <div className="glass rounded-xl px-6 py-4">
                 <p className="text-sm text-zinc-300 mb-2">AI 需要更多信息来理解这条素材</p>
                 <p className="text-xs text-zinc-500">回答这些问题让 AI 更准确地分析素材用途</p>
               </div>
-
               {questions.map((q, idx) => {
                 const ans = clarifyAnswers[q.id]
                 const selectedValue = ans && !ans.isCustom ? ans.answer : ''
                 const customValue = ans && ans.isCustom ? ans.answer : ''
                 return (
-                  <div key={q.id} className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-5">
+                  <div key={q.id} className="glass rounded-xl px-6 py-5">
                     <div className="text-sm text-zinc-200 mb-3">
                       <span className="text-zinc-500 mr-2">{idx + 1}.</span>
                       {q.question}
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {q.options.map((opt) => {
-                        const isSelected = selectedValue === opt
-                        return (
-                          <button
-                            key={opt}
-                            type="button"
-                            onClick={() => selectClarifyOption(q, opt)}
-                            className={`text-sm px-3 py-1.5 rounded-lg border transition ${
-                              isSelected
-                                ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
-                                : 'bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-600'
-                            }`}
-                          >
-                            {opt}
-                          </button>
-                        )
-                      })}
+                      {q.options.map((opt) => (
+                        <button
+                          key={opt}
+                          type="button"
+                          onClick={() => selectClarifyOption(q, opt)}
+                          aria-pressed={selectedValue === opt}
+                          className={`text-sm px-3 py-1.5 rounded-lg border transition ${
+                            selectedValue === opt
+                              ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
+                              : 'bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-600'
+                          }`}
+                        >
+                          {opt}
+                        </button>
+                      ))}
                     </div>
                     {q.allowCustom && (
                       <input
@@ -471,20 +505,15 @@ export default function AddPage() {
                   </div>
                 )
               })}
-
               <div className="flex gap-3">
-                <button
-                  type="button"
-                  onClick={resetToIdle}
-                  className="px-5 py-2.5 rounded-xl text-sm border border-zinc-700 text-zinc-400 hover:border-zinc-600 transition"
-                >
+                <button type="button" onClick={resetToIdle} className="px-5 py-2.5 rounded-xl text-sm border border-zinc-700 text-zinc-400 hover:border-zinc-600 transition">
                   返回
                 </button>
                 <button
                   type="button"
                   onClick={handleClarifySubmit}
                   disabled={Object.values(clarifyAnswers).filter((a) => a.answer.trim()).length === 0}
-                  className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-medium py-2.5 rounded-xl transition"
+                  className="flex-1 btn-shine bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-medium py-2.5 rounded-xl transition"
                 >
                   提交回答
                 </button>
@@ -492,16 +521,16 @@ export default function AddPage() {
             </div>
           )}
 
-          {/* confirming：确认 knowledge */}
+          {/* confirming */}
           {stage === 'confirming' && (
-            <div className="space-y-6 pt-6">
+            <div className="space-y-6">
               {degraded ? (
-                <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl px-6 py-4">
+                <div className="glass rounded-xl px-6 py-4" style={{ borderColor: 'rgba(245, 158, 11, 0.2)' }}>
                   <p className="text-sm text-amber-400 mb-2">AI 分析暂时不可用</p>
                   <p className="text-xs text-zinc-500">素材仍可保存，但本次未生成知识结构。保存后可在素材库查看。</p>
                 </div>
               ) : knowledge ? (
-                <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-5">
+                <div className="glass rounded-xl px-6 py-5">
                   <div className="flex items-center justify-between mb-4">
                     <p className="text-sm text-zinc-200">AI 已理解素材，请确认后保存</p>
                     {retryCount > 0 && (
@@ -510,7 +539,6 @@ export default function AddPage() {
                       </span>
                     )}
                   </div>
-
                   <div className="space-y-3 text-sm">
                     <div>
                       <span className="text-zinc-500">意义：</span>
@@ -533,32 +561,23 @@ export default function AddPage() {
                       </span>
                     </div>
                   </div>
-
                   {/* 6 维标签 */}
                   <div className="mt-4 flex flex-wrap gap-2">
                     {traits.map((t) => (
                       <div key={t.dimension} className="flex items-center gap-1">
                         <span className="text-[11px] text-zinc-500">{t.label}：</span>
                         {t.tags.map((tag) => (
-                          <span
-                            key={tag}
-                            className="text-[11px] px-2 py-0.5 rounded-full border border-indigo-500/30 bg-indigo-500/10 text-indigo-300"
-                          >
+                          <span key={tag} className="text-[11px] px-2 py-0.5 rounded-full border border-indigo-500/30 bg-indigo-500/10 text-indigo-300">
                             {tag}
                           </span>
                         ))}
                       </div>
                     ))}
                   </div>
-
                   {/* 用户纠错区 */}
                   {retryCount < MAX_RETRY && (
                     <div className="mt-5 pt-4 border-t border-zinc-800">
-                      <button
-                        type="button"
-                        onClick={() => setShowCorrection((v) => !v)}
-                        className="text-xs text-zinc-500 hover:text-amber-400 transition"
-                      >
+                      <button type="button" onClick={() => setShowCorrection((v) => !v)} className="text-xs text-zinc-500 hover:text-amber-400 transition">
                         {showCorrection ? '收起' : 'AI 理解有误？点此指出'}
                       </button>
                       {showCorrection && (
@@ -571,19 +590,10 @@ export default function AddPage() {
                             className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-white outline-none focus:ring-2 focus:ring-amber-500/30 resize-none"
                           />
                           <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => { setCorrectionInput(''); setShowCorrection(false) }}
-                              className="text-xs px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-500 hover:text-zinc-300 transition"
-                            >
+                            <button type="button" onClick={() => { setCorrectionInput(''); setShowCorrection(false) }} className="text-xs px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-500 hover:text-zinc-300 transition">
                               取消
                             </button>
-                            <button
-                              type="button"
-                              onClick={handleReAnalyze}
-                              disabled={!correctionInput.trim()}
-                              className="flex-1 text-xs py-1.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 disabled:opacity-40 transition"
-                            >
+                            <button type="button" onClick={handleReAnalyze} disabled={!correctionInput.trim()} className="flex-1 text-xs py-1.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 disabled:opacity-40 transition">
                               重新分析（剩余 {MAX_RETRY - retryCount} 次）
                             </button>
                           </div>
@@ -593,29 +603,16 @@ export default function AddPage() {
                   )}
                 </div>
               ) : null}
-
               <div className="flex gap-3">
-                <button
-                  type="button"
-                  onClick={resetToIdle}
-                  className="px-5 py-2.5 rounded-xl text-sm border border-zinc-700 text-zinc-400 hover:border-zinc-600 transition"
-                >
+                <button type="button" onClick={resetToIdle} className="px-5 py-2.5 rounded-xl text-sm border border-zinc-700 text-zinc-400 hover:border-zinc-600 transition">
                   重新输入
                 </button>
                 {degraded ? (
-                  <button
-                    type="button"
-                    onClick={handleSaveWithoutAnalysis}
-                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2.5 rounded-xl transition"
-                  >
+                  <button type="button" onClick={handleSaveWithoutAnalysis} className="flex-1 btn-shine bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2.5 rounded-xl transition">
                     直接保存
                   </button>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={handleConfirmSave}
-                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2.5 rounded-xl transition"
-                  >
+                  <button type="button" onClick={handleConfirmSave} className="flex-1 btn-shine bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2.5 rounded-xl transition">
                     确认保存
                   </button>
                 )}
@@ -625,8 +622,8 @@ export default function AddPage() {
 
           {/* saving */}
           {stage === 'saving' && (
-            <div className="pt-10">
-              <div className="w-full bg-zinc-800 text-zinc-400 font-medium py-3.5 rounded-xl text-center">
+            <div className="pt-2">
+              <div className="w-full glass text-zinc-400 font-medium py-3.5 rounded-xl text-center">
                 保存中...
               </div>
             </div>
@@ -634,8 +631,8 @@ export default function AddPage() {
 
           {/* done */}
           {stage === 'done' && (
-            <div className="pt-10">
-              <div className="w-full bg-emerald-500/20 text-emerald-300 font-medium py-3.5 rounded-xl text-center">
+            <div className="pt-2">
+              <div className="w-full bg-emerald-500/20 text-emerald-300 font-medium py-3.5 rounded-xl text-center border border-emerald-500/30">
                 添加成功！返回素材库...
               </div>
             </div>

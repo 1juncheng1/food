@@ -33,7 +33,7 @@ export default function LoginPage() {
   // AuthProvider 鉴权中：显示加载态，避免已登录用户看到表单闪烁
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-transparent flex items-center justify-center">
+      <div className="inner-page gen-stage flex items-center justify-center" data-mode="inspiration">
         <div className="animate-pulse text-zinc-600 text-sm">加载中…</div>
       </div>
     )
@@ -61,7 +61,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-transparent flex items-center justify-center p-4">
+    <div className="inner-page gen-stage flex items-center justify-center p-4" data-mode="inspiration">
       <div className="glass w-full max-w-md rounded-2xl p-8">
         <h1 className="text-2xl font-bold text-white mb-2">登录</h1>
         <p className="text-zinc-400 text-sm mb-6">登录你的视界账号</p>

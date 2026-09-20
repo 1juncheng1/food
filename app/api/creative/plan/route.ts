@@ -25,9 +25,14 @@ import {
   normalizeClarifications,
   type ClarificationAnswer,
 } from '@/lib/creative/intentClarity'
+import {
+  normalizeInspirationAnalysis,
+  formatInspirationForPrompt,
+} from '@/lib/creative/inspirationAnalyzer'
 import { formatStyleDimensions } from '@/lib/creative/styleLearning'
 import { formatCreatorModel } from '@/lib/creative/creatorModel'
 import { resolveMode, buildCreatorIdentity } from '@/lib/creative/personalization'
+import { adoptRecommendation } from '@/lib/creative/interest/adopt'
 import { fetchCreatorStyleProfile } from '@/lib/creative/styleProfileRepo'
 import {
   sanitizeCharacterInput,
@@ -57,6 +62,18 @@ interface RequestBody {
   clarifications?: unknown
   /** 阶段 2：用户主动跳过澄清，强制走 plan 生成路径，不判定 */
   skip_clarify?: unknown
+  /**
+   * AI 灵感分析：用户在 insight 态确认后的 InspirationAnalysis。
+   * 转文本注入 generatePlan prompt，让 plan 延续灵感分析的结论。
+   * undefined 时：走原 plan 生成路径，无行为变化。
+   */
+  inspiration_context?: unknown
+  /**
+   * WF1 推荐采纳回流：请求来自推荐卡点击时携带（/generate 从 URL 透传）。
+   * 方案生成成功即视为"采纳"：卡片离队 + recommend_adopt 事件（1.5 权重）
+   * + 触发增量重建。无此字段 = 普通生成路径，零影响。
+   */
+  rec_id?: unknown
 }
 
 function str(v: unknown, maxLen: number): string {
@@ -105,22 +122,14 @@ function buildStyleProfileText(profile: Record<string, unknown> | null): string 
 
 export async function POST(req: Request) {
   try {
-    // ── 可选鉴权：游客以灵感模式继续，不设登录墙 ──
+    // ── 强制鉴权：游客不可使用方案生成 ──
     const authHeader = req.headers.get('authorization') ?? ''
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
     const auth = token ? await authenticateWithToken(token) : null
-
-    // ── 限流：登录用户按用户 ID；游客按转发 IP（内存限流为基础防护）──
-    const clientIp =
-      req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-      req.headers.get('x-real-ip')?.trim() ||
-      'unknown'
-    const rateKey = auth ? `plan:${auth.userId}` : `plan:guest:${clientIp}`
-    const limit = rateLimit(rateKey, RATE_LIMIT, RATE_WINDOW_MS)
-    if (!limit.ok) {
+    if (!auth) {
       return NextResponse.json(
-        { error: `操作太频繁，请 ${limit.retryAfterSec} 秒后再试` },
-        { status: 429 }
+        { error: '请先登录后再生成方案' },
+        { status: 401 }
       )
     }
 
@@ -229,6 +238,12 @@ export async function POST(req: Request) {
       styleProfileText = buildStyleProfileText(profile)
     }
 
+    // ── AI 灵感分析：从 body 取出并转文本注入 plan（让 plan 延续灵感分析结论）──
+    const inspirationAnalysis = normalizeInspirationAnalysis(body.inspiration_context)
+    const inspirationContextText = inspirationAnalysis
+      ? formatInspirationForPrompt(inspirationAnalysis)
+      : undefined
+
     // ── 调用 LLM 生成方案 ──
     const planInput: GeneratePlanInput = {
       topic,
@@ -242,6 +257,8 @@ export async function POST(req: Request) {
       charactersText: characterBlock.text,
       // 阶段 2：阶段 B 路径下 clarifications 非空，作为硬约束注入 prompt
       clarifications: clarifications.length > 0 ? clarifications : undefined,
+      // AI 灵感分析结论（已在 insight 态由用户确认）
+      inspirationContextText,
     }
 
     const plan = await generatePlan(planInput)
@@ -250,6 +267,13 @@ export async function POST(req: Request) {
         { error: '创作方案生成失败，请稍后重试或改用手动设置' },
         { status: 502 }
       )
+    }
+
+    // WF1 推荐采纳回流：带 rec_id 且方案生成成功 = 采纳。
+    // await 而非 fire-and-forget：serverless 下后台任务可能被冻结，两次轻量
+    // DB 写的成本可忽略；函数内部永不抛错，不影响下方响应。
+    if (auth && typeof body.rec_id === 'string' && body.rec_id.trim()) {
+      await adoptRecommendation(auth.supabase, auth.userId, body.rec_id.trim(), topic)
     }
 
     return NextResponse.json({ plan })

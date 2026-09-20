@@ -23,7 +23,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // 初始加载：从 localStorage 恢复 session
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      // 会话验活：getSession 只读本地缓存，服务端已注销的僵尸 token 会造成
+      // "UI 以为已登录、API 全部 401、灵感推荐静默降级为平台推荐"的假象。
+      // getUser 走服务端校验；失效则只清本设备（scope:'local' 不误杀其他设备会话）。
+      if (session) {
+        const { error } = await supabase.auth.getUser()
+        if (error) {
+          await supabase.auth.signOut({ scope: 'local' })
+          setStorageOwner(null)
+          setSession(null)
+          setLoading(false)
+          return
+        }
+      }
       // 必须先于 setSession/setLoading：AuthGuard 放行渲染子页时，
       // 本地存储归属已就绪，子页读到的一定是当前用户的内容桶
       setStorageOwner(session?.user.id ?? null)

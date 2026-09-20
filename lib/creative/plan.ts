@@ -39,6 +39,84 @@ export interface PlanDirection {
   ending: string
   strategy: string
   language_style: PlanLanguageStyle
+  /**
+   * 内容战略模式标签（可选，战略块系统）。
+   * A 市场参考（学爆款结构）/ B 差异化（换切入角度）/ C 个人IP（强化创作者风格）。
+   * LLM 偶发漏字段时为 undefined，前端不渲染标签。
+   */
+  strategy_mode?: StrategyMode
+}
+
+/**
+ * 内容战略模式（内容战略系统）。
+ * 命名对应产品概念：market_ref=模式A 市场参考 / differentiation=模式B 差异化 / personal_ip=模式C 个人IP。
+ */
+export type StrategyMode = 'market_ref' | 'differentiation' | 'personal_ip'
+
+/**
+ * 市场约束（方案一等公民）：把灵感分析阶段的市场结论固化为正文生成的硬约束。
+ * 解决"plan 阶段看到了市场格局，正文阶段却丢失"的数据漏斗问题。
+ * 随 FrozenPlan → generation_history.blueprint jsonb 落库，迭代时自然继承。
+ */
+export interface MarketConstraints {
+  /** 同质化重复点：正文必须避开的市场主流表达/角度（2-4 条，每条一句话） */
+  avoid_points: string[]
+  /** 内容缺口：正文应尽量覆盖的市场空白角度（2-4 条，每条一句话） */
+  target_gaps: string[]
+  /** 推荐策略：reference（借鉴成熟结构）/ upgrade（升级已有角度）/ avoid（红海建议换角度） */
+  strategy_action: 'reference' | 'upgrade' | 'avoid'
+  /** 推荐策略原因（一句话，与 target_gaps 呼应） */
+  strategy_reason: string
+}
+
+const MARKET_ACTIONS: readonly MarketConstraints['strategy_action'][] = ['reference', 'upgrade', 'avoid']
+
+/** 市场约束兜底清洗：核心字段缺失返回 undefined（宁缺毋假） */
+function normalizeMarketConstraints(raw: unknown): MarketConstraints | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const o = raw as Record<string, unknown>
+
+  const avoid = Array.isArray(o.avoid_points)
+    ? o.avoid_points
+        .map((x) => (typeof x === 'string' ? x.trim().slice(0, 150) : ''))
+        .filter(Boolean)
+        .slice(0, 4)
+    : []
+  const gaps = Array.isArray(o.target_gaps)
+    ? o.target_gaps
+        .map((x) => (typeof x === 'string' ? x.trim().slice(0, 150) : ''))
+        .filter(Boolean)
+        .slice(0, 4)
+    : []
+  const actionRaw = typeof o.strategy_action === 'string' ? o.strategy_action.trim() : ''
+  const action = (MARKET_ACTIONS as readonly string[]).includes(actionRaw)
+    ? (actionRaw as MarketConstraints['strategy_action'])
+    : undefined
+  const reason = typeof o.strategy_reason === 'string' ? o.strategy_reason.trim().slice(0, 300) : ''
+
+  // 至少要有避开点和策略，才视为有效约束；否则整体省略
+  if (avoid.length === 0 || !action || !reason) return undefined
+  return { avoid_points: avoid, target_gaps: gaps, strategy_action: action, strategy_reason: reason }
+}
+
+/**
+ * 内容战略块（"为什么这样写"）：plan 同次调用一并输出的战略决策摘要。
+ * 不是第二份蓝图——核心观点/内容结构仍在 3 个方向中，这里只回答"为什么这样写"。
+ * 来源透明原则：创作目标引用用户澄清回答（有）或标注 AI 推断（无）。
+ */
+export interface PlanStrategy {
+  /** 创作目标一句话（流量/品牌/销售/表达观点等，引用澄清回答或 AI 推断） */
+  goal: string
+  /** 创作目标来源：clarified=来自用户澄清确认；inferred=AI 推断 */
+  goal_source: 'clarified' | 'inferred'
+  /** 推荐模式（A/B/C 之一） */
+  recommended_mode: StrategyMode
+  /** 为什么是这个模式（结合市场格局 + 创作目标，一句话） */
+  mode_reason: string
+  /** 开始创作前建议准备的资料（0-3 条；无要求为空数组） */
+  materials_needed: string[]
+  /** 风险提醒（1-3 条，汇总灵感/市场/战略层面的风险） */
+  risk_warnings: string[]
 }
 
 /** AI 创作方案（生成前的建议卡片数据） */
@@ -67,6 +145,17 @@ export interface CreativePlan {
    * LLM 偶发漏字段时缺失，不阻塞方案卡展示。
    */
   problem?: ProblemUnderstanding
+  /**
+   * 内容战略块（"为什么这样写"）。
+   * LLM 偶发漏字段时缺失，不阻塞方案卡展示（战略块整体可省略，方向标签独立存在）。
+   */
+  strategy?: PlanStrategy
+  /**
+   * 市场约束（市场分析结论的正文硬约束版）。
+   * 有市场报告时必填；无市场报告时 LLM 可基于训练知识输出通用风险提示或省略。
+   * 随方案冻结进入正文生成 prompt，解决"plan 看到市场格局、正文却丢失"的数据漏斗。
+   */
+  market_constraints?: MarketConstraints
 }
 
 /** 用户在建议卡片上的手动修改（未改的字段不传，冻结时用 AI 推荐值） */
@@ -88,6 +177,19 @@ export interface FrozenPlan extends CreativeBlueprint {
   word_count?: number
   usage_tag?: UsageTag
   problem_understanding?: ProblemUnderstanding
+  /**
+   * 内容战略块（内容战略系统）：随冻结方案落库，记录"为什么这样写"。
+   * 命名为 content_strategy 而非 strategy——strategy 已被父接口 CreativeBlueprint
+   * 占用（string 类型，旧蓝图字段），覆盖会导致类型冲突。
+   */
+  content_strategy?: PlanStrategy
+  /** 选中方向的战略模式标签 */
+  strategy_mode?: StrategyMode
+  /**
+   * 市场约束：正文生成的硬约束（避开同质化点、瞄准内容缺口）。
+   * 随冻结方案落库 generation_history.blueprint jsonb，迭代时自然继承。
+   */
+  market_constraints?: MarketConstraints
   /**
    * 阶段 3：用户澄清回答（原始值，来自 ClarifyPanel）。
    * 与 problem_understanding 中的 AI 最终产出并存——
@@ -119,6 +221,13 @@ function normalizeLanguageStyle(v: unknown): PlanLanguageStyle {
   }
 }
 
+const STRATEGY_MODES: readonly StrategyMode[] = ['market_ref', 'differentiation', 'personal_ip']
+
+function normalizeStrategyMode(v: unknown): StrategyMode | undefined {
+  const m = typeof v === 'string' ? v.trim() : ''
+  return (STRATEGY_MODES as readonly string[]).includes(m) ? (m as StrategyMode) : undefined
+}
+
 function normalizeDirection(raw: unknown, index: number): PlanDirection | null {
   if (typeof raw !== 'object' || raw === null) return null
   const o = raw as Record<string, unknown>
@@ -144,9 +253,49 @@ function normalizeDirection(raw: unknown, index: number): PlanDirection | null {
     language_style: normalizeLanguageStyle(o.language_style),
   }
 
+  // 战略模式标签（可选）：合法时保留，非法/缺失时省略
+  const strategyMode = normalizeStrategyMode(o.strategy_mode)
+  if (strategyMode) d.strategy_mode = strategyMode
+
   // 方向至少要有标题与视角，否则视为无效（LLM 偶发漏字段时保底）
   if (!d.title || !d.viewpoint) return null
   return d
+}
+
+/** 战略块兜底清洗：核心字段缺失/非法返回 undefined（整体省略，不阻塞方案卡） */
+function normalizeStrategy(raw: unknown): PlanStrategy | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const o = raw as Record<string, unknown>
+
+  const goal = s(o.goal, 150)
+  const modeReason = s(o.mode_reason, 200)
+  const recommendedMode = normalizeStrategyMode(o.recommended_mode)
+  if (!goal || !modeReason || !recommendedMode) return undefined
+
+  const goalSourceRaw = s(o.goal_source, 20)
+  const goalSource: PlanStrategy['goal_source'] = goalSourceRaw === 'clarified' ? 'clarified' : 'inferred'
+
+  const materials = Array.isArray(o.materials_needed)
+    ? o.materials_needed
+        .map((x) => (typeof x === 'string' ? x.trim().slice(0, 100) : ''))
+        .filter(Boolean)
+        .slice(0, 3)
+    : []
+  const risks = Array.isArray(o.risk_warnings)
+    ? o.risk_warnings
+        .map((x) => (typeof x === 'string' ? x.trim().slice(0, 150) : ''))
+        .filter(Boolean)
+        .slice(0, 3)
+    : []
+
+  return {
+    goal,
+    goal_source: goalSource,
+    recommended_mode: recommendedMode,
+    mode_reason: modeReason,
+    materials_needed: materials,
+    risk_warnings: risks,
+  }
 }
 
 /** LLM 返回值兜底；无效方案返回 null，调用方降级为手动参数路径 */
@@ -193,6 +342,12 @@ export function normalizePlan(raw: unknown): CreativePlan | null {
   const rawUsage = typeof o.usage_tag === 'string' ? o.usage_tag.trim() : ''
   const usage_tag = usageValues.includes(rawUsage) ? (rawUsage as UsageTag) : undefined
 
+  // 战略块：可选，清洗失败整体省略（宁缺毋假）
+  const strategy = normalizeStrategy(o.strategy)
+
+  // 市场约束：可选，清洗失败整体省略
+  const marketConstraints = normalizeMarketConstraints(o.market_constraints)
+
   return {
     content_type: contentType,
     content_type_reason: s(o.content_type_reason, 200),
@@ -204,6 +359,8 @@ export function normalizePlan(raw: unknown): CreativePlan | null {
     ...(usage_tag ? { usage_tag } : {}),
     personal_reason: s(o.personal_reason, 300),
     ...(problem ? { problem } : {}),
+    ...(strategy ? { strategy } : {}),
+    ...(marketConstraints ? { market_constraints: marketConstraints } : {}),
   }
 }
 
@@ -262,6 +419,11 @@ export function freezePlan(
     // ── 超集新字段 ──
     content_type: contentType,
     language_style: languageStyle,
+    // 内容战略块随冻结方案落库（"为什么这样写"的战略决策记录）
+    ...(plan.strategy ? { content_strategy: plan.strategy } : {}),
+    ...(direction.strategy_mode ? { strategy_mode: direction.strategy_mode } : {}),
+    // 市场约束随冻结方案落库，进入正文生成 prompt 作为硬约束
+    ...(plan.market_constraints ? { market_constraints: plan.market_constraints } : {}),
     word_count: edits?.wordCount ?? plan.recommended_word_count,
     // 阶段 3：AI 推断的素材用途标签（替代 CATEGORY_TO_USAGE 映射）
     ...(plan.usage_tag ? { usage_tag: plan.usage_tag } : {}),
@@ -329,6 +491,15 @@ export interface GeneratePlanInput {
    * undefined 时：走原单次生成路径，无行为变化。
    */
   clarifications?: ClarificationAnswer[]
+  /**
+   * AI 灵感分析与转化系统注入点。
+   * 由 /api/creative/plan 从 body.inspiration_context 取出，
+   * 经 formatInspirationForPrompt 转成文本后传入。
+   * 让 plan 阶段的 LLM 看到"这个灵感是什么、缺什么、要补什么"，
+   * 在 3 个方向中延续灵感分析的结论（避开已识别问题、补齐缺失信息/观点）。
+   * undefined 时：走原 plan 生成路径，无行为变化。
+   */
+  inspirationContextText?: string
 }
 
 const PLAN_JSON_KEYS = [
@@ -342,6 +513,8 @@ const PLAN_JSON_KEYS = [
   'usage_tag',
   'personal_reason',
   'problem',
+  'strategy',
+  'market_constraints',
 ].join(', ')
 
 function buildSystemPrompt(creatorMode: boolean): string {
@@ -358,7 +531,7 @@ function buildSystemPrompt(creatorMode: boolean): string {
     '5. content_type_reason 必须给出可验证的具体原因（题材元素/受众预期/内容形态），禁止"引人入胜""精彩绝伦"这类空话；opening_hook 要给出具体写法或示例句；',
     '6. JSON 必须严格包含以下 key：',
     PLAN_JSON_KEYS,
-    '   directions 每项必须包含：key, title, desc, viewpoint, structure, emotion_curve, opening_hook, core_conflict, ending, strategy, language_style；',
+    '   directions 每项必须包含：key, title, desc, viewpoint, structure, emotion_curve, opening_hook, core_conflict, ending, strategy, language_style, strategy_mode；',
     '   language_style 为对象，包含 pace, mood, expression 三个短词字段；',
     '   三个方向的 key 依次为 "A"、"B"、"C"。',
     creatorMode
@@ -377,6 +550,24 @@ function buildSystemPrompt(creatorMode: boolean): string {
     '9. is_content_creation 为 false 时，directions/content_type 等仍按"如果用户想把它做成内容"的探索口径输出（不得输出空数组）。',
     '10. usage_tag（素材用途标签，从以下枚举中选 1 个，帮助知识库检索对齐素材）：' + KNOWLEDGE_DIMENSIONS.usage.values.join(' / '),
     '   选择依据：本次创作最主要需要哪类素材（电影解说→剧情素材，商业分析→观点素材，商业计划书→结构参考）。',
+    '11. 你必须同时完成"内容战略决策"（回答"为什么这样写"）：输出 strategy 对象，包含：',
+    '   goal（创作目标一句话：流量/建立个人品牌/推广转化/表达观点等）；',
+    '   goal_source（"clarified"=创作目标来自下方用户澄清回答；"inferred"=无澄清回答时的 AI 推断——禁止在有澄清回答时标 inferred）；',
+    '   recommended_mode（推荐战略模式，三选一：',
+    '     "market_ref"=市场参考模式：适用于热点追踪/流量内容，学习爆款结构；',
+    '     "differentiation"=差异化模式：适用于竞争激烈主题，保留用户关注点、改变切入角度；',
+    '     "personal_ip"=个人IP模式：适用于长期账号经营，强化创作者个人风格）；',
+    '   mode_reason（为什么是这个模式：必须结合市场格局（若提供）与创作目标，一句话）；',
+    '   materials_needed（开始创作前建议准备的资料，0-3 条，如"该话题近一周的具体事件时间线"；无要求输出空数组）；',
+    '   risk_warnings（风险提醒，1-3 条：汇总上方灵感分析/市场分析中识别的风险 + 战略层面风险，具体不空泛）；',
+    '   硬约束：无创作者风格数据（我的模式未提供风格卡）时禁止推荐 personal_ip；市场报告显示竞争度高（competition_level≥7）时优先推荐 differentiation。',
+    '12. 你必须同时输出 market_constraints（市场约束，正文生成阶段的硬约束），包含：',
+    '   avoid_points（同质化重复点，2-4 条，正文必须避开的市场主流表达/角度）；',
+    '   target_gaps（内容缺口，2-4 条，正文应尽量覆盖的市场空白角度）；',
+    '   strategy_action（推荐策略，三选一：reference=借鉴成熟结构 / upgrade=升级已有角度 / avoid=红海建议换角度）；',
+    '   strategy_reason（推荐原因一句话，与 target_gaps 呼应）；',
+    '   若上方提供了市场格局分析，market_constraints 必须严格基于该分析提炼，禁止编造分析中没有的点；',
+    '   若未提供市场格局分析，可基于你对该主题内容生态的通用认知输出常见同质化风险（模式级，禁止编造具体作品/数据），或省略 market_constraints。',
   ].join('\n')
 }
 
@@ -397,12 +588,17 @@ function buildUserPrompt(input: GeneratePlanInput): string {
   lines.push('- language_style.pace/mood/expression 各用 2-6 个汉字的短词')
   lines.push('- problem：先判断用户"想解决什么问题"再给方案；is_content_creation=false 时方案部分按"做成内容"的探索口径输出')
   lines.push('- usage_tag：从枚举中选 1 个（' + KNOWLEDGE_DIMENSIONS.usage.values.join(' / ') + '），帮助知识库检索对齐素材用途')
+  lines.push('- strategy：完成战略决策（goal/goal_source/recommended_mode/mode_reason/materials_needed/risk_warnings）；三个方向中与 recommended_mode 同模式的方向必须打上对应 strategy_mode 标签，其余方向按各自实际模式打标（三方向可能共用同一模式，也可能各不相同）')
+  lines.push('- market_constraints：正文生成的市场硬约束——avoid_points 是正文必须避开的同质化角度，target_gaps 是正文应覆盖的内容缺口；有市场分析时基于分析提炼，无分析时可用通用认知或省略')
 
   // 阶段 2：用户澄清回答作为硬约束注入，覆盖 AI 对 problem 字段的推断
   const clarificationsBlock = input.clarifications?.length
     ? formatClarificationsForPrompt(input.clarifications)
     : ''
   if (clarificationsBlock) lines.push('', clarificationsBlock)
+
+  // AI 灵感分析阶段结论：让 plan 延续灵感分析发现的问题与改进方向
+  if (input.inspirationContextText) lines.push('', input.inspirationContextText)
 
   if (input.creatorIdentityText) lines.push(`\n${input.creatorIdentityText}`)
   if (input.styleProfileText) lines.push(`\n${input.styleProfileText}`)
@@ -445,7 +641,7 @@ export async function generatePlan(input: GeneratePlanInput): Promise<CreativePl
             { role: 'user', content: buildUserPrompt(input) },
           ],
           temperature: 0.6,
-          max_tokens: 4000, // 问题理解 + 三方向方案，较原 3000 增加余量
+          max_tokens: 4600, // 问题理解 + 三方向方案 + 战略块，逐级增加余量
           response_format: { type: 'json_object' },
         }),
       })

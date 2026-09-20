@@ -9,14 +9,14 @@ import { useAuth } from '@/components/auth-provider'
 // 未登录时跳转 /login，鉴权期间显示加载态，避免页面内容闪现
 //
 // 白名单路径（PUBLIC_PATHS）：未登录也可访问，不触发跳转。
-//   例如 /generate：灵感场支持游客用"灵感模式"生成（localStorage 存储），
-//   这是新用户第一次感受到"AI 懂我"的关键转化入口，不设登录墙。
-//   白名单页面内若涉及个人数据的功能（素材库/主页等）点击时仍会被各自的守卫拦到登录页。
+//   /generate：游客可浏览生成页了解产品，但点击生成入口时
+//   弹出登录引导弹窗（LoginGate），不进入生成流程。
+//   后端 API 全部强制鉴权，前端拦不住时 401 兜底。
 // ────────────────────────────────────────────────────────────
 
 /** 未登录即可访问的 (main) 路由前缀集合（精确匹配或前缀匹配） */
 const PUBLIC_PATHS: ReadonlyArray<string> = [
-  '/generate', // 灵感场生成页：游客可用灵感模式
+  '/generate', // 灵感场生成页：游客可浏览，生成入口弹出登录引导
 ]
 
 function isPublicPath(pathname: string | null): boolean {

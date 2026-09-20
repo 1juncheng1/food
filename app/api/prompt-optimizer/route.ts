@@ -50,6 +50,9 @@ import {
   type WorkTags,
 } from '@/lib/creative/workAnalysis'
 import type { UsageTag } from '@/lib/creative/knowledgeItem'
+import { normalizeInspirationAnalysis } from '@/lib/creative/inspirationAnalyzer'
+import { trackEvent } from '@/lib/creative/interest/eventTracker'
+import { runBuild } from '@/lib/creative/interest/builder'
 
 export const maxDuration = 60
 
@@ -74,6 +77,13 @@ interface RequestBody {
   useCreatorModel?: unknown
   // 阶段四：登场角色快照数组（最大 3 个，服务端经 sanitizeCharacterInput 清洗）
   characters?: unknown
+  /**
+   * AI 灵感分析：用户在 insight 态确认后的 InspirationAnalysis。
+   * 透传到 generation_history.inspiration_context jsonb 落库。
+   * 数据沉淀用于未来个性化灵感推荐与创作者偏好学习。
+   * 不传时为 null（老链路不受影响）。
+   */
+  inspirationContext?: unknown
 }
 
 const VALID_DIRECTIONS: readonly NextActionKey[] = [
@@ -164,10 +174,10 @@ interface StyleProfile {
 }
 
 /**
- * 可选鉴权：带有效 Bearer token 则返回用户上下文，否则返回 null（游客仍可生成）。
- * 登录用户生成成功后自动写入 generation_history；游客走反馈接口的延迟创建兜底。
+ * 强制鉴权：只有登录用户才能生成文案。
+ * 游客请求直接返回 401，不进入生成流程。
  */
-async function authenticateOptional(req: Request) {
+async function authenticateRequired(req: Request) {
   const authHeader = req.headers.get('authorization') ?? ''
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
   if (!token) return null
@@ -186,8 +196,14 @@ export async function POST(req: Request) {
   try {
     const body = (await req.json()) as RequestBody
 
-    // 可选鉴权：登录用户生成成功后自动记录历史
-    const auth = await authenticateOptional(req)
+    // 强制鉴权：游客不可生成文案，只有登录用户才能使用
+    const auth = await authenticateRequired(req)
+    if (!auth) {
+      return NextResponse.json(
+        { error: '请先登录后再生成文案' },
+        { status: 401 }
+      )
+    }
 
     // ── 阶段 3：usage_filter 推断 ──
     // 优先级：improve 模式 prevUsageTags > blueprint.usage_tag > blueprint.content_type 映射 > null
@@ -585,7 +601,16 @@ ${prevText.slice(0, 6000)}
     const blueprint: CreativeBlueprint | null = improveCtx
       ? improveCtx.blueprint
       : normalizeBlueprint(body.blueprint)
-    const bp = blueprint as (CreativeBlueprint & { content_type?: string; language_style?: { pace?: string; mood?: string; expression?: string } }) | null
+    const bp = blueprint as (CreativeBlueprint & {
+      content_type?: string
+      language_style?: { pace?: string; mood?: string; expression?: string }
+      market_constraints?: {
+        avoid_points: string[]
+        target_gaps: string[]
+        strategy_action: 'reference' | 'upgrade' | 'avoid'
+        strategy_reason: string
+      }
+    }) | null
 
     // ── 阶段 2：identity 强制 AI 方案驱动，不再依赖用户模板/自定义 ──
     // 方案路径：persona_hint 来自 CreativePlan（AI 自动推断）
@@ -853,6 +878,9 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
     let resultGenId = fallbackGenId
     let resultProjectId: string | null = null
     let resultVersionNumber: number | null = null
+    // M1 兴趣事件：仅在版本行确认写入成功后登记，三个分支统一在块尾补发一次
+    let trackedEvent: { genId: string; projectId: string | null; versionNumber: number | null } | null =
+      null
 
     if (auth) {
       // 生成 sample_text 的嵌入向量（存入 generation_history.embedding，供风格向量计算用）
@@ -901,6 +929,10 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
         generation_mode: mode,
         // 第七阶段：个性化证据快照（本次采用了什么特征/数据层，跨设备可追溯）
         personalization: evidenceSnapshot,
+        // AI 灵感分析系统：原始灵感+分析结果+召回素材 ID 一次性落库
+        // 一次 generation_id 串起 灵感→分析→plan→作品→反馈 全链路
+        // 非灵感入口（直接 plan / improve）为 null，老链路不受影响
+        inspiration_context: normalizeInspirationAnalysis(body.inspirationContext) ?? null,
       }
 
       // improve 模式必然归属某项目（projectId 从版本行继承，不信任前端）；
@@ -941,6 +973,7 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
               resultGenId = versionId
               resultProjectId = projectIdParam
               resultVersionNumber = nextVersion
+              trackedEvent = { genId: versionId, projectId: projectIdParam, versionNumber: nextVersion }
               // 阶段 5：把"选择的优化方向"作为风格信号沉淀（失败静默，不阻断）
               if (improveCtx) {
                 recordDirectionSignal(auth.supabase, auth.userId, improveCtx.direction)
@@ -981,6 +1014,7 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
               resultGenId = versionId
               resultProjectId = pid
               resultVersionNumber = 1
+              trackedEvent = { genId: versionId, projectId: pid, versionNumber: 1 }
             } else {
               console.error('V1 写入失败，降级 upsert:', insertErr)
             }
@@ -1000,7 +1034,40 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
           )
         if (histErr) {
           console.error('写入生成历史失败（不影响生成结果）:', histErr)
+        } else {
+          trackedEvent = { genId: fallbackGenId, projectId: null, versionNumber: null }
         }
+      }
+
+      // M1：作品生成事实事件（每个版本一行；同项目多版本在 M2 评分时按项目封顶，
+      // 一次电影测试的 V1/V3 不会变成三票）。tracker 内部吞错，绝不影响生成主流程。
+      if (trackedEvent) {
+        const contentDomain =
+          (
+            versionRow.inspiration_context as
+              | { value_assessment?: { content_domain?: unknown } }
+              | null
+          )?.value_assessment?.content_domain
+        await trackEvent(auth.supabase, auth.userId, {
+          type: 'work_generate',
+          targetType: 'generation',
+          targetId: trackedEvent.genId,
+          projectId: trackedEvent.projectId,
+          contentDomain: typeof contentDomain === 'string' ? contentDomain : null,
+          embedding: sampleEmbedding,
+          topicExcerpt: topic,
+          payload: {
+            topic: topic.slice(0, 100),
+            mode,
+            version_number: trackedEvent.versionNumber,
+            improve_direction: improveCtx?.direction ?? null,
+          },
+        })
+
+        // 行为A：新增作品是画像变更事件（与删作品路径对称），立即异步重建，
+        // 让用户创作完回到 dashboard 后尽快拿到基于新作品的推荐；
+        // fire-and-forget 失败不影响生成主流程（下次进推荐页仍有按需触发兜底）。
+        void runBuild(auth.supabase, auth.userId, 'incremental').catch(() => {})
       }
     }
 

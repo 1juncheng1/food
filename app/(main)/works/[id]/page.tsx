@@ -20,7 +20,7 @@ export default function WorkDetailPage() {
   }, [params.id, router])
 
   return (
-    <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
+    <div className="inner-page gen-stage" data-mode="inspiration">
       <div className="w-5 h-5 border-2 border-zinc-600 border-t-indigo-500 rounded-full animate-spin" />
     </div>
   )

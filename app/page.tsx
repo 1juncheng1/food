@@ -181,7 +181,7 @@ export default function HomePage() {
           第一个理解创作者人格，并帮助创作者持续创造内容世界的AI平台。
         </p>
         <div className="home-hero-buttons anim-rise" style={{ animationDelay: '0.4s' }}>
-          <Link href={isLoggedIn ? '/dashboard' : '/login'} className={cn(buttonVariants({ variant: 'default' }), 'home-btn-primary btn-shine')}>
+          <Link href="/dashboard" className={cn(buttonVariants({ variant: 'default' }), 'home-btn-primary btn-shine')}>
             {isLoggedIn ? '进入视界' : '立即开始'}
           </Link>
         </div>
@@ -224,7 +224,7 @@ export default function HomePage() {
               </CardHeader>
               <CardContent>
                 <Link
-                  href={isLoggedIn ? '/dashboard' : '/login'}
+                  href="/generate"
                   className={cn(buttonVariants({ size: 'sm' }), 'w-full bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground border border-primary/20')}
                 >
                   生成

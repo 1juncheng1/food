@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
+import { trackEvent } from '@/lib/creative/interest/eventTracker'
 
 export const maxDuration = 60
 
@@ -52,6 +53,14 @@ export async function DELETE(
       console.error('删除错误:', deleteError)
       return NextResponse.json({ error: '删除失败，请稍后重试' }, { status: 500 })
     }
+
+    // M1：素材删除 = 中性撤回（剔除该素材此前的画像贡献，不记负分）。
+    // target_id 是文本无外键，脚本行删除后事件照常可入账。
+    await trackEvent(supabase, user.id, {
+      type: 'material_delete',
+      targetType: 'script',
+      targetId: id,
+    })
 
     return NextResponse.json({ success: true })
   } catch (error) {

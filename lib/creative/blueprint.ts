@@ -143,6 +143,13 @@ export function normalizeBlueprint(raw: unknown): CreativeBlueprint | null {
     problem_understanding?: ProblemUnderstanding
     /** 阶段 3：跨设备恢复用的澄清回答原始值 */
     clarifications?: import('./intentClarity').ClarificationAnswer[]
+    /** 市场约束：正文生成的硬约束（避开同质化、瞄准内容缺口） */
+    market_constraints?: {
+      avoid_points: string[]
+      target_gaps: string[]
+      strategy_action: 'reference' | 'upgrade' | 'avoid'
+      strategy_reason: string
+    }
   } = {
     title_direction: s(o.title_direction),
     positioning: s(o.positioning),
@@ -180,6 +187,34 @@ export function normalizeBlueprint(raw: unknown): CreativeBlueprint | null {
           .filter((c): c is { dimension: 'goal' | 'audience' | 'scenario' | 'identity' | 'criteria'; answer: string } => c !== null)
       : []
   if (clarifications.length > 0) bp.clarifications = clarifications
+
+  // 市场约束：有值才挂上，缺失不阻塞原有蓝图功能
+  const mcRaw = o.market_constraints
+  if (mcRaw && typeof mcRaw === 'object') {
+    const mc = mcRaw as Record<string, unknown>
+    const avoid = Array.isArray(mc.avoid_points)
+      ? mc.avoid_points
+          .map((x) => (typeof x === 'string' ? x.trim().slice(0, 150) : ''))
+          .filter(Boolean)
+          .slice(0, 4)
+      : []
+    const gaps = Array.isArray(mc.target_gaps)
+      ? mc.target_gaps
+          .map((x) => (typeof x === 'string' ? x.trim().slice(0, 150) : ''))
+          .filter(Boolean)
+          .slice(0, 4)
+      : []
+    const actionRaw = typeof mc.strategy_action === 'string' ? mc.strategy_action.trim() : ''
+    const reason = typeof mc.strategy_reason === 'string' ? mc.strategy_reason.trim().slice(0, 300) : ''
+    if (avoid.length > 0 && (actionRaw === 'reference' || actionRaw === 'upgrade' || actionRaw === 'avoid') && reason) {
+      bp.market_constraints = {
+        avoid_points: avoid,
+        target_gaps: gaps,
+        strategy_action: actionRaw,
+        strategy_reason: reason,
+      }
+    }
+  }
 
   // 至少要有主题定位或标题方向，否则视为无效蓝图
   if (!bp.title_direction && !bp.positioning) return null
@@ -282,8 +317,21 @@ ${input.styleProfileText ?? ''}${mem
  * 把蓝图格式化为注入 LLM prompt 的文本段（两次正文生成共用）。
  * 前端也可用它做纯展示，但展示场景建议直接用字段卡片。
  * 阶段 C：兼容方案超集（content_type/language_style），有值才渲染。
+ * 市场约束：随 FrozenPlan 注入，作为正文生成的硬约束（避开同质化、瞄准内容缺口）。
  */
-export function formatBlueprintForPrompt(bp: CreativeBlueprint & { content_type?: string; language_style?: { pace?: string; mood?: string; expression?: string }; problem_understanding?: ProblemUnderstanding }): string {
+export function formatBlueprintForPrompt(
+  bp: CreativeBlueprint & {
+    content_type?: string
+    language_style?: { pace?: string; mood?: string; expression?: string }
+    problem_understanding?: ProblemUnderstanding
+    market_constraints?: {
+      avoid_points: string[]
+      target_gaps: string[]
+      strategy_action: 'reference' | 'upgrade' | 'avoid'
+      strategy_reason: string
+    }
+  }
+): string {
   const lines: string[] = [
     `标题方向：${bp.title_direction}`,
     `主题定位：${bp.positioning}`,
@@ -307,6 +355,26 @@ export function formatBlueprintForPrompt(bp: CreativeBlueprint & { content_type?
   // 问题理解块：用户的真实目标优先于文案技巧，随蓝图一起注入生成调用
   if (bp.problem_understanding) {
     lines.push('', formatProblemForPrompt(bp.problem_understanding))
+  }
+  // 市场硬约束：正文必须避开同质化角度、尽量覆盖内容缺口
+  if (bp.market_constraints) {
+    const mc = bp.market_constraints
+    const actionLabel: Record<string, string> = {
+      reference: '借鉴成熟结构',
+      upgrade: '升级已有角度',
+      avoid: '红海建议换角度',
+    }
+    lines.push(
+      '',
+      `【市场硬约束（正文必须遵守）】`,
+      `推荐策略：${actionLabel[mc.strategy_action] ?? mc.strategy_action}（${mc.strategy_reason}）`,
+      '必须避开的同质化角度（正文不得出现这些表达/切入）：',
+      ...mc.avoid_points.map((p) => `- ${p}`),
+    )
+    if (mc.target_gaps.length > 0) {
+      lines.push('应尽量覆盖的内容缺口（正文至少命中 1 个）：')
+      lines.push(...mc.target_gaps.map((g) => `- ${g}`))
+    }
   }
   return `【已确认的创作方案（本次创作必须严格遵循）】\n${lines.join('\n')}`
 }

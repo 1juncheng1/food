@@ -3,6 +3,8 @@ import {
   authenticateWithToken,
   extractBearerToken,
 } from '@/lib/storage'
+import { trackEvent } from '@/lib/creative/interest/eventTracker'
+import type { CreatorEventType, TargetType } from '@/lib/creative/interest/types'
 
 export const maxDuration = 30
 export const dynamic = 'force-dynamic'
@@ -19,6 +21,18 @@ const COUNT_COLUMN: Record<InteractionType, 'like_count' | 'save_count'> = {
   style_resonate: 'like_count',
 }
 
+/**
+ * WF2：互动 → 创作者事件流映射（撤回对称负向）。
+ * topic_search 契约（JSDoc 预留）：未来广场/素材库主题搜索框提交时，
+ * 调 trackEvent({type:'topic_search', targetType:'topic', topicExcerpt:搜索词})，
+ * weight 0.5 + autoEmbedding 自动补算向量。
+ */
+const EVENT_OF: Record<InteractionType, { added: CreatorEventType; removed: CreatorEventType }> = {
+  like: { added: 'post_like', removed: 'post_unlike' },
+  save: { added: 'post_save', removed: 'post_unsave' },
+  style_resonate: { added: 'post_style_resonate', removed: 'post_unlike' }, // 无独立撤回枚举，降级同 like 撤回
+}
+
 /** POST 请求体 */
 interface InteractionBody {
   interactionType?: unknown
@@ -27,6 +41,26 @@ interface InteractionBody {
 /** 安全取字符串并截断 */
 function str(v: unknown, max: number): string {
   return typeof v === 'string' ? v.trim().slice(0, max) : ''
+}
+
+/**
+ * WF2：上报创作者事件（fire-and-forget，永不阻塞互动主响应）。
+ * trackEvent 自身永不抛错；targetType=post 与创作项目无关（projectId=null）。
+ */
+function reportInteractionEvent(
+  supabase: Parameters<typeof trackEvent>[0],
+  userId: string,
+  type: CreatorEventType,
+  postId: string
+): void {
+  void trackEvent(supabase, userId, {
+    type,
+    targetType: 'post' as TargetType,
+    targetId: postId,
+    projectId: null,
+    category: null,
+    contentDomain: null,
+  })
 }
 
 // ────────────────────────────────────────────────────────────
@@ -102,6 +136,9 @@ export async function POST(
         // 不阻断：计数偶尔不一致可接受，互动记录已删除
       }
 
+      // WF2：撤回事件（对称负向，withdraw）
+      reportInteractionEvent(supabase, userId, EVENT_OF[interactionType].removed, pid)
+
       // 查询最新计数返回
       const { data: post } = await supabase
         .from('posts')
@@ -142,6 +179,9 @@ export async function POST(
     if (incErr) {
       console.error('增加计数失败:', incErr)
     }
+
+    // WF2：贡献事件（post_like 0.6 / post_save 1.5 / post_style_resonate 1.2）
+    reportInteractionEvent(supabase, userId, EVENT_OF[interactionType].added, pid)
 
     // 查询最新计数返回
     const { data: post } = await supabase
@@ -217,6 +257,9 @@ export async function DELETE(
     if (decErr) {
       console.error('减少计数失败:', decErr)
     }
+
+    // WF2：撤回事件（对称负向，withdraw）
+    reportInteractionEvent(supabase, userId, EVENT_OF[interactionType].removed, pid)
 
     return NextResponse.json({ action: 'removed', interactionType })
   } catch (error) {

@@ -1434,3 +1434,475 @@ $$;
 --   select column_name from information_schema.columns
 --    where table_name='scripts' and column_name='knowledge';
 
+-- ═════════════════════════════════════════════════════════════════
+-- 13. AI 灵感分析与转化系统（AI Inspiration Analysis）
+-- ═════════════════════════════════════════════════════════════════
+-- 设计原则：复用 generation_history 表，一次 generation_id 串起
+--   灵感输入 → AI 分析 → 用户选择方向 → plan → 生成作品 → 作品反馈
+--   溯源链完整，未来灵感推荐算法只需 select 该列聚类，无需跨表 join
+--
+-- inspiration_context jsonb 结构（见 lib/creative/inspirationAnalyzer.ts: InspirationAnalysis）：
+--   raw_input             text      用户原始灵感输入（≤2000 字）
+--   input_type            text      LLM 自动判断：title/sentence/news/material/random_thought/video_summary/other
+--   value_assessment      jsonb     6 维价值评估 + overall_score(1-10) + issues[]
+--   optimization_suggestions jsonb  优化建议：main_problem/missing_info[]/missing_viewpoints[]/improvement_direction
+--   recalled_material_ids text[]   从 scripts 表向量召回的相关素材 ID（仅登录用户有值）
+--   analyzed_at            text     ISO timestamp
+--
+-- 旧数据兼容：新列 nullable，老作品 inspiration_context=null 不影响现有功能
+-- RLS/权限不变：generation_history 已有 SELECT/INSERT/UPDATE，新列自动继承
+alter table public.generation_history
+  add column if not exists inspiration_context jsonb;
+
+-- 13.1 验证查询：
+--   select column_name from information_schema.columns
+--    where table_name='generation_history' and column_name='inspiration_context';
+
+-- ============================================================
+-- 14. Content Intelligence Data Layer（P0）
+-- ============================================================
+-- 统一市场数据缓存表：所有平台（web/news，未来 B站/抖音/知乎）的数据
+-- 统一进 CIItem 格式落这里，跨用户共享（同主题 24-72h 内免重复搜索+富化）。
+--
+-- 设计红线（对应 lib/ci/types.ts: CIItem）：
+--   1. excerpt ≤300 字（check 约束兜底）——存"理解市场的线索"，永不存全文（版权红线）
+--   2. metrics 中 null = 该源拿不到该数据，永不为 0 冒充（web/news 源无互动指标）
+--   3. ai_analysis 可整块 null（未富化），重算不污染原始字段
+--
+-- 权限模型：RLS 启用且不建任何 anon/authenticated 策略 = 仅 service role 可读写。
+-- 消费走服务端（/api/creative/market/analyze → lib/ci/*），用户永远不直接查表；
+-- query_hash 关联的查询文本可能含用户私有想法，不跨用户暴露。
+-- 前置条件：服务端需配置 SUPABASE_SERVICE_ROLE_KEY（未配置时缓存自动降级关闭）。
+create table if not exists public.ci_items (
+  id uuid primary key default gen_random_uuid(),
+  platform text not null,
+  external_id text not null,
+  url text,
+  title text not null,
+  excerpt text check (char_length(excerpt) <= 300),
+  author text default '',
+  published_at timestamptz,
+  metrics jsonb default '{}'::jsonb,
+  content_info jsonb default '{}'::jsonb,
+  ai_analysis jsonb,
+  query_hash text not null,
+  fetched_at timestamptz default now(),
+  expires_at timestamptz not null,
+  unique (platform, external_id)
+);
+create index if not exists idx_ci_items_query on public.ci_items (query_hash, expires_at);
+
+-- 搜索日志（成本监控 + 缓存命中率分析 + 未来主题分布统计）
+create table if not exists public.ci_search_log (
+  id uuid primary key default gen_random_uuid(),
+  query_hash text not null,
+  query_text text,
+  adapters text[],
+  item_count int default 0,
+  created_at timestamptz default now()
+);
+
+alter table public.ci_items enable row level security;
+alter table public.ci_search_log enable row level security;
+-- 注意：不建任何 anon/authenticated 策略（service role 不受 RLS 限制）
+
+-- 14.1 验证查询：
+--   select tablename, rowsecurity from pg_tables
+--    where tablename in ('ci_items','ci_search_log');
+
+-- ============================================================
+-- 15. 作品发布表现回流（轻量版：手动三档自评）
+-- ============================================================
+-- 闭环意义：这是"灵感→分析→战略→作品→市场验证"全链路中缺失的最后一环。
+-- 站内 👍/👎（feedback_status）衡量的是"AI 生成质量"，
+-- performance_feedback 衡量的是"作品在真实市场的表现"——两者是不同的信号，分列存储。
+--
+-- 数据形状（jsonb，应用层校验）：
+--   {
+--     "grade": "good | okay | flop",     -- 三档自评（跨平台可比的最小公共分母）
+--     "platform": "wechat|xhs|douyin|bilibili|zhihu|other" | null,
+--     "note": "≤200字补充说明" | null,
+--     "recorded_at": "ISO 时间戳"        -- 重复记录=覆盖（最新自评为准）
+--   }
+--
+-- 设计取舍（MVP）：
+--   - 三档自评而非数字指标：不同平台指标不可比（B站播放 vs 公众号在看），
+--     自评档位跨平台可比、录入摩擦最低，且足够支撑"战略模式×表现"关联分析；
+--     未来接平台数据回流（CI 数据层）时可并存数字指标字段。
+--   - 覆盖而非追加历史：分析消费的是"最新表现"；作品表现随时间演变时用户可重新记录。
+--
+-- 与 content_strategy 的关联分析（本机制的核心价值，积累 2-4 周后执行）：
+--   select coalesce(blueprint->'content_strategy'->>'recommended_mode','none') as mode,
+--          performance_feedback->>'grade' as grade,
+--          count(*)
+--   from generation_history
+--   where performance_feedback is not null
+--   group by 1, 2 order by 1, 2;
+--   → 得到"哪种战略模式的作品表现更好"，反哺战略块 Prompt 与付费价值证明。
+alter table public.generation_history add column if not exists performance_feedback jsonb;
+
+-- 15.1 验证查询：
+--   select column_name from information_schema.columns
+--    where table_name='generation_history' and column_name='performance_feedback';
+
+-- ============================================================
+-- 16. Creator Interest Profile（创作者兴趣模型 · M0 地基）
+-- ============================================================
+-- 设计原则：事件是事实（append-only，不可变），簇/画像/推荐卡是派生品（可从事件全量重建）。
+--   creator_events        行为事件账本：幂等写入，只增不改不删；撤回语义用新事件表达
+--   interest_builds       画像构建运行记录：算法/规则版本 + 参数快照 + 在途折叠
+--   interest_clusters     语义簇：质心 pgvector + 三层归属（core/exploration/temporary）+ 跨期身份
+--   interest_suggestions  推荐卡队列：build 预制，推荐接口只读取排序
+--   style_profiles.interest_profile  画像视图 jsonb（六层结构，空对象=未建模）
+-- 全部 additive + if not exists，不影响任何现有表与功能。
+
+-- ───── 16.0 既有缺失列补齐 ─────
+-- work_tags：app/api/creative/work-tags 已在读写 generation_history.work_tags，
+-- 但建表脚本遗漏了这一列（写库失败仅 console.error，老库静默丢标签）。
+alter table public.generation_history
+  add column if not exists work_tags jsonb;
+
+-- ───── 16.1 style_profiles：兴趣画像视图列 ─────
+-- 与 creator_report / creator_declaration / editing_profile 并列，互不覆盖；
+-- 消费方读空对象时整块剔除，未建模用户零影响。
+alter table public.style_profiles
+  add column if not exists interest_profile jsonb not null default '{}'::jsonb;
+
+-- ───── 16.2 interest_builds：画像构建运行记录 ─────
+create table if not exists public.interest_builds (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references auth.users(id) on delete cascade,
+  trigger      text not null,                         -- manual/scheduled/incremental/backfill
+  algo_version text not null,                        -- 聚类算法版本，如 interest-cluster-v1
+  rule_version text not null,                        -- 权重/分层规则版本，如 interest-rules-v1
+  params       jsonb not null default '{}'::jsonb,   -- 本次算法参数全量快照
+  event_range  jsonb not null default '{}'::jsonb,   -- {from_event_id,to_event_id,count}
+  status       text not null default 'running',      -- running/done/failed
+  error        text,
+  started_at   timestamptz not null default now(),
+  finished_at  timestamptz
+);
+
+alter table public.interest_builds drop constraint if exists interest_builds_trigger_check;
+alter table public.interest_builds add constraint interest_builds_trigger_check
+  check (trigger in ('manual','scheduled','incremental','backfill'));
+
+alter table public.interest_builds drop constraint if exists interest_builds_status_check;
+alter table public.interest_builds add constraint interest_builds_status_check
+  check (status in ('running','done','failed'));
+
+create index if not exists interest_builds_user_idx
+  on public.interest_builds (user_id, started_at desc);
+-- 在途折叠：同用户只允许扫描一个 running build
+create index if not exists interest_builds_running_idx
+  on public.interest_builds (user_id) where status = 'running';
+
+-- ───── 16.3 interest_clusters：语义簇 ─────
+create table if not exists public.interest_clusters (
+  id               uuid primary key default gen_random_uuid(),
+  user_id          uuid not null references auth.users(id) on delete cascade,
+  build_id         uuid not null references public.interest_builds(id) on delete cascade,
+  cluster_code     text not null,                    -- 跨 build 稳定身份码（如 c_ai_business）
+  label            text not null check (char_length(trim(label)) between 1 and 20),
+  summary          text not null default '' check (char_length(summary) <= 200),
+  centroid         vector(1024) not null,
+  layer            text not null,                    -- core/exploration/temporary
+  previous_layer   text,
+  layer_changed_at timestamptz,
+  weight           real not null check (weight >= 0 and weight <= 1),       -- 用户内归一化强度
+  raw_score        real not null default 0,          -- 归一化前加权事件分（趋势计算用）
+  confidence       real not null check (confidence >= 0 and confidence <= 1),
+  event_count      integer not null default 0,
+  project_count    integer not null default 0,       -- 去重项目数（防单项目迭代刷票）
+  first_seen_at    timestamptz not null default now(),
+  last_seen_at     timestamptz not null default now(),
+  status           text not null default 'active',   -- active/superseded/archived
+  superseded_by    uuid references public.interest_clusters(id) on delete set null,
+  stats            jsonb not null default '{}'::jsonb, -- 窗口分/趋势/来源/原因混合/证据
+  algo_version     text not null,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+
+alter table public.interest_clusters drop constraint if exists interest_clusters_layer_check;
+alter table public.interest_clusters add constraint interest_clusters_layer_check
+  check (layer in ('core','exploration','temporary'));
+
+alter table public.interest_clusters drop constraint if exists interest_clusters_status_check;
+alter table public.interest_clusters add constraint interest_clusters_status_check
+  check (status in ('active','superseded','archived'));
+
+-- 同一稳定码在同一用户下只保留一个活跃簇（历史行 supersede 保留，支持回滚与趋势连续）
+create unique index if not exists interest_clusters_active_code_idx
+  on public.interest_clusters (user_id, cluster_code) where status = 'active';
+create index if not exists interest_clusters_user_layer_idx
+  on public.interest_clusters (user_id, layer, weight desc);
+create index if not exists interest_clusters_build_idx
+  on public.interest_clusters (build_id);
+
+do $$
+begin
+  create index if not exists interest_clusters_centroid_hnsw_idx
+    on public.interest_clusters using hnsw (centroid public.vector_cosine_ops);
+exception
+  when others then
+    raise notice 'interest_clusters HNSW 索引创建失败（%），不影响功能，仅检索稍慢', sqlerrm;
+end $$;
+
+-- ───── 16.4 creator_events：创作者行为事件流（append-only） ─────
+create table if not exists public.creator_events (
+  id                uuid primary key default gen_random_uuid(),
+  user_id           uuid not null references auth.users(id) on delete cascade,
+  event_type        text not null,
+  target_type       text not null,                   -- generation/project/script/post/inspiration/ci_item/topic
+  target_id         text,
+  project_id        uuid references public.creative_projects(id) on delete set null,
+  category          text,                            -- 形式分类（电影解说…），仅辅助维度
+  content_domain    text,                            -- 粗领域（tech/business…），辅助维度
+  embedding         vector(1024),
+  embedding_model   text not null default 'bge-m3@1024',
+  payload           jsonb not null default '{}'::jsonb,
+  interpretation    jsonb,                           -- AI 行为原因分析（Behavior Reason）
+  interpret_status  text not null default 'none',   -- none/pending/done/failed
+  cluster_id        uuid references public.interest_clusters(id) on delete set null,
+  occurred_at       timestamptz not null default now(),
+  created_at        timestamptz not null default now(),
+  idempotency_key   text not null
+);
+
+-- 枚举用 CHECK 兜底（应用层枚举为主）；未来扩事件类型时重建此约束即可，
+-- 与 generation_feedback.feedback_type 的放宽先例同模式。
+alter table public.creator_events drop constraint if exists creator_events_event_type_check;
+alter table public.creator_events add constraint creator_events_event_type_check check (
+  event_type in (
+    'work_generate','work_finalize','work_unfinalize','work_delete',
+    'feedback_like','feedback_dislike','work_edit','work_regenerate',
+    'material_save','material_delete',
+    'post_like','post_unlike','post_save','post_unsave','post_style_resonate',
+    'inspiration_analyze','topic_search',
+    'recommend_impression','recommend_click','recommend_adopt','recommend_dismiss'
+  )
+);
+
+alter table public.creator_events drop constraint if exists creator_events_target_type_check;
+alter table public.creator_events add constraint creator_events_target_type_check check (
+  target_type in ('generation','project','script','post','inspiration','ci_item','topic')
+);
+
+alter table public.creator_events drop constraint if exists creator_events_interpret_status_check;
+alter table public.creator_events add constraint creator_events_interpret_status_check check (
+  interpret_status in ('none','pending','done','failed')
+);
+
+-- 幂等：同一用户同一业务动作只入账一次
+create unique index if not exists creator_events_idem_idx
+  on public.creator_events (user_id, idempotency_key);
+create index if not exists creator_events_user_time_idx
+  on public.creator_events (user_id, occurred_at desc);
+create index if not exists creator_events_user_type_time_idx
+  on public.creator_events (user_id, event_type, occurred_at desc);
+-- 原因批处理扫描待解释事件
+create index if not exists creator_events_pending_idx
+  on public.creator_events (user_id) where interpret_status = 'pending';
+create index if not exists creator_events_cluster_idx
+  on public.creator_events (cluster_id);
+
+do $$
+begin
+  create index if not exists creator_events_embedding_hnsw_idx
+    on public.creator_events using hnsw (embedding public.vector_cosine_ops);
+exception
+  when others then
+    raise notice 'creator_events HNSW 索引创建失败（%），不影响功能，仅聚类稍慢', sqlerrm;
+end $$;
+
+-- ───── 16.5 interest_suggestions：推荐卡预制队列 ─────
+create table if not exists public.interest_suggestions (
+  id              uuid primary key default gen_random_uuid(),  -- 对外即 rec_id
+  user_id         uuid not null references auth.users(id) on delete cascade,
+  build_id        uuid not null references public.interest_builds(id) on delete cascade,
+  cluster_code    text not null,
+  slot            text not null,                    -- core_gap/evidence_followup/exploration/continuation
+  source          text not null,                    -- own_inspiration/ci_market/saved_material/exploration/active_project
+  title           text not null check (char_length(trim(title)) between 1 and 40),
+  description     text not null check (char_length(description) <= 120),
+  topic           text not null check (char_length(topic) between 1 and 200),
+  form_hint       text not null default '其他',
+  score           real not null check (score >= 0 and score <= 1),
+  score_breakdown jsonb not null default '{}'::jsonb,
+  evidence        jsonb not null default '{}'::jsonb,  -- 确定性事实包（推荐解释用，禁止 LLM 自由发挥进这里）
+  market_refs     jsonb,                            -- 内部溯源 [{platform,url}]，不返回前端
+  status          text not null default 'active',   -- active/impressed/consumed/dismissed/expired/superseded
+  expires_at      timestamptz not null default (now() + interval '14 days'),
+  created_at      timestamptz not null default now()
+);
+
+alter table public.interest_suggestions drop constraint if exists interest_suggestions_slot_check;
+alter table public.interest_suggestions add constraint interest_suggestions_slot_check
+  check (slot in ('core_gap','evidence_followup','exploration','continuation'));
+
+alter table public.interest_suggestions drop constraint if exists interest_suggestions_source_check;
+alter table public.interest_suggestions add constraint interest_suggestions_source_check
+  check (source in ('own_inspiration','ci_market','saved_material','exploration','active_project'));
+
+alter table public.interest_suggestions drop constraint if exists interest_suggestions_status_check;
+alter table public.interest_suggestions add constraint interest_suggestions_status_check
+  check (status in ('active','impressed','consumed','dismissed','expired','superseded'));
+
+create index if not exists interest_suggestions_user_status_idx
+  on public.interest_suggestions (user_id, status, score desc);
+create index if not exists interest_suggestions_user_cluster_idx
+  on public.interest_suggestions (user_id, cluster_code);
+create index if not exists interest_suggestions_expires_idx
+  on public.interest_suggestions (expires_at);
+
+-- ───── 16.6 ci_items：市场情报条目向量列（build 时 ANN 检索市场缺口） ─────
+-- nullable，老数据不重算，下次搜索刷新时自然补上；ci_items 维持 service-role-only，
+-- 不建任何 RPC，从结构上保证跨用户私有 query 不泄露。
+alter table public.ci_items
+  add column if not exists embedding vector(1024);
+
+do $$
+begin
+  create index if not exists ci_items_embedding_hnsw_idx
+    on public.ci_items using hnsw (embedding public.vector_cosine_ops);
+exception
+  when others then
+    raise notice 'ci_items HNSW 索引创建失败（%），不影响功能，仅市场缺口检索不可用', sqlerrm;
+end $$;
+
+-- ───── 16.7 RLS 策略（四张新表全部用户私有） ─────
+-- creator_events：只增不改不删（撤回语义用新事件表达，保证账本完整）。
+-- WF10 例外开口：embedding 列允许本人 UPDATE——画像 build 步骤3 用用户 token 补算
+-- 并回写事件向量；列级 GRANT 保证 payload/user_id/type 等账本列依然不可变。
+alter table public.creator_events enable row level security;
+drop policy if exists "creator_events_select_own" on public.creator_events;
+create policy "creator_events_select_own" on public.creator_events
+  for select to authenticated using (auth.uid() = user_id);
+drop policy if exists "creator_events_insert_own" on public.creator_events;
+create policy "creator_events_insert_own" on public.creator_events
+  for insert to authenticated with check (auth.uid() = user_id);
+drop policy if exists "creator_events_update_embedding_own" on public.creator_events;
+create policy "creator_events_update_embedding_own" on public.creator_events
+  for update to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+-- 列级授权兜底：RLS 放行行之后，仅 embedding 一列可写（RLS 本身不限制列）
+grant update(embedding) on public.creator_events to authenticated;
+
+-- interest_builds / interest_clusters / interest_suggestions：自己可读可插可改（状态流转/supersede），不可删
+alter table public.interest_builds enable row level security;
+drop policy if exists "interest_builds_select_own" on public.interest_builds;
+create policy "interest_builds_select_own" on public.interest_builds
+  for select to authenticated using (auth.uid() = user_id);
+drop policy if exists "interest_builds_insert_own" on public.interest_builds;
+create policy "interest_builds_insert_own" on public.interest_builds
+  for insert to authenticated with check (auth.uid() = user_id);
+drop policy if exists "interest_builds_update_own" on public.interest_builds;
+create policy "interest_builds_update_own" on public.interest_builds
+  for update to authenticated using (auth.uid() = user_id);
+
+alter table public.interest_clusters enable row level security;
+drop policy if exists "interest_clusters_select_own" on public.interest_clusters;
+create policy "interest_clusters_select_own" on public.interest_clusters
+  for select to authenticated using (auth.uid() = user_id);
+drop policy if exists "interest_clusters_insert_own" on public.interest_clusters;
+create policy "interest_clusters_insert_own" on public.interest_clusters
+  for insert to authenticated with check (auth.uid() = user_id);
+drop policy if exists "interest_clusters_update_own" on public.interest_clusters;
+create policy "interest_clusters_update_own" on public.interest_clusters
+  for update to authenticated using (auth.uid() = user_id);
+
+alter table public.interest_suggestions enable row level security;
+drop policy if exists "interest_suggestions_select_own" on public.interest_suggestions;
+create policy "interest_suggestions_select_own" on public.interest_suggestions
+  for select to authenticated using (auth.uid() = user_id);
+drop policy if exists "interest_suggestions_insert_own" on public.interest_suggestions;
+create policy "interest_suggestions_insert_own" on public.interest_suggestions
+  for insert to authenticated with check (auth.uid() = user_id);
+drop policy if exists "interest_suggestions_update_own" on public.interest_suggestions;
+create policy "interest_suggestions_update_own" on public.interest_suggestions
+  for update to authenticated using (auth.uid() = user_id);
+
+-- generation_history 硬删除：仅本人（RLS 兜底归属）。
+-- 业务规则"项目版本行禁止单独删除"在应用层（DELETE /api/creative/works/[id]）强制，
+-- 不写进策略条件，避免未来"删除整个项目"功能需要反向改库。
+-- generation_feedback 经 FK on delete cascade 由系统内部级联清理，无需额外 DELETE 授权。
+drop policy if exists "gen_history_delete_own" on public.generation_history;
+create policy "gen_history_delete_own" on public.generation_history
+  for delete to authenticated using (auth.uid() = user_id);
+
+-- ───── 16.8 显式授权（RLS 只过滤行，不授予权限） ─────
+grant select, insert on public.creator_events to authenticated;
+grant select, insert, update on public.interest_builds to authenticated;
+grant select, insert, update on public.interest_clusters to authenticated;
+grant select, insert, update on public.interest_suggestions to authenticated;
+grant delete on public.generation_history to authenticated;
+-- style_profiles 的 interest_profile 新列自动继承既有 select/insert/update 授权，无需额外 grant
+
+-- 16.8b service_role 显式授权（实测：本项目的默认权限不含 service_role，
+-- 缺失时 getServiceClient/S2 ci_market/运维脚本全部 "permission denied" 静默失败）：
+--   ci_items 是 service-role-only 共享缓存表（无 RLS 策略，禁止暴露给 anon/authenticated）
+--   creator_events 需 delete 供运维脚本清理合成/噪音事件（账本对用户仍 append-only）
+--   其余 interest_* / 作品表运行时全部走用户 token（authenticated 角色），无需 service_role
+grant select, insert, update, delete on public.creator_events to service_role;
+grant select, insert, update, delete on public.interest_builds to service_role;
+grant select, insert, update, delete on public.interest_clusters to service_role;
+grant select, insert, update, delete on public.interest_suggestions to service_role;
+grant select, insert, update, delete on public.ci_items to service_role;
+-- WF0（2026-09-19 实测 42501）：两张旧表漏授 service_role，后台诊断/S2/运维直查全部
+-- "permission denied for table ..."。authenticated 主路径走 RLS 不受影响，但 service_role
+-- 作为受信角色需要只读（不授写：旧业务表运行时一律走用户 token）。
+-- WF9（2026-09-19 实测 42501）：runBuild 的 finishBuild 需 upsert style_profiles（画像写），
+-- 后台化 build（场景测试/serverless 定时触发）必须 service_role 可写；不授 DELETE（画像行不删）。
+grant select, insert, update on public.style_profiles to service_role;
+grant select, insert, update on public.generation_history to service_role;
+
+-- 16.9 验证查询：
+--   select table_name from information_schema.tables
+--    where table_schema='public'
+--      and table_name in ('creator_events','interest_builds','interest_clusters','interest_suggestions');
+--   select column_name from information_schema.columns
+--    where table_name='generation_history' and column_name='work_tags';
+--   select column_name from information_schema.columns
+--    where table_name='style_profiles' and column_name='interest_profile';
+--   select column_name from information_schema.columns
+--    where table_name='ci_items' and column_name='embedding';
+
+-- ───── 16.10 Creation Opportunity Engine 升级（WF0/WF4/WF6，2026-09-19） ─────
+-- 整节幂等，可在 Supabase SQL Editor 反复执行；全部为 additive 变更，旧应用代码透明。
+
+-- [WF0] build 并发互斥：同一用户至多一条 status='running' 的 build。
+-- 实测一次页面访问曾并发插入 6 个 build（findRunningBuild 幽灵列 + 无 DB 约束）。
+-- 应用层 findRunningBuild 为快速路径，本索引为正确性兜底（第二个 insert 收 23505 跳过）。
+create unique index if not exists interest_builds_one_running_idx
+  on public.interest_builds (user_id)
+  where status = 'running';
+
+-- [WF4] 兴趣簇四维标签（内容/思想/情绪/创作方式）+ 标签文本向量（bge-m3@1024）。
+-- tag_dims 结构：{content:[...],thought:[...],emotion:[...],craft:[...]}；
+-- 与语义质心 centroid 正交共存，tag_embedding 由四维标签拼接文本编码得到。
+alter table public.interest_clusters
+  add column if not exists tag_dims jsonb not null default '{}'::jsonb,
+  add column if not exists tag_embedding vector(1024);
+
+-- [WF6] 推荐卡 AI 理由五件套（build 时预制，请求路径零 LLM 调用）。
+-- why_recommend 必须复述 evidence.facts 中的真实事实；related_knowledge 为闭集素材引用。
+-- reason_source 标记理由来源：template=事实模板兜底，ai=LLM 预制。
+alter table public.interest_suggestions
+  add column if not exists core_question text,
+  add column if not exists why_recommend text,
+  add column if not exists creation_angle text,
+  add column if not exists related_knowledge jsonb not null default '[]'::jsonb,
+  add column if not exists reason_source text not null default 'template';
+
+-- 16.10 验证查询（执行后应全部成功；has_table_privilege 两行为 t；索引/列可见）：
+--   select has_table_privilege('service_role','public.style_profiles','SELECT');
+--   select has_table_privilege('service_role','public.generation_history','SELECT');
+--   select indexname from pg_indexes where indexname='interest_builds_one_running_idx';
+--   select column_name from information_schema.columns
+--    where table_name='interest_clusters' and column_name in ('tag_dims','tag_embedding');
+--   select column_name from information_schema.columns
+--    where table_name='interest_suggestions'
+--      and column_name in ('core_question','why_recommend','creation_angle','related_knowledge','reason_source');
+

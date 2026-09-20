@@ -46,18 +46,18 @@ import type {
   ClarificationDimension,
 } from '@/lib/creative/intentClarity'
 import type { ClarificationAnswer } from '@/lib/creative/intentClarity'
-import {
-  AdvancedSettings,
-  type AdvancedSettingsValue,
-  type RestoreSettings,
-} from '@/components/generate/advanced-settings'
+import type { InspirationAnalysis } from '@/lib/creative/inspirationAnalyzer'
+import type { MarketReport } from '@/lib/creative/marketAnalyzer'
+import { InspirationAnalysisCard } from '@/components/generate/inspiration-analysis-card'
+import { LoginGate } from '@/components/login-gate'
 
-const DEFAULT_SETTINGS: AdvancedSettingsValue = {
-  characters: [],
-  selectedCharIds: [],
+type Stage = 'input' | 'analyzing' | 'clarify' | 'plan' | 'insight'
+
+interface RecalledMaterialPreview {
+  id: string
+  preview: string
+  similarity: number
 }
-
-type Stage = 'input' | 'analyzing' | 'clarify' | 'plan'
 
 const ANALYZING_STEPS = [
   '正在理解你想解决的问题',
@@ -69,6 +69,7 @@ export default function PromptOptimizerPage() {
   const router = useRouter()
   const [topic, setTopic] = useState('')
   const [error, setError] = useState('')
+  const [recId, setRecId] = useState<string | null>(null)
 
   // ── 创作模式 ──
   const [mode, setMode] = useState<CreationMode>('inspiration')
@@ -100,10 +101,18 @@ export default function PromptOptimizerPage() {
   const analyzingRef = useRef(false)
   const [analyzedTopic, setAnalyzedTopic] = useState('')
 
-  // ── 高级设置快照 ──
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settings, setSettings] = useState<AdvancedSettingsValue>(DEFAULT_SETTINGS)
-  const [restore, setRestore] = useState<RestoreSettings | null>(null)
+  // ── AI 灵感分析系统：在 plan 前置增加 insight 态 ──
+  // 用户输入任意模糊灵感 → AI 评估价值+优化建议+召回素材 → 一键进入现有 plan 流程
+  const [inspirationAnalysis, setInspirationAnalysis] = useState<InspirationAnalysis | null>(null)
+  const [recalledMaterials, setRecalledMaterials] = useState<RecalledMaterialPreview[]>([])
+  const [inspirationLoading, setInspirationLoading] = useState(false)
+  const inspirationAbortRef = useRef<AbortController | null>(null)
+
+  // ── 市场机会分析：insight 态的二级深挖动作（可选，消费灵感分析结论作种子）──
+  const [marketReport, setMarketReport] = useState<MarketReport | null>(null)
+  const [marketLoading, setMarketLoading] = useState(false)
+  // ── 登录引导弹窗：游客点击生成入口时弹出（封堵游客生成）──
+  const [loginGateOpen, setLoginGateOpen] = useState(false)
 
   // ── 初始化：模式偏好 + URL/query/sessionStorage 恢复 ──
   // localStorage/sessionStorage 为外部数据源，读取放 async 初始化函数内（与项目约定一致）
@@ -119,7 +128,6 @@ export default function PromptOptimizerPage() {
       } catch { /* ignore */ }
 
       // 恢复来源优先级：sessionStorage（生成失败回填）> URL query（站外跳入）
-      let restored: RestoreSettings | null = null
       try {
         if (new URLSearchParams(window.location.search).get('restore') === '1') {
           const raw = sessionStorage.getItem('pending_gen_form')
@@ -127,20 +135,17 @@ export default function PromptOptimizerPage() {
             const f = JSON.parse(raw)
             if (typeof f.topic === 'string' && f.topic) setTopic(f.topic)
             if (f.mode === 'inspiration' || f.mode === 'creator') setMode(f.mode)
-            restored = {
-              charIds: Array.isArray(f.charIds) ? f.charIds : undefined,
-            }
           }
         }
       } catch { /* ignore */ }
 
-      if (!restored) {
+      {
         const qs = new URLSearchParams(window.location.search)
         const qTopic = qs.get('topic')
         if (qTopic) setTopic(qTopic)
-        restored = {}
+        const qRecId = qs.get('rec_id')
+        if (qRecId) setRecId(qRecId)
       }
-      setRestore(restored)
     }
     void init()
 
@@ -159,6 +164,15 @@ export default function PromptOptimizerPage() {
           data: { session },
         } = await supabase.auth.getSession()
         if (!session?.access_token || cancelled) return
+        // 验活：本地缓存的僵尸 token（服务端已注销）不能作为登录依据，
+        // 否则创作入口门全部放行、API 却 401。getUser 走服务端校验。
+        const { error: authErr } = await supabase.auth.getUser()
+        if (cancelled) return
+        if (authErr) {
+          // 清本设备缓存，保持游客态（创作入口会弹登录引导）
+          await supabase.auth.signOut({ scope: 'local' })
+          return
+        }
         setIsLoggedIn(true)
         setAccessToken(session.access_token)
         fetch('/api/creator-status', {
@@ -209,9 +223,153 @@ export default function PromptOptimizerPage() {
     setTimeout(() => topicInputRef.current?.focus(), 350)
   }
 
+  // ── AI 灵感分析：前置增量，不替代 plan ──
+  // 流程：用户输入模糊灵感 → 调 /api/creative/inspiration/analyze
+  // → 显示价值评估+优化建议+召回素材 → 用户确认 → 携带 context 进入现有 plan
+  async function analyzeInspiration() {
+    if (inspirationLoading) return
+    // 封堵游客生成：未登录弹出引导弹窗，不进入分析流程
+    if (!isLoggedIn) {
+      setLoginGateOpen(true)
+      return
+    }
+    const t = topic.trim()
+    if (!t) {
+      setError('请先填写灵感内容')
+      return
+    }
+    if (t.length < 2) {
+      setError('灵感太短，至少 2 个字')
+      return
+    }
+    setError('')
+    setInspirationLoading(true)
+    setInspirationAnalysis(null)
+    setRecalledMaterials([])
+    setMarketReport(null) // 新灵感：清空上一轮市场分析
+
+    const controller = new AbortController()
+    inspirationAbortRef.current = controller
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`
+
+      const res = await fetch('/api/creative/inspiration/analyze', {
+        method: 'POST',
+        headers,
+        signal: controller.signal,
+        body: JSON.stringify({ raw_input: t }),
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok) {
+        throw new Error(data?.error || '灵感分析失败，请稍后重试')
+      }
+      if (!data?.analysis) {
+        throw new Error('AI 返回内容不完整，请重试')
+      }
+      setInspirationAnalysis(data.analysis as InspirationAnalysis)
+      setRecalledMaterials(
+        Array.isArray(data.recalled_materials) ? data.recalled_materials : []
+      )
+      setStage('insight')
+    } catch (e) {
+      if ((e as Error)?.name === 'AbortError') return
+      setError(e instanceof Error ? e.message : '网络异常，请重试')
+    } finally {
+      setInspirationLoading(false)
+    }
+  }
+
+  function cancelInspiration() {
+    inspirationAbortRef.current?.abort()
+    setInspirationLoading(false)
+    setInspirationAnalysis(null)
+    setRecalledMaterials([])
+    setMarketReport(null)
+    setStage('input')
+  }
+
+  // 用户在 insight 态点"基于这个灵感开始创作"
+  // 重置灵感分析卡 → 进入 input 态但保留 topic → 触发 analyze 进入 plan
+  // 关键：plan 请求体携带 inspiration_context，让 plan 延续灵感分析结论
+  function startCreationFromInspiration() {
+    if (!inspirationAnalysis) return
+    const t = topic.trim()
+    if (!t || t !== inspirationAnalysis.raw_input) {
+      // 用户在 insight 态改了 topic：直接以新 topic 走无 context 的 analyze
+      setInspirationAnalysis(null)
+      setRecalledMaterials([])
+      setMarketReport(null)
+      void analyze()
+      return
+    }
+    setStage('input')
+    // 关键：若用户做了市场深挖，把 market_report 合入 inspiration_context
+    // → plan 阶段瞄准内容缺口设计方向 → 一并落 generation_history.inspiration_context
+    const analysisWithMarket: InspirationAnalysis = marketReport
+      ? { ...inspirationAnalysis, market_report: marketReport }
+      : inspirationAnalysis
+    // 异步触发 analyze，让 stage 切换先完成
+    void analyze(undefined, analysisWithMarket)
+  }
+
+  function resetInspiration() {
+    setInspirationAnalysis(null)
+    setRecalledMaterials([])
+    setMarketReport(null)
+    setStage('input')
+    setTimeout(() => topicInputRef.current?.focus(), 100)
+  }
+
+  // ── 市场机会分析：insight 态二级深挖（消费灵感分析的竞争度结论作种子）──
+  async function analyzeMarketOpportunity() {
+    if (marketLoading || !inspirationAnalysis) return
+    setMarketLoading(true)
+    setError('')
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`
+
+      const res = await fetch('/api/creative/market/analyze', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          raw_input: inspirationAnalysis.raw_input,
+          competition_level: inspirationAnalysis.value_assessment.competition_level,
+          competition_reason: inspirationAnalysis.value_assessment.competition_reason,
+          content_domain: inspirationAnalysis.value_assessment.content_domain,
+        }),
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok) {
+        throw new Error(data?.error || '市场分析失败，请重试')
+      }
+      if (!data?.report) {
+        throw new Error('市场分析返回不完整，请重试')
+      }
+      setMarketReport(data.report as MarketReport)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '网络异常，请重试')
+    } finally {
+      setMarketLoading(false)
+    }
+  }
+
   // ── AI 方案分析 ──
-  async function analyze(currentTopic?: string) {
+  async function analyze(currentTopic?: string, inspiration?: InspirationAnalysis | null) {
     if (analyzingRef.current) return // 防 Enter 连点 / 分析中重复提交
+    // 封堵游客生成：未登录弹出引导弹窗，不进入生成流程
+    if (!isLoggedIn) {
+      setLoginGateOpen(true)
+      return
+    }
     const t = (currentTopic ?? topic).trim()
     if (!t) {
       setError('请先填写创作主题')
@@ -237,11 +395,10 @@ export default function PromptOptimizerPage() {
     const controller = new AbortController()
     abortRef.current = controller
 
-    // 失败恢复暂存（阶段 2：只存角色选择）
+    // 失败恢复暂存
     try {
       sessionStorage.setItem('pending_gen_form', JSON.stringify({
         topic: t,
-        charIds: settings.selectedCharIds,
         mode: effectiveMode,
       }))
     } catch { /* ignore */ }
@@ -263,8 +420,10 @@ export default function PromptOptimizerPage() {
         body: JSON.stringify({
           topic: t,
           mode: effectiveMode,
-          characters: settings.characters,
           hints: Object.keys(hints).length ? hints : undefined,
+          // AI 灵感分析系统：携带 insight 态用户确认的 analysis
+          // 让 plan 阶段的 LLM 延续灵感分析发现的问题与改进方向
+          inspiration_context: inspiration ?? undefined,
         }),
       })
       const data = await res.json().catch(() => null)
@@ -297,7 +456,6 @@ export default function PromptOptimizerPage() {
       }
       setError(e instanceof Error ? e.message : '网络异常，请重试')
       setStage('input')
-      setSettingsOpen(true) // 失败自动展开高级设置，手动路径立即可见
     } finally {
       analyzingRef.current = false
       if (stepTimerRef.current) {
@@ -352,9 +510,9 @@ export default function PromptOptimizerPage() {
         body: JSON.stringify({
           topic: t,
           mode: effectiveMode,
-          characters: settings.characters,
           hints: Object.keys(hints).length ? hints : undefined,
           clarifications: answers,
+          rec_id: recId ?? undefined,
         }),
       })
       const data = await res.json().catch(() => null)
@@ -429,9 +587,9 @@ export default function PromptOptimizerPage() {
         body: JSON.stringify({
           topic: t,
           mode: effectiveMode,
-          characters: settings.characters,
           hints: Object.keys(hints).length ? hints : undefined,
           skip_clarify: true,
+          rec_id: recId ?? undefined,
         }),
       })
       const data = await res.json().catch(() => null)
@@ -496,8 +654,10 @@ export default function PromptOptimizerPage() {
         customCategory: '',
         memory,
         mode: effectiveMode,
-        characters: settings.characters,
         plan: frozen,
+        // AI 灵感分析系统：透传 inspiration_context 落 generation_history.inspiration_context jsonb
+        // 一次 generation_id 串起灵感→分析→plan→作品→反馈全链路数据沉淀
+        inspirationContext: inspirationAnalysis ?? undefined,
       },
       {
         title: t,
@@ -537,6 +697,9 @@ export default function PromptOptimizerPage() {
     <div className="inner-page gen-stage" data-mode={effectiveMode}>
       {/* 模式场景层：灵感=黑夜流星 / 我的=银河身临（aria-hidden 纯装饰） */}
       <div className="gen-mode-ambient" aria-hidden="true">
+        {/* 灵感模式：暗夜微光雾（流星划过时的氛围底） */}
+        <div className="gm-nebula" />
+        {/* 满天繁星（两模式共用，我的模式下更密更亮） */}
         <i className="gm-star" style={{ top: '8%', left: '14%' }} />
         <i className="gm-star" style={{ top: '22%', left: '78%' }} />
         <i className="gm-star" style={{ top: '34%', left: '36%' }} />
@@ -552,15 +715,18 @@ export default function PromptOptimizerPage() {
         <i className="gm-star" style={{ top: '80%', left: '58%' }} />
         <i className="gm-star" style={{ top: '40%', left: '88%' }} />
         <i className="gm-star" style={{ top: '90%', left: '34%' }} />
+        {/* 流星（仅灵感模式）：黑夜中划落的灵感 */}
         <i className="gm-meteor" style={{ '--m-top': '-4%', '--m-left': '22%', '--dur': '7s', '--delay': '-2s', '--dx': '-260px', '--dy': '380px', '--len': '90px' } as React.CSSProperties} />
         <i className="gm-meteor" style={{ '--m-top': '-2%', '--m-left': '66%', '--dur': '9s', '--delay': '-6s', '--dx': '-300px', '--dy': '430px', '--len': '110px' } as React.CSSProperties} />
         <i className="gm-meteor" style={{ '--m-top': '4%', '--m-left': '92%', '--dur': '8s', '--delay': '-4s', '--dx': '-240px', '--dy': '350px', '--len': '80px' } as React.CSSProperties} />
         <i className="gm-meteor" style={{ '--m-top': '-6%', '--m-left': '44%', '--dur': '10s', '--delay': '-9s', '--dx': '-280px', '--dy': '400px', '--len': '100px' } as React.CSSProperties} />
+        <i className="gm-meteor" style={{ '--m-top': '-8%', '--m-left': '80%', '--dur': '11s', '--delay': '-3s', '--dx': '-200px', '--dy': '320px', '--len': '70px' } as React.CSSProperties} />
+        <i className="gm-meteor" style={{ '--m-top': '2%', '--m-left': '10%', '--dur': '8.5s', '--delay': '-7s', '--dx': '-320px', '--dy': '460px', '--len': '120px' } as React.CSSProperties} />
       </div>
       <div className="inner-container gen-sheet">
-        {/* ── 页眉：居中，如稿纸题头 ── */}
+        {/* ── 页眉：左对齐 ── */}
         <div className="inner-header">
-          <div className="text-center">
+          <div>
             <Link href="/dashboard" className="inner-back">← 返回主页</Link>
             <span className="gen-eyebrow">智能创作</span>
             <h1 className="inner-header-title">灵感场</h1>
@@ -647,7 +813,7 @@ export default function PromptOptimizerPage() {
                   <>结合你的创作者人格、素材库与历史作品创作，你写得越多，它越像你</>
                 )
               ) : (
-                <>基于平台通用的高完播创作经验给你建议，不读取任何个人数据，无需登录即可使用</>
+                <>基于平台通用的高完播创作经验给你建议，登录后 AI 会结合你的创作者人格与历史作品给更精准建议</>
               )}
             </p>
 
@@ -681,8 +847,8 @@ export default function PromptOptimizerPage() {
           {/* 主行动：输入态=开始分析 / 方案态=重新分析 / 分析中=禁用 */}
           <button
             type="submit"
-            disabled={stage === 'analyzing'}
-            className="gen-submit btn-shine w-full py-4 rounded-2xl font-semibold text-base text-white transition"
+            disabled={stage === 'analyzing' || inspirationLoading}
+            className="gen-submit btn-shine w-full py-4 rounded-2xl font-semibold text-base text-white transition disabled:opacity-60"
           >
             {stage === 'analyzing'
               ? 'AI 正在分析…'
@@ -690,18 +856,60 @@ export default function PromptOptimizerPage() {
                 ? '重新分析'
                 : '开始分析'}
           </button>
+
+          {/* AI 灵感分析系统：在主行动按钮下方的次行动入口 */}
+          {/* 设计原则：与"开始分析"区分——"开始分析"直接进 plan；"分析灵感"先进 insight 态做价值评估 */}
+          <button
+            type="button"
+            onClick={() => void analyzeInspiration()}
+            disabled={stage === 'analyzing' || inspirationLoading || !topic.trim()}
+            className="w-full py-3 mt-2 rounded-2xl text-sm font-medium text-indigo-200 border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 hover:border-indigo-500/50 transition disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {inspirationLoading ? 'AI 正在分析灵感…' : '✨ 先分析这个灵感值不值得做'}
+          </button>
+          <p className="text-[11px] text-zinc-600 mt-2 text-center">
+            模糊想法 / 标题 / 一句话 / 新闻都行——AI 先评估价值与差异化，再决定要不要做
+          </p>
         </form>
 
-        {/* 角色管理（原高级设置折叠区，阶段 2 只保留登场角色） */}
-        {stage === 'input' && (
-          <div className="gen-advanced">
-            <AdvancedSettings
-              isLoggedIn={isLoggedIn}
-              open={settingsOpen}
-              onToggle={() => setSettingsOpen((v) => !v)}
-              onChange={setSettings}
-              restore={restore}
+        {/* ── 灵感分析态：AI 评估价值+优化建议+召回素材，用户确认后进入 plan ── */}
+        {stage === 'insight' && inspirationAnalysis && (
+          <div className="gen-insight-wrapper glass anim-rise">
+            <InspirationAnalysisCard
+              analysis={inspirationAnalysis}
+              recalledMaterials={recalledMaterials}
+              marketReport={marketReport}
+              marketLoading={marketLoading}
+              onMarketAnalysis={() => void analyzeMarketOpportunity()}
+              onStartCreation={startCreationFromInspiration}
+              onReset={resetInspiration}
+              loading={false}
             />
+            <button
+              type="button"
+              onClick={cancelInspiration}
+              className="mt-4 text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-800 hover:border-zinc-700 px-4 py-2 rounded-lg transition"
+            >
+              取消
+            </button>
+          </div>
+        )}
+
+        {/* 灵感分析加载态（独立于 plan 的 analyzing） */}
+        {inspirationLoading && stage !== 'insight' && (
+          <div className="gen-status glass anim-rise">
+            <div className="mx-auto w-12 h-12 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" />
+            <h2 className="text-base font-medium text-white mt-6">正在评估这个灵感</h2>
+            <p className="text-xs text-zinc-500 mt-2">
+              AI 客观判断价值、差异化与提升方向
+            </p>
+            <button
+              type="button"
+              onClick={cancelInspiration}
+              className="mt-8 text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-800 hover:border-zinc-700 px-4 py-2 rounded-lg transition"
+            >
+              取消
+            </button>
           </div>
         )}
 
@@ -793,6 +1001,9 @@ export default function PromptOptimizerPage() {
           onCompleted={() => interviewTrigger.refresh()}
           onDismiss={() => interviewTrigger.refresh()}
         />
+
+        {/* ── 登录引导弹窗：游客点击生成入口时弹出 ── */}
+        {loginGateOpen && <LoginGate onClose={() => setLoginGateOpen(false)} />}
       </div>
     </div>
   )

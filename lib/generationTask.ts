@@ -18,6 +18,7 @@ import type { NextActionKey } from './creative/diagnosis'
 import type { PersonalizationEvidence } from './creative/creatorModel'
 import type { CreationMode } from './creative/personalization'
 import type { CharacterSnapshot } from './characters'
+import type { InspirationAnalysis } from './creative/inspirationAnalyzer'
 
 /** 发给 /api/prompt-optimizer 的请求参数 */
 export interface GenerationParams {
@@ -57,6 +58,13 @@ export interface GenerationParams {
    * 不传则走旧链路（蓝图自动生成 / 游客直接生成）。
    */
   plan?: FrozenPlan
+  /**
+   * AI 灵感分析与转化系统：用户在 insight 态确认的灵感分析结果。
+   * 透传到 /api/prompt-optimizer 落 generation_history.inspiration_context jsonb。
+   * 数据沉淀用于未来个性化灵感推荐与创作者偏好学习。
+   * 不传时 inspiration_context 为 null（老链路不受影响）。
+   */
+  inspirationContext?: InspirationAnalysis
 }
 
 /** 落盘时的创作参数（作品名 / 身份 / 文风 / 归类） */
@@ -221,6 +229,8 @@ async function runPipeline(
         mode: params.mode,
         // 阶段四：登场角色快照（与角色库解耦，保证作品可复现）
         characters: params.characters ?? [],
+        // AI 灵感分析：透传到服务端落 generation_history.inspiration_context
+        inspirationContext: params.inspirationContext ?? null,
       }),
     })
     const data = await res.json()

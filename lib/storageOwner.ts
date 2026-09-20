@@ -5,27 +5,79 @@
 // 共享、不随登录账号隔离——同一浏览器切换账号 B 会读到/删掉 A 的本地内容。
 //
 // 方案：所有内容型存储键按用户 id 分桶（baseKey#u:<userId>）。
-// 当前用户由 AuthProvider 在会话恢复/变更时同步注入；未注入（鉴权中/游客）
-// 时一律视为"无数据"，读写全部短路，绝不回退到全局键，从根上杜绝串号。
+// 当前用户由 AuthProvider 在会话恢复/变更时同步注入；游客（未登录）
+// 落到持久匿名游客桶（u:guest:<id>），与登录用户桶严格隔离——
+// 游客生成闭环的作品落盘依赖此桶，同时绝不回退到全局键、绝不串号。
 // ============================================================
 
-/** 当前登录用户的命名空间；null = 尚未注入（此时禁止任何内容读写） */
+/** 当前归属命名空间；null = 尚未注入（AuthProvider 首次执行前短暂存在，读写短路） */
 let ownerScope: string | null = null
 
 /** 需要按用户隔离的历史遗留全局键（首次登录迁移用） */
 const LEGACY_KEYS = ['generated_works', 'style_memory', 'custom_identities']
 /** 旧数据迁移完成标记（全局只做一次，迁移给这台设备上首个登录的用户） */
 const MIGRATION_DONE_KEY = '__user_scoped_storage_migrated'
+/** 游客匿名归属 id（持久）：游客生成闭环的作品落盘依赖它（P0 修复） */
+const GUEST_ID_KEY = '__storage_owner_guest_id'
+
+/**
+ * 游客命名空间：惰性生成持久匿名 id，同浏览器游客态稳定复用。
+ * 背景：游客是灵感场核心转化入口（/generate、/article 白名单不设登录墙），
+ * 若游客读写全部短路，生成链路 saveWork 会静默丢弃作品，/article 永远
+ * 显示"文章不存在"。游客桶与登录用户桶严格隔离（u:guest:<id> ≠ u:<uid>），
+ * 不引入跨账号串号；同一浏览器多个游客共用一个桶（localStorage 本就按浏览器隔离）。
+ */
+function guestScope(): string {
+  try {
+    let id = localStorage.getItem(GUEST_ID_KEY)
+    if (!id) {
+      id =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+      localStorage.setItem(GUEST_ID_KEY, id)
+    }
+    return `u:guest:${id}`
+  } catch {
+    // localStorage 不可用（隐私模式等）：退化为会话内临时桶，读写仍隔离，只是不持久
+    return 'u:guest:ephemeral'
+  }
+}
+
+/**
+ * 把游客桶内容迁移进刚登录的用户桶。
+ * 保守策略：用户桶为空才整体搬入（避免覆盖老用户已有内容）；
+ * 非空则跳过——游客内容留在 guest 桶，退出登录后仍可见，不丢数据。
+ */
+function migrateGuestInto(scope: string): void {
+  try {
+    const from = guestScope()
+    if (from === scope) return
+    for (const base of LEGACY_KEYS) {
+      const raw = localStorage.getItem(`${base}#${from}`)
+      if (raw == null) continue
+      const target = `${base}#${scope}`
+      if (localStorage.getItem(target) != null) continue // 用户桶已有内容：不覆盖
+      localStorage.setItem(target, raw)
+      localStorage.removeItem(`${base}#${from}`)
+    }
+  } catch {
+    // 迁移失败不影响登录主流程；游客桶仍在，退出后可找回
+  }
+}
 
 /**
  * 设置当前存储归属。由 AuthProvider 在 getSession / onAuthStateChange 时调用。
  * 幂等：同一用户重复设置不触发任何操作；切换账号时后续读写自动落到新桶。
+ * 游客（null）：落到持久游客桶——游客生成闭环的作品读写依赖此桶（P0 修复）。
  */
 export function setStorageOwner(userId: string | null): void {
-  const next = userId ? `u:${userId}` : null
+  const next = userId ? `u:${userId}` : guestScope()
   if (next === ownerScope) return
+  // 登录/切换账号：先把游客桶搬入新用户桶（仅空桶时），避免"我刚才生成的作品没了"
+  if (userId) migrateGuestInto(next)
   ownerScope = next
-  if (next) migrateLegacy(next)
+  if (userId) migrateLegacy(next)
 }
 
 /**
