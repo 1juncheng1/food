@@ -174,11 +174,40 @@ create policy "media_insert_own" on storage.objects
     and (storage.foldername(name))[1] = auth.uid()::text
   );
 
--- 读取权限：media 为公开桶，公开 URL 可直接访问
+-- 读取权限：media 是公开桶（公开 URL 可直接访问，存量图片的 URL 不受影响），
+-- 但 storage.objects 的 select 策略同时还授权了「列举/下载」API：
+-- 原来的 `to public` 让任何匿名用户都能 list 出全站用户上传的图片（隐私面太大）。
+-- 这里收敛为「登录用户只能列举/下载自己文件夹下的对象」，公开 URL 读取不受影响。
 drop policy if exists "media_public_read" on storage.objects;
-create policy "media_public_read" on storage.objects
-  for select to public
-  using (bucket_id = 'media');
+drop policy if exists "media_read_own" on storage.objects;
+create policy "media_read_own" on storage.objects
+  for select to authenticated
+  using (
+    bucket_id = 'media'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+-- 更新 / 删除权限：原先只有 insert + select，导致 API 里的 .remove()
+-- （删除旧头像/旧封面）在用户 token 下被 RLS 静默拒绝 → 孤儿文件堆积。
+drop policy if exists "media_update_own" on storage.objects;
+create policy "media_update_own" on storage.objects
+  for update to authenticated
+  using (
+    bucket_id = 'media'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  )
+  with check (
+    bucket_id = 'media'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+drop policy if exists "media_delete_own" on storage.objects;
+create policy "media_delete_own" on storage.objects
+  for delete to authenticated
+  using (
+    bucket_id = 'media'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
 
 -- ──────────────── 6. 生成历史 + 反馈表 ────────────────
 
@@ -211,7 +240,9 @@ create policy "gen_history_insert_own" on public.generation_history
 
 drop policy if exists "gen_history_update_own" on public.generation_history;
 create policy "gen_history_update_own" on public.generation_history
-  for update to authenticated using (auth.uid() = user_id);
+  for update to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 -- 反馈记录：用户对每次生成的评价
 create table if not exists public.generation_feedback (
@@ -282,7 +313,9 @@ create policy "style_profile_insert_own" on public.style_profiles
 
 drop policy if exists "style_profile_update_own" on public.style_profiles;
 create policy "style_profile_update_own" on public.style_profiles
-  for update to authenticated using (auth.uid() = user_id);
+  for update to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 -- 显式授权：RLS 策略只过滤行，不授予权限
 grant select, insert, update on public.style_profiles to authenticated;
@@ -438,7 +471,9 @@ create policy "creative_projects_insert_own" on public.creative_projects
 
 drop policy if exists "creative_projects_update_own" on public.creative_projects;
 create policy "creative_projects_update_own" on public.creative_projects
-  for update to authenticated using (auth.uid() = user_id);
+  for update to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 drop policy if exists "creative_projects_delete_own" on public.creative_projects;
 create policy "creative_projects_delete_own" on public.creative_projects
@@ -1396,39 +1431,64 @@ alter table public.scripts
 --   当 p_usage_filter 非空时，只召回 knowledge->usage_tags 包含该值的素材
 --   当 p_usage_filter 为空时，行为与原版一致（纯向量检索）
 --   老素材 knowledge=null 不受影响（p_usage_filter 非空时自动跳过）
-create or replace function public.match_scripts(
-  query_embedding vector(1024),
-  match_count int default 5,
-  p_user_id uuid default null,
-  p_usage_filter text default null
-) returns table (
-  id uuid,
-  content text,
-  similarity float
-)
-language plpgsql
-as $$
+-- pgvector 所在 schema 由 pg_extension 运行时探测（Supabase 通常是 extensions，
+-- 自建库可能装在 public），因此这里与文件顶部一致走动态 format，
+-- 避免硬编码 extensions 导致脚本在该 schema 不存在的环境里整体中断。
+do $$
+declare
+  ext_schema text;
 begin
-  return query
-  select
-    s.id,
-    s.content,
-    1 - (s.embedding <=> query_embedding) as similarity
-  from public.scripts s
-  where s.user_id = p_user_id
-    and s.embedding is not null
-    -- usage_filter 非空时：只召回 knowledge 含该 usage 的素材（老素材 knowledge=null 自动跳过）
-    and (
-      p_usage_filter is null
-      or (
-        s.knowledge is not null
-        and (s.knowledge -> 'usage_tags')::jsonb ? p_usage_filter
-      )
+  select n.nspname into ext_schema
+  from pg_extension e
+  join pg_namespace n on n.oid = e.extnamespace
+  where e.extname = 'vector';
+
+  if ext_schema is null then
+    raise exception '未检测到 pgvector 扩展，请先在 Database -> Extensions 中启用 vector';
+  end if;
+
+  execute format($f$
+    create or replace function public.match_scripts(
+      query_embedding %1$I.vector,
+      match_count int default 5,
+      p_user_id uuid default null,
+      p_usage_filter text default null
+    ) returns table (
+      id uuid,
+      content text,
+      similarity float
     )
-  order by s.embedding <=> query_embedding
-  limit match_count;
-end;
-$$;
+    language plpgsql
+    stable
+    security invoker
+    -- 固定 search_path 并把向量操作符写成全限定形式（见文件顶部说明）
+    set search_path = public, %1$I
+    as $body$
+    begin
+      return query
+      select
+        s.id,
+        s.content,
+        1 - (s.embedding operator(%1$I.<=>) query_embedding) as similarity
+      from public.scripts s
+      where s.user_id = p_user_id
+        and s.embedding is not null
+        -- usage_filter 非空时：只召回 knowledge 含该 usage 的素材（老素材 knowledge=null 自动跳过）
+        and (
+          p_usage_filter is null
+          or (
+            s.knowledge is not null
+            and (s.knowledge -> 'usage_tags')::jsonb ? p_usage_filter
+          )
+        )
+      order by s.embedding operator(%1$I.<=>) query_embedding
+      limit match_count;
+    end;
+    $body$;
+  $f$, ext_schema);
+
+  raise notice 'match_scripts (p_usage_filter 重载) 重建完成';
+end $$;
 
 -- 12.3 验证查询：
 --   select column_name from information_schema.columns
@@ -1800,7 +1860,9 @@ create policy "interest_builds_insert_own" on public.interest_builds
   for insert to authenticated with check (auth.uid() = user_id);
 drop policy if exists "interest_builds_update_own" on public.interest_builds;
 create policy "interest_builds_update_own" on public.interest_builds
-  for update to authenticated using (auth.uid() = user_id);
+  for update to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 alter table public.interest_clusters enable row level security;
 drop policy if exists "interest_clusters_select_own" on public.interest_clusters;
@@ -1811,7 +1873,9 @@ create policy "interest_clusters_insert_own" on public.interest_clusters
   for insert to authenticated with check (auth.uid() = user_id);
 drop policy if exists "interest_clusters_update_own" on public.interest_clusters;
 create policy "interest_clusters_update_own" on public.interest_clusters
-  for update to authenticated using (auth.uid() = user_id);
+  for update to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 alter table public.interest_suggestions enable row level security;
 drop policy if exists "interest_suggestions_select_own" on public.interest_suggestions;
@@ -1822,7 +1886,9 @@ create policy "interest_suggestions_insert_own" on public.interest_suggestions
   for insert to authenticated with check (auth.uid() = user_id);
 drop policy if exists "interest_suggestions_update_own" on public.interest_suggestions;
 create policy "interest_suggestions_update_own" on public.interest_suggestions
-  for update to authenticated using (auth.uid() = user_id);
+  for update to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 -- generation_history 硬删除：仅本人（RLS 兜底归属）。
 -- 业务规则"项目版本行禁止单独删除"在应用层（DELETE /api/creative/works/[id]）强制，
@@ -1905,4 +1971,377 @@ alter table public.interest_suggestions
 --   select column_name from information_schema.columns
 --    where table_name='interest_suggestions'
 --      and column_name in ('core_question','why_recommend','creation_angle','related_knowledge','reason_source');
+
+-- ═════════════════════════════════════════════════════════════════
+-- 17. Material Library 2.0 数据层（素材库升级：Material + MaterialGroup + MaterialUsage）
+-- ═════════════════════════════════════════════════════════════════
+-- 设计原则（Phase 0 审计确认）：
+--   1. 复用 scripts 表不重命名，避免破坏所有现有 API/UI 引用
+--   2. 所有 DDL 幂等（if not exists），重复执行零报错
+--   3. 不删除 knowledge/category/type/file_url/embedding 任何现有列
+--   4. match_scripts 新参数可选，不传时行为不变（向后兼容）
+--   5. 新表 RLS 与 scripts 表一致（4 条 own 策略）
+--
+-- 执行前建议先跑两条预览查询：
+--   select count(*) from scripts where knowledge is not null;  -- 待迁移素材数
+--   select proname, proargnames from pg_proc where proname='match_scripts';  -- RPC 现状
+-- ─────────────────────────────────────────────────────────────────
+
+-- 17.1 scripts 表扩 7 列（全部 add column if not exists，老素材新列默认 NULL 兼容）
+--   group_id        未来 references material_groups(id)，本阶段不加外键约束避免循环依赖
+--   material_type   9 种枚举（观点/事实/数据/案例/金句/经历/观察/灵感/其他），用 text 不用 enum
+--                   不加 CHECK 约束：避免 Supabase enum 迁移麻烦，靠应用层校验
+--   source          素材来源（手输/上传/外部链接/AI生成）
+--   ai_summary      从 knowledge.meaning+context 拆出的 AI 理解摘要（冗余存储便于检索）
+--   related_topics  从 knowledge.content_tags 拆出的相关主题（数组）
+--   claims          素材中包含的事实/数据/主张（jsonb，结构 Phase 3 Retrieval Service 定义）
+--   updated_at      编辑时间戳，默认 now()
+alter table public.scripts
+  add column if not exists group_id uuid,
+  add column if not exists material_type text,
+  add column if not exists source text,
+  add column if not exists ai_summary text,
+  add column if not exists related_topics text[],
+  add column if not exists claims jsonb,
+  add column if not exists updated_at timestamptz not null default now();
+
+-- 17.2 补 scripts_update_own RLS 策略（现有只有 select/insert/delete，缺 update）
+--     Phase 2 素材编辑功能依赖此策略
+drop policy if exists scripts_update_own on public.scripts;
+create policy scripts_update_own on public.scripts
+  for update to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+-- 17.3 新建 material_groups 表（用户自由建立分组：AI观察/商业/电影/创业/职场/我的观点...）
+--     分组是用户管理方式，不是 AI 唯一检索依据
+create table if not exists public.material_groups (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid not null,
+  name        text not null,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+
+alter table public.material_groups enable row level security;
+
+-- 清理旧策略后重建规范四条（与 scripts 表一致）
+do $$
+declare r record;
+begin
+  for r in
+    select policyname from pg_policies
+    where schemaname = 'public' and tablename = 'material_groups'
+  loop
+    execute format('drop policy if exists %I on public.material_groups', r.policyname);
+  end loop;
+end $$;
+
+create policy material_groups_select_own on public.material_groups
+  for select to authenticated using (auth.uid() = user_id);
+
+create policy material_groups_insert_own on public.material_groups
+  for insert to authenticated with check (auth.uid() = user_id);
+
+create policy material_groups_update_own on public.material_groups
+  for update to authenticated
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create policy material_groups_delete_own on public.material_groups
+  for delete to authenticated using (auth.uid() = user_id);
+
+-- 唯一约束：同用户下分组名唯一（防止重名）
+create unique index if not exists material_groups_user_name_uniq
+  on public.material_groups (user_id, name);
+
+-- 列表查询索引（按用户+时间倒序）
+create index if not exists material_groups_user_created_idx
+  on public.material_groups (user_id, created_at desc);
+
+-- 17.4 新建 material_usages 表（素材使用记录：推荐→选择→拒绝→使用四态）
+--     为 Phase 5 推荐系统训练提供闭环数据
+--     work_id 用 text 而非 uuid：因为 generation_history.id 是 text（前端生成 UUID 字符串）
+create table if not exists public.material_usages (
+  id              uuid primary key default gen_random_uuid(),
+  user_id         uuid not null,
+  material_id     uuid not null references public.scripts(id) on delete cascade,
+  work_id         text references public.generation_history(id) on delete set null,
+  suggested_by_ai boolean not null default false,
+  selected_by_user boolean not null default false,
+  actually_used   boolean not null default false,
+  created_at      timestamptz not null default now()
+);
+
+alter table public.material_usages enable row level security;
+
+-- 清理旧策略后重建规范四条
+do $$
+declare r record;
+begin
+  for r in
+    select policyname from pg_policies
+    where schemaname = 'public' and tablename = 'material_usages'
+  loop
+    execute format('drop policy if exists %I on public.material_usages', r.policyname);
+  end loop;
+end $$;
+
+create policy material_usages_select_own on public.material_usages
+  for select to authenticated using (auth.uid() = user_id);
+
+create policy material_usages_insert_own on public.material_usages
+  for insert to authenticated with check (auth.uid() = user_id);
+
+create policy material_usages_update_own on public.material_usages
+  for update to authenticated
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create policy material_usages_delete_own on public.material_usages
+  for delete to authenticated using (auth.uid() = user_id);
+
+-- 3 索引：按用户查使用记录 / 按素材查被使用情况 / 按作品查使用了哪些素材
+create index if not exists material_usages_user_created_idx
+  on public.material_usages (user_id, created_at desc);
+create index if not exists material_usages_material_idx
+  on public.material_usages (material_id);
+create index if not exists material_usages_work_idx
+  on public.material_usages (work_id);
+
+-- 唯一约束（usageWriter UPSERT 的冲突目标）
+--   局部唯一：work_id IS NOT NULL 时 (user_id, material_id, work_id) 唯一
+--   work_id IS NULL 时（推荐但未关联作品）允许多行（每次推荐一行），
+--   但 usageWriter 的 upsert 只在 work_id 非空时才调，work_id=null 时直接 INSERT
+create unique index if not exists material_usages_user_material_work_uniq
+  on public.material_usages (user_id, material_id, work_id)
+  where work_id is not null;
+
+-- 17.5 match_scripts RPC 扩展 p_material_type 参数
+--   ⚠️ 风险：PostgreSQL CREATE OR REPLACE FUNCTION 不能改参数签名，必须 DROP + CREATE
+--   ⚠️ 生产中断：DROP 时若 prompt-optimizer 正在调用 match_scripts，会有毫秒级 500 错误
+--   建议：选生产低峰期执行本节；或在 DROP 前先 set lock_timeout='5s' 防止卡死
+--
+--   新参数 p_material_type：当非空时，只召回 material_type 匹配的素材
+--   当 p_material_type 为空时，行为与原版一致（向后兼容，prompt-optimizer 无需改动）
+--   老素材 material_type IS NULL 不受影响（p_material_type 非空时自动跳过）
+drop function if exists public.match_scripts(vector, int, uuid, text) cascade;
+
+-- 同上：动态探测 pgvector 所在 schema，不硬编码 extensions
+do $$
+declare
+  ext_schema text;
+begin
+  select n.nspname into ext_schema
+  from pg_extension e
+  join pg_namespace n on n.oid = e.extnamespace
+  where e.extname = 'vector';
+
+  if ext_schema is null then
+    raise exception '未检测到 pgvector 扩展，请先在 Database -> Extensions 中启用 vector';
+  end if;
+
+  execute format($f$
+    create function public.match_scripts(
+      query_embedding %1$I.vector,
+      match_count int default 5,
+      p_user_id uuid default null,
+      p_usage_filter text default null,
+      p_material_type text default null
+    ) returns table (
+      id uuid,
+      content text,
+      similarity float
+    )
+    language plpgsql
+    stable
+    security invoker
+    -- 固定 search_path 并把向量操作符写成全限定形式（见文件顶部说明）
+    set search_path = public, %1$I
+    as $body$
+    begin
+      return query
+      select
+        s.id,
+        s.content,
+        1 - (s.embedding operator(%1$I.<=>) query_embedding) as similarity
+      from public.scripts s
+      where s.user_id = p_user_id
+        and s.embedding is not null
+        -- usage_filter 非空时：只召回 knowledge 含该 usage 的素材（老素材 knowledge=null 自动跳过）
+        and (
+          p_usage_filter is null
+          or (
+            s.knowledge is not null
+            and (s.knowledge -> 'usage_tags')::jsonb ? p_usage_filter
+          )
+        )
+        -- material_type 非空时：只召回 material_type 匹配的素材（老素材 material_type=null 自动跳过）
+        and (
+          p_material_type is null
+          or s.material_type = p_material_type
+        )
+      order by s.embedding operator(%1$I.<=>) query_embedding
+      limit match_count;
+    end;
+    $body$;
+  $f$, ext_schema);
+
+  raise notice 'match_scripts (p_material_type 重载) 重建完成';
+end $$;
+
+-- ──────────────── 17.6 Phase 1 GRANT 授权（必须，否则 RLS 表也会 42501） ────────────────
+-- 注意：Postgres GRANT 与 RLS 是两层独立机制，RLS 存在不代表表级权限已授。
+
+-- scripts 表：UPDATE 权限此前靠 RLS（scripts_update_own 策略），但表级 GRANT 仍需显式声明删除
+grant delete on public.scripts to authenticated;
+grant select, insert, update, delete on public.scripts to service_role;
+
+-- material_groups：CRUD 全套（authenticated 靠 RLS 限定 user_id）
+grant select, insert, update, delete on public.material_groups to authenticated;
+grant select, insert, update, delete on public.material_groups to service_role;
+
+-- material_usages：SELECT/INSERT/UPDATE（authenticated 只能读/写自己的 usage，service_role 写 suggested_by_ai）
+grant select, insert, update on public.material_usages to authenticated;
+grant select, insert, update, delete on public.material_usages to service_role;
+
+-- match_scripts RPC：authenticated 和 service_role 都需要 execute
+grant execute on function public.match_scripts(public.vector, integer, uuid, text, text) to authenticated;
+grant execute on function public.match_scripts(public.vector, integer, uuid, text, text) to service_role;
+
+-- 17.7 验证查询（执行后应全部成功）
+--   select column_name, data_type from information_schema.columns
+--    where table_name='scripts' and column_name in
+--      ('group_id','material_type','source','ai_summary','related_topics','claims','updated_at');
+--   select policyname, cmd from pg_policies where tablename='scripts' and cmd='UPDATE';
+--   select tablename from pg_tables where tablename in ('material_groups','material_usages');
+--   select indexname from pg_indexes where tablename in ('material_groups','material_usages');
+--   select proargnames from pg_proc where proname='match_scripts';
+
+-- ═════════════════════════════════════════════════════════════════
+-- 18. Work Agent（作品智能协作体）—— 对话式共创系统
+-- ═════════════════════════════════════════════════════════════════
+-- 目标：把「继续优化」从「一句反馈 → AI 全文重写」升级为
+--       「加载上下文 → 多轮对话 → 意图澄清 → 方案选择 → 局部修改 → 落新版本」。
+--
+-- 设计原则：
+--   1. 仍然不新建 work_agents 表：版本真相唯一来源仍是 creative_projects + generation_history
+--   2. session / message 分离：session 存本次共创的状态指针，message 存完整对话轨迹
+--      （区别：generation_feedback 只存「一次动作」，messages 存「一次决策过程」）
+--   3. 全 additive + nullable：未执行本节的库无影响，其余功能零中断
+--   4. RLS 用户私有：会话与消息均按 user_id 隔离，service_role 全权（便于运维/排障）
+--
+-- 与既有表的关系（从三表聚合，不复制）：
+--   work_agent_sessions.base_version_id → generation_history.id（对话发起时的基底版本）
+--   generation_history.session_id        ← 本次会话产出该版本（溯源）
+--   generation_history.revision_plan     ← 用户最终确认的修改方案快照（可直接复盘"为什么改"）
+
+-- ─── 18.1 会话表 ───
+create table if not exists public.work_agent_sessions (
+  id               uuid primary key default gen_random_uuid(),
+  user_id          uuid not null references auth.users(id) on delete cascade,
+  project_id       uuid references public.creative_projects(id) on delete cascade,
+  -- 发起对话时的基底版本（generation_history.id，形如 `${pid}::vN`）；作品删除后置空，不清会话
+  base_version_id  text,
+  -- active=进行中 / applied=已落地新版本 / abandoned=用户放弃
+  status           text not null default 'active' check (status in ('active','applied','abandoned')),
+  -- 三阶段状态机：clarify=意图澄清 / propose=方案选择 / apply=局部修改 / done=完成
+  phase            text not null default 'clarify' check (phase in ('clarify','propose','apply','done')),
+  -- { chosenIntentId?, chosenPlanId?, turnCount?, lastError? } —— 阶段推进的轻量指针，不存正文
+  meta             jsonb,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+
+create index if not exists work_agent_sessions_user_idx
+  on public.work_agent_sessions (user_id, updated_at desc);
+
+create index if not exists work_agent_sessions_project_idx
+  on public.work_agent_sessions (project_id, created_at desc);
+
+alter table public.work_agent_sessions enable row level security;
+
+drop policy if exists work_agent_sessions_select_own on public.work_agent_sessions;
+create policy work_agent_sessions_select_own on public.work_agent_sessions
+  for select to authenticated using (auth.uid() = user_id);
+
+drop policy if exists work_agent_sessions_insert_own on public.work_agent_sessions;
+create policy work_agent_sessions_insert_own on public.work_agent_sessions
+  for insert to authenticated with check (auth.uid() = user_id);
+
+drop policy if exists work_agent_sessions_update_own on public.work_agent_sessions;
+create policy work_agent_sessions_update_own on public.work_agent_sessions
+  for update to authenticated
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+drop policy if exists work_agent_sessions_delete_own on public.work_agent_sessions;
+create policy work_agent_sessions_delete_own on public.work_agent_sessions
+  for delete to authenticated using (auth.uid() = user_id);
+
+grant select, insert, update, delete on public.work_agent_sessions to authenticated;
+grant select, insert, update, delete on public.work_agent_sessions to service_role;
+
+-- ─── 18.2 消息表（对话轨迹 = 数据飞轮原料）───
+-- 与 generation_feedback 的分工：
+--   generation_feedback = 一次「动作」（点了个赞、选了某方向）—— 粗粒度反馈账本
+--   work_agent_messages = 一次「决策过程」（AI 提了什么、用户选了什么、为什么放弃）—— 细粒度共创轨迹
+-- 注意别把它当成另一份 recommend feedback：selected_index 记录"用户在候选中挑了第几个"，
+-- 这是最有价值的偏好信号（比最终点赞更能反映真实取舍，区分「认可」与「妥协」）。
+create table if not exists public.work_agent_messages (
+  id            uuid primary key default gen_random_uuid(),
+  session_id    uuid not null references public.work_agent_sessions(id) on delete cascade,
+  user_id       uuid not null references auth.users(id) on delete cascade,
+  -- user=用户发言 / assistant=AI 回复
+  role          text not null check (role in ('user','assistant')),
+  -- intent_clarify=意图候选 / proposal=修改方案 / patch_preview=补丁预览
+  -- confirm=用户确认结果 / system_notice=降级或错误提示
+  kind          text not null default 'intent_clarify'
+                check (kind in ('intent_clarify','proposal','patch_preview','confirm','system_notice')),
+  content       text not null default '',   -- 面向用户展示的文案
+  -- 结构化载荷：intentOptions[] / plans[] / patches[] / analysis
+  payload       jsonb,
+  -- 用户在候选中选择的序号（null=未选择/自由输入）。数据飞轮核心字段。
+  selected_index integer,
+  created_at    timestamptz not null default now()
+);
+
+create index if not exists work_agent_messages_session_idx
+  on public.work_agent_messages (session_id, created_at);
+
+alter table public.work_agent_messages enable row level security;
+
+drop policy if exists work_agent_messages_select_own on public.work_agent_messages;
+create policy work_agent_messages_select_own on public.work_agent_messages
+  for select to authenticated using (auth.uid() = user_id);
+
+drop policy if exists work_agent_messages_insert_own on public.work_agent_messages;
+create policy work_agent_messages_insert_own on public.work_agent_messages
+  for insert to authenticated with check (auth.uid() = user_id);
+
+-- 消息一经写入即为历史事实，不提供 update/delete 给客户端（避免对话被篡改后误导 AI）
+grant select, insert on public.work_agent_messages to authenticated;
+grant select, insert, update, delete on public.work_agent_messages to service_role;
+
+-- ─── 18.3 generation_history 扩展：版本溯源到会话与方案 ───
+-- 为什么这两列必须落到版本行：
+--   版本的真相是「为什么变成了这样」。没有 session_id 就无法回放决策过程，
+--   没有 revision_plan 就只能看到结果（新正文），看不到用户当初选的是哪个方案。
+alter table public.generation_history add column if not exists session_id uuid;
+alter table public.generation_history add column if not exists revision_plan jsonb;
+
+comment on column public.generation_history.session_id is
+  '产出该版本的 Work Agent 会话 id（work_agent_sessions.id），用于回放共创决策过程';
+comment on column public.generation_history.revision_plan is
+  '用户确认的修改方案快照 RevisionPlan：{title,expectedImpact,modificationArea,risk,preserveItems,strategy}';
+
+create index if not exists generation_history_session_idx
+  on public.generation_history (session_id)
+  where session_id is not null;
+
+-- ─── 18.4 验证查询（执行后应全部成功）───
+--   select tablename from pg_tables
+--    where tablename in ('work_agent_sessions','work_agent_messages');
+--   select policyname, cmd from pg_policies where tablename like 'work_agent_%';
+--   select column_name, data_type from information_schema.columns
+--    where table_name='generation_history' and column_name in ('session_id','revision_plan');
+--   select column_name from information_schema.columns
+--    where table_name='work_agent_messages' and column_name='selected_index';
 
