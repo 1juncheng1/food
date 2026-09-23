@@ -39,6 +39,11 @@ yarn-error.log*
 # supabase local temp
 supabase/.temp/
 
+# IDE / agent local state
+/.codebuddy/
+/.trae/
+/.claude/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

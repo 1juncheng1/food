@@ -92,6 +92,10 @@ export async function generateImageDescription(
   imageBuffer: Buffer,
   mimeType: string
 ): Promise<string | null> {
+  // 超时保护：视觉模型挂起时 abort，避免 POST /api/posts 无限等待
+  // 15s 足够 VL 模型处理图片（用户触发动作，非首屏路径）
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 15_000)
   try {
     const base64 = imageBuffer.toString('base64')
     const dataUrl = `data:${mimeType};base64,${base64}`
@@ -118,6 +122,7 @@ export async function generateImageDescription(
         ],
         max_tokens: 200,
       }),
+      signal: controller.signal,
     })
 
     if (!res.ok) {
@@ -132,6 +137,8 @@ export async function generateImageDescription(
   } catch (e) {
     console.error('视觉模型调用异常:', e)
     return null
+  } finally {
+    clearTimeout(timeout)
   }
 }
 
@@ -139,6 +146,10 @@ export async function generateImageDescription(
  * 调用 SiliconFlow bge-m3 模型生成文本的嵌入向量（1024 维）。
  */
 export async function generateEmbedding(text: string): Promise<number[] | null> {
+  // 超时保护：embedding 调用挂起时 abort，避免发布作品/更新风格向量无限等待
+  // 10s 足够 bge-m3 向量化文本（用户触发动作，非首屏路径）
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10_000)
   try {
     const res = await fetch('https://api.siliconflow.cn/v1/embeddings', {
       method: 'POST',
@@ -150,6 +161,7 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
         model: 'BAAI/bge-m3',
         input: text.slice(0, 8000), // 截断防止超出嵌入模型上限
       }),
+      signal: controller.signal,
     })
     if (!res.ok) {
       console.error('嵌入向量生成失败:', await res.text())
@@ -161,6 +173,8 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
   } catch (e) {
     console.error('嵌入向量生成异常:', e)
     return null
+  } finally {
+    clearTimeout(timeout)
   }
 }
 
@@ -169,7 +183,9 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
  * 复用 supabaseServer 的模式，但返回 supabase client + userId。
  * 返回 null 表示未登录或 token 无效。
  */
-export async function authenticateWithToken(token: string): Promise<{ supabase: SupabaseClient; userId: string } | null> {
+export async function authenticateWithToken(
+  token: string
+): Promise<{ supabase: SupabaseClient; userId: string; email: string | null } | null> {
   if (!token) return null
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
@@ -188,7 +204,8 @@ export async function authenticateWithToken(token: string): Promise<{ supabase: 
   const { data: { user }, error } = await supabase.auth.getUser(token)
   if (error || !user) return null
 
-  return { supabase, userId: user.id }
+  // 一并返回 email：注销等破坏性操作需要用它做密码二次确认
+  return { supabase, userId: user.id, email: user.email ?? null }
 }
 
 /** 从 Request 的 Authorization 头提取 Bearer token */

@@ -12,6 +12,7 @@
 // ============================================================
 
 import { NextResponse } from 'next/server'
+import { authFailureResponse } from '@/lib/apiAuth'
 import { createServerClient } from '@/lib/supabaseServer'
 import { trackEvent } from '@/lib/creative/interest/eventTracker'
 import { runBuild } from '@/lib/creative/interest/builder'
@@ -42,7 +43,7 @@ export async function DELETE(
       error: authErr,
     } = await supabase.auth.getUser(token)
     if (authErr || !user) {
-      return NextResponse.json({ error: '登录已过期' }, { status: 401 })
+      return authFailureResponse(authErr)
     }
     const userId = user.id
 

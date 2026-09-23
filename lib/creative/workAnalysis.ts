@@ -24,6 +24,7 @@ import {
   type AudienceTag,
   KNOWLEDGE_DIMENSIONS,
 } from './knowledgeItem'
+import { llmTimeoutSignal } from '@/lib/llm'
 
 /** 作品标签分析结果（7 自由文本 + 6 枚举维度 = 13 字段） */
 export interface WorkTags {
@@ -221,6 +222,7 @@ export async function analyzeWorkTags(
           Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
           'Content-Type': 'application/json',
         },
+        signal: llmTimeoutSignal(1000),
         body: JSON.stringify({
           model: 'deepseek-chat',
           messages: [

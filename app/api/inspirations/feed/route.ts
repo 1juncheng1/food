@@ -11,14 +11,21 @@
 
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabaseServer'
-import { getProfile } from '@/lib/creative/interest/interestRepo'
-import { findRunningBuild } from '@/lib/creative/interest/interestRepo'
-import { runBuild } from '@/lib/creative/interest/builder'
+import { authFailureResponse } from '@/lib/apiAuth'
+import { getProfile, findRunningBuild, fetchActiveClusters } from '@/lib/creative/interest/interestRepo'
 import { buildReasonText } from '@/lib/creative/interest/reasonAi'
-import { getGlobalTrending } from '@/lib/ci/globalTrending'
+import {
+  getGlobalTrending,
+  ingestGlobalTrending,
+  getPersonalizedTrending,
+  type GlobalTrendingCard,
+} from '@/lib/ci/globalTrending'
+import { topUpQueue } from '@/lib/creative/interest/refill'
+import { FEED_TRENDING_INJECT_MAX } from '@/lib/creative/interest/config'
 import {
   getFeedPage,
   getDailySuggestionCount,
+  getDailyServedCount,
   FEED_DAILY_CAP,
   FEED_TOPUP_THRESHOLD,
 } from '@/lib/creative/interest/feedRepo'
@@ -81,6 +88,31 @@ function mapSuggestionToCard(r: SuggestionRow): FeedCard {
   }
 }
 
+/**
+ * 取用户核心兴趣向量：core 簇中权重最高者的质心，退化到任一有质心的簇。
+ *
+ * 只在热点补位时调用（缺卡才发生，低频路径），且全程吞错——拿不到向量
+ * 只让补位退回"全网热点"，不影响 Feed 主流程。
+ */
+async function loadCoreInterestVector(
+  supabase: Parameters<typeof fetchActiveClusters>[0],
+  userId: string
+): Promise<number[] | null> {
+  try {
+    const rows = await fetchActiveClusters(supabase, userId)
+    const withCentroid = rows.filter(
+      (r) => Array.isArray(r.centroid) && (r.centroid as unknown[]).length === 1024
+    )
+    if (!withCentroid.length) return null
+    // fetchActiveClusters 已按 weight DESC 排序，core 取首条即可
+    const core = withCentroid.find((r) => r.layer === 'core')
+    return (core ?? withCentroid[0]).centroid as number[]
+  } catch (e) {
+    console.warn('[feed] 核心兴趣向量读取失败:', e instanceof Error ? e.message : String(e))
+    return null
+  }
+}
+
 export async function GET(req: Request) {
   try {
     // ── 鉴权：Feed 为登录态功能 ──
@@ -92,7 +124,8 @@ export async function GET(req: Request) {
     const supabase = createServerClient(token)
     const { data: userData, error: authErr } = await supabase.auth.getUser()
     if (authErr || !userData.user) {
-      return NextResponse.json({ error: '登录状态失效' }, { status: 401 })
+      // 网络抖动时返回 503 而非 401：前端据此不得把用户踢到登录页
+      return authFailureResponse(authErr)
     }
     const userId = userData.user.id
 
@@ -102,20 +135,32 @@ export async function GET(req: Request) {
     const limitParam = url.searchParams.get('limit')
     const limit = limitParam ? Math.min(Math.max(parseInt(limitParam, 10) || 10, 1), 50) : 10
 
+    // ── 并行启动：日出卡计数 + 生成量观测 + 画像读取 ──
+    // 三个查询无依赖关系，串行实现浪费 ~150-300ms
+    const [servedCount, generatedToday, profileRes] = await Promise.all([
+      getDailyServedCount(supabase, userId),
+      getDailySuggestionCount(supabase, userId),
+      getProfile(supabase, userId),
+    ])
+    const dailyCount = servedCount
+
     // ── 日出卡上限检查（AC-6）──
-    const dailyCount = await getDailySuggestionCount(supabase, userId)
+    // 口径 = 用户当日实际看到的卡数（impression 去重），而非系统生成量：
+    // 用生成量会在补货频繁时让用户没翻几页就撞上 100 上限 → no_more，
+    // 反而制造"刷到哪就没了"。
     if (dailyCount >= FEED_DAILY_CAP) {
       return NextResponse.json({
         cards: [],
         next_cursor: null,
         no_more: true,
         daily_count: dailyCount,
+        generated_today: generatedToday,
         fallback_source: null,
       })
     }
 
     // ── 读画像（判断是否冷启动） ──
-    const { profile } = await getProfile(supabase, userId)
+    const { profile } = profileRes
     const hasProfile = profile && Object.keys(profile).length > 0 && (profile as Record<string, unknown>).build_id
 
     // ── 冷启动（无画像）→ 全局热点流 ──
@@ -141,6 +186,7 @@ export async function GET(req: Request) {
         next_cursor: null, // 热点流不分页
         no_more: true,
         daily_count: dailyCount,
+        generated_today: generatedToday,
         fallback_source: 'trending' as const,
       })
     }
@@ -169,29 +215,85 @@ export async function GET(req: Request) {
       return NextResponse.json({
         cards,
         next_cursor: null,
-        no_more: false, // 画像在，build 完成后会有新卡
+        no_more: false, // 画像在，补货完成后会有新卡
         daily_count: dailyCount,
+        generated_today: generatedToday,
         fallback_source: 'trending' as const,
       })
     }
 
-    // ── 补卡触发：库存 ≤8 且日未达上限且无在途 build → fire-and-forget ──
-    if (
-      page.remaining <= FEED_TOPUP_THRESHOLD &&
-      dailyCount + limit < FEED_DAILY_CAP
-    ) {
+    // ── 补卡触发：库存 ≤ 阈值 且日未达上限且无在途 build → fire-and-forget ──
+    if (page.remaining <= FEED_TOPUP_THRESHOLD && dailyCount + limit < FEED_DAILY_CAP) {
       const building = !!(await findRunningBuild(supabase, userId))
       if (!building) {
-        void runBuild(supabase, userId, 'incremental').catch(() => {})
+        // 轻量 refill 优先：复用上次簇只造卡，不清空队列、秒级完成，用户翻页不中断。
+        // 旧实现直接 runBuild，而 runBuild 第一步就 supersede 清空队列 —— 用户正在
+        // 翻的游标当场失效，重建的 20-150s 里翻页只能撞到降级热点（"刷到哪就没了"根因）。
+        // topUpQueue 内部在 refill 不可行时才回退 runBuild。
+        void topUpQueue(supabase, userId).catch(() => {})
+      }
+    }
+
+    // ── 热点补位：个性化卡不足一页时，用当日全网热点补齐短板 ──
+    // 只在缺额处补，绝不挤占个性化卡；热点卡 reason 明确写"当下全网热门"，
+    // 不套用"因为你喜欢 X"的个性化文案（WF10 诚实口径延续）。
+    const cards = page.cards.map(mapSuggestionToCard)
+    if (cards.length < limit) {
+      const need = Math.min(limit - cards.length, FEED_TRENDING_INJECT_MAX)
+      // 「兴趣 × 热点」交叉：先用 core 兴趣向量在当日热点池里召回最相关的方向；
+      // 召回为空（无向量 / 当日未摄取 / 全池低于相似度阈值）才回退"全网热点按时间倒序"。
+      const interestVector = await loadCoreInterestVector(supabase, userId)
+      let trending: GlobalTrendingCard[] = []
+      if (interestVector) {
+        trending = await getPersonalizedTrending(interestVector, need + 2)
+      }
+      // 多取几张：按标题去重后仍要凑够 need
+      if (!trending.length) {
+        trending = await getGlobalTrending(need + 2)
+      }
+      // 当日尚无热点数据 → 懒触发一次摄取（fire-and-forget）。
+      // 缺口说明：旧设计只让 /api/inspirations 的冷启动分支触发 ingestGlobalTrending，
+      // 而有画像的活跃用户永远不会走那个分支，导致当日热点可能从未摄取、
+      // Feed 补位永远为空。沿用同一套成本闸门（日 hash 幂等 + 进程内在途锁 +
+      // GLOBAL_TRENDING_FRESH_MIN 计数闸门），且只在"确实缺卡"时才触发，
+      // 频率远低于冷启动路径。
+      if (!trending.length) {
+        void ingestGlobalTrending().catch(() => {})
+      }
+      const used = new Set(cards.map((c) => c.title))
+      let injected = 0
+      for (const t of trending) {
+        if (injected >= need) break
+        if (used.has(t.title)) continue
+        cards.push({
+          rec_id: `trending-${t.title}`,
+          title: t.title,
+          description: t.description,
+          // 诚实口径：交叉召回的卡说"与你关注方向相近"，兜底卡说"当下全网热门"，
+          // 两者都不伪装成"因为你喜欢 X"（WF10 诚实文案红线延续）
+          reason: 'similarity' in t ? '与你关注方向相近的当下热点' : '当下全网热门创作方向',
+          topic: t.title,
+          params: { category: t.category, topic: t.title, rec_id: `trending-${t.title}` },
+          slot: 'exploration',
+          cluster_code: 'global_trending',
+          score: 0,
+          score_breakdown: {},
+          evidence: { source: 'global_trending' },
+          reason_source: 'template',
+          cross_exploration: false,
+        })
+        used.add(t.title)
+        injected++
       }
     }
 
     // ── 正常返回 ──
     return NextResponse.json({
-      cards: page.cards.map(mapSuggestionToCard),
+      cards,
       next_cursor: page.next_cursor,
       no_more: page.next_cursor === null && page.remaining <= FEED_TOPUP_THRESHOLD,
       daily_count: dailyCount,
+      generated_today: generatedToday,
       fallback_source: null,
     })
   } catch (error) {

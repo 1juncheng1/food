@@ -6,6 +6,7 @@
 
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabaseServer'
+import { authFailureResponse } from '@/lib/apiAuth'
 import { runBuild } from '@/lib/creative/interest/builder'
 import { rateLimit } from '@/lib/rateLimit'
 
@@ -23,14 +24,17 @@ export async function POST(req: Request) {
   const supabase = createServerClient(token)
   const { data: userData, error: authErr } = await supabase.auth.getUser()
   if (authErr || !userData.user) {
-    return NextResponse.json({ error: '未登录' }, { status: 401 })
+    return authFailureResponse(authErr)
   }
   const userId = userData.user.id
 
-  // ── 限流 ──
-  const rl = rateLimit(`interest-build:${userId}`, 3, 600)
+  // ── 限流：3 次/10 分钟（full build 串行多次 LLM，窗口必须是 600_000ms 而非 600ms）──
+  const rl = rateLimit(`interest-build:${userId}`, 3, 10 * 60_000)
   if (!rl.ok) {
-    return NextResponse.json({ error: '操作过于频繁，请稍后再试' }, { status: 429 })
+    return NextResponse.json(
+      { error: `操作过于频繁，请 ${rl.retryAfterSec} 秒后再试` },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec) } }
+    )
   }
 
   // ── 参数 ──

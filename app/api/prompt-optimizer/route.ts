@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { IDENTITY_TEMPLATES } from '@/lib/identityTemplates'
 import { createServerClient } from '@/lib/supabaseServer'
+import { callDeepSeekChat, type ChatMessage } from '@/lib/llm'
+import { resolveTargetLanguage } from '@/lib/languageConsistency'
 import {
   normalizeBlueprint,
   formatBlueprintForPrompt,
@@ -53,6 +55,25 @@ import type { UsageTag } from '@/lib/creative/knowledgeItem'
 import { normalizeInspirationAnalysis } from '@/lib/creative/inspirationAnalyzer'
 import { trackEvent } from '@/lib/creative/interest/eventTracker'
 import { runBuild } from '@/lib/creative/interest/builder'
+import { buildInterestBlock } from '@/lib/creative/interest/promptBlock'
+import { retrieveMaterials, MAX_INJECT_TOTAL } from '@/lib/material/retrieval'
+import {
+  buildKnowledgeInjection,
+  summarizeInjectedUnits,
+} from '@/lib/creative/knowledgeInject'
+import type { CreatorKnowledgeUnit } from '@/lib/creative/knowledgeUnit'
+import type { InjectedUnitSummary } from '@/lib/creative/knowledgeInject'
+import {
+  sanitizeMaterialAnnotations,
+  type MaterialAnnotation,
+  type MaterialRetrievalResult,
+} from '@/lib/creative/material'
+import { inferUsageFilter } from '@/lib/material/usageFilter'
+import {
+  markSelectedByUser,
+  markActuallyUsed,
+} from '@/lib/material/usageWriter'
+import { rateLimit } from '@/lib/rateLimit'
 
 export const maxDuration = 60
 
@@ -84,6 +105,15 @@ interface RequestBody {
    * 不传时为 null（老链路不受影响）。
    */
   inspirationContext?: unknown
+  // Material Library 2.0 Phase 3：用户在素材选择步骤主动指定的素材 id（可选预留）。
+  // 旧客户端不传 = 纯自动召回，行为保持；Phase 4 前端才会传值。
+  selectedMaterialIds?: unknown
+  /**
+   * 素材创作注解（根基 role=foundation + 临时标签/备注，仅本次生成生效，不落库）。
+   * 服务端经 sanitizeMaterialAnnotations 白名单清洗；存在时其 materialId
+   * 覆盖 selectedMaterialIds。
+   */
+  materialAnnotations?: unknown
 }
 
 const VALID_DIRECTIONS: readonly NextActionKey[] = [
@@ -119,19 +149,6 @@ function parseVector(v: unknown): number[] | null {
     }
   }
   return null
-}
-
-/**
- * 混合两个向量：result[i] = weightA * a[i] + weightB * b[i]
- * 口径：0.7 * 主题输入向量 + 0.3 * 用户风格向量，兼顾内容相关性与个人风格
- */
-function mixVectors(a: number[], b: number[], weightA: number, weightB: number): number[] {
-  const dim = Math.max(a.length, b.length)
-  const result = new Array(dim).fill(0)
-  for (let i = 0; i < dim; i++) {
-    result[i] = (a[i] ?? 0) * weightA + (b[i] ?? 0) * weightB
-  }
-  return result
 }
 
 /**
@@ -205,38 +222,25 @@ export async function POST(req: Request) {
       )
     }
 
-    // ── 阶段 3：usage_filter 推断 ──
-    // 优先级：improve 模式 prevUsageTags > blueprint.usage_tag > blueprint.content_type 映射 > null
-    // usage_tag 是 AI 方案直接推断的，比 content_type → usage 映射更准确
-    const CATEGORY_TO_USAGE: Record<string, UsageTag> = {
-      电影解说: '剧情素材',
-      短剧解说: '剧情素材',
-      纪录片解说: '案例素材',
-      动漫解说: '剧情素材',
-      故事文案: '剧情素材',
-      读书解读: '观点素材',
-      科普解说: '案例素材',
-      剧本打磨: '结构参考',
-      商业分析: '观点素材',
-      商业计划书: '结构参考',
-      产品评测: '案例素材',
+    // ── 限流：5 次/60s/用户（Prompt-optimizer 是重成本 LLM 路由）──
+    const rl = rateLimit(
+      `prompt-optimizer:${auth.userId}`,
+      5,
+      60_000
+    )
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: '生成过于频繁，请稍后再试' },
+        {
+          status: 429,
+          headers: { 'Retry-After': String(rl.retryAfterSec) },
+        }
+      )
     }
-    function inferUsageFilter(
-      content_type: string,
-      usage_tag: string | undefined,
-      prevWorkTags: WorkTags | null
-    ): UsageTag | null {
-      // 1. improve 模式优先：上一版 work_tags 的 usage_tags 是 AI 分析过的可靠信号
-      if (prevWorkTags?.usage_tags?.length) {
-        return prevWorkTags.usage_tags[0]
-      }
-      // 2. 方案路径：AI 直接输出的 usage_tag（最准确）
-      if (usage_tag) {
-        return usage_tag as UsageTag
-      }
-      // 3. fallback：从 content_type 映射
-      return CATEGORY_TO_USAGE[content_type] ?? null
-    }
+
+    // usage_filter 推断（inferUsageFilter）已在 Phase 3 搬迁至
+    // @/lib/material/usageFilter，在下方素材召回段使用。
+    // 推断优先级：improve prevUsageTags > blueprint.usage_tag > content_type 映射 > null。
 
     // ── 阶段 5：定向迭代上下文（仅登录；从被迭代版本继承全部创作参数）──
     // 解析失败时 improveCtx=null，请求按普通生成处理（后续 topic 校验会拦住缺参情况）
@@ -353,16 +357,45 @@ ${prevText.slice(0, 6000)}
     // ── 预解析 topic：向量嵌入需要用到主题文本（improve 模式从上一版继承）──
     const topic = improveCtx?.topic ?? (typeof body.topic === 'string' ? body.topic.trim() : '')
 
+    // 输出语言跟随用户主题：这是生成链路唯一的"用户亲笔输入"，
+    // 用户用英文写主题就该得到英文正文，而不是被系统硬编码成中文
+    const outputLanguage = resolveTargetLanguage([
+      { text: topic, weight: 100, label: 'topic' },
+      {
+        text: typeof body.improve === 'object' && body.improve !== null
+          ? String((body.improve as Record<string, unknown>).instruction ?? '')
+          : '',
+        weight: 60,
+        label: 'improve.instruction',
+      },
+      { text: typeof body.customCategory === 'string' ? body.customCategory : '', weight: 20, label: 'customCategory' },
+    ]).language
+
     // ── 登录用户：查询风格卡 + 创作者人格 + 向量检索参考内容 ──
     // 嵌入/检索失败不阻断生成主流程，仅降级为无参考内容
     let styleText = '' // 拼入 prompt 的风格描述文本
     let referenceContent = '' // 检索到的历史参考素材
+    let foundationContent = '' // 用户指定的创作根基（权威事实来源，独立区块）
     let historyWorksText = '' // Creator Mode：该用户同主题历史作品真实摘录
     let historyWorkCount = 0 // 实际引用的历史作品数（身份声明中使用真实数字）
     let creatorText = '' // Creator Model 人格块（开关关闭时为空）
     let creatorAvoid: string[] = [] // 排斥元素硬禁忌（写进生成硬规则）
+    // Material Library 2.0 Phase 3：素材召回结果（creatorEnabled 时才赋值，灵感模式下 materials 为空）
+    let retrieved: { materials: MaterialRetrievalResult[] } = { materials: [] }
+    // Material Library 2.0 Phase 3：前端传入的 selectedMaterialIds（非法形态已在内部清洗）
+    let selectedMaterialIds: string[] = []
+    // 素材创作注解（根基/标签/备注）：白名单清洗后用于分区注入 prompt
+    let materialAnnotations: MaterialAnnotation[] = []
     let styleVec: number[] | null = null // 用户风格向量（第七阶段：本篇一致度计算用）
     let declarationTraits: DeclarationTrait[] = [] // 阶段 5：本次生效的声明维度（回传前端展示）
+    // Creator Knowledge System Phase 3：本次实际注入的知识单元
+    // 灵感模式/游客恒为空数组，游客分支不会读到个人知识
+    let knowledgeBlock = ''
+    let knowledgeUnits: CreatorKnowledgeUnit[] = []
+    // Creator Knowledge System Phase 3：注入结果摘要。落库（versionRow.used_knowledge）
+    // 与响应（usedKnowledgeUnits）共用这一份，两处各算一遍迟早会漂移。
+    // 声明在最外层是因为最终响应在 auth 块之外：未登录/灵感模式下保持空数组。
+    let usedKnowledge: InjectedUnitSummary[] = []
 
     // Creator Mode 裁决（improve 迭代时由前端沿用上一版模式）；旧 useCreatorModel 自动兼容
     const mode: CreationMode = resolveMode(body.mode, !!auth, body.useCreatorModel)
@@ -401,6 +434,7 @@ ${prevText.slice(0, 6000)}
             ai_creator_summary?: unknown
             creator_report?: unknown
             creator_declaration?: unknown
+            interest_profile?: unknown
           })
         | null
 
@@ -458,6 +492,31 @@ ${prevText.slice(0, 6000)}
             }
           }
         }
+
+        // Creator Understanding Engine：长期关注领域注入。
+        // 修复背景：interest_profile 由 builder 持续计算，但生成链路此前从未 select 该列，
+        // 导致「AI 不知道用户关注什么」。此处只拼入 creatorText 作软参考，
+        // 不进入 creatorAvoid —— 行为推断出的负向倾向不构成硬约束。
+        const interestBlock = buildInterestBlock(styleProfile.interest_profile)
+        if (interestBlock.text) {
+          creatorText = (creatorText ? creatorText + '\n' : '') + interestBlock.text
+          evidence.layers.push('长期关注领域')
+        }
+      }
+
+      // 1.5) Creator Knowledge System Phase 3：知识单元注入
+      // 只读「已确认 + 置信度达标」的单元 —— AI 侧写的候选到不了这里，
+      // 候选→确认必须由用户在 /knowledge 手动完成，这是整条授权链的落点。
+      // 灵感模式/游客不进本分支，因此天然读不到任何知识单元（与个人化数据同口径）。
+      const knowledge = await buildKnowledgeInjection(
+        auth.supabase,
+        auth.userId,
+        topic
+      )
+      knowledgeBlock = knowledge.block
+      knowledgeUnits = knowledge.units
+      if (knowledge.units.length > 0) {
+        evidence.layers.push('创作者知识单元')
       }
 
       // 2) 生成主题文本的嵌入向量（用于向量检索）
@@ -467,14 +526,10 @@ ${prevText.slice(0, 6000)}
       if (topicEmbedding) {
         styleVec = parseVector(styleProfile?.style_vector)
 
-        // 素材库（match_scripts）使用混合向量：素材库本来就是用户主动存的通用素材，
-        // 兼顾主题相关性(0.7)与个人风格偏好(0.3)，污染风险低
-        const materialQueryVec = styleVec
-          ? mixVectors(topicEmbedding, styleVec, 0.7, 0.3)
-          : topicEmbedding
-
-        // ── 阶段 3：usage_filter 智能检索（两阶段：先按 usage 过滤召回；不足则回退纯向量）──
-        // 优先级：improve 模式 prevUsageTags > blueprint.usage_tag > blueprint.content_type 映射
+        // ── 素材库召回（Material Library 2.0 Phase 3 检索服务）──
+        // 纯主题向量（绝不混 styleVec，修复风格偶合关键词污染）+ 0.55 硬阈值 +
+        // ±0.02 相似度带内标签软排序；usage/material_type 不再是硬过滤参数。
+        // 复用上方已生成的 topicEmbedding（零新增 embedding）；理由固定模板（0 LLM）。
         const bpEarly = improveCtx
           ? improveCtx.blueprint
           : normalizeBlueprint(body.blueprint)
@@ -495,48 +550,79 @@ ${prevText.slice(0, 6000)}
           : null
         const usageFilter = inferUsageFilter(currentContentType, currentUsageTag, prevWorkTagsForInfer)
 
-        const RPC_PARAMS_BASE = {
-          query_embedding: materialQueryVec,
-          match_count: 5,
-          p_user_id: auth.userId,
-        }
+        // 素材创作注解（根基/标签/备注）：白名单清洗；存在注解时以注解 id 作为选中集，
+        // 否则回落到旧 selectedMaterialIds 字符串数组（旧客户端零感知）。
+        // improve 链路前端当前不传两者，保留自动召回。
+        materialAnnotations = sanitizeMaterialAnnotations(body.materialAnnotations)
+        selectedMaterialIds =
+          materialAnnotations.length > 0
+            ? materialAnnotations.map((a) => a.materialId)
+            : Array.isArray(body.selectedMaterialIds)
+              ? (body.selectedMaterialIds.filter((x) => typeof x === 'string') as string[]).slice(0, 10)
+              : []
 
-        // 第一阶段：有 usage_filter 时带 filter 检索（过滤掉 usage 不匹配的素材）
-        let matches: { content?: string; similarity?: number }[] | null = null
-        let matchErr: unknown = null
-        if (usageFilter) {
-          const r = await auth.supabase.rpc('match_scripts', {
-            ...RPC_PARAMS_BASE,
-            p_usage_filter: usageFilter,
-          })
-          matchErr = r.error
-          matches = r.data as { content?: string; similarity?: number }[] | null
-        }
+        retrieved = await retrieveMaterials(
+          auth.supabase,
+          {
+            userId: auth.userId,
+            currentTopic: topic,
+            currentIntent: usageFilter ?? currentContentType,
+            selectedMaterialIds,
+          },
+          { topicEmbedding, reasonMode: 'template' }
+        )
 
-        // 第二阶段兜底：无 filter / 召回不足 3 条 → 纯向量检索（避免素材库无 knowledge 时召回过少）
-        const MIN_FILTERED_COUNT = 3
-        if (
-          (!usageFilter || !matches || matches.length < MIN_FILTERED_COUNT) &&
-          !matchErr
-        ) {
-          const r = await auth.supabase.rpc('match_scripts', RPC_PARAMS_BASE)
-          if (!r.error && Array.isArray(r.data)) {
-            // 第二阶段结果优先（覆盖）：纯向量召回保底不空
-            matches = r.data as { content?: string; similarity?: number }[]
+        if (retrieved.materials.length > 0) {
+          evidence.materialCount = retrieved.materials.length
+          const selectedIdSet = new Set(selectedMaterialIds)
+          const annotationMap = new Map(materialAnnotations.map((a) => [a.materialId, a]))
+
+          // 拼装单条注解的"使用要求"行（预设标签 + 用户备注；都为空则返回空串）
+          const formatUsage = (a: MaterialAnnotation | undefined): string => {
+            if (!a || (a.tags.length === 0 && !a.note)) return ''
+            const parts: string[] = []
+            if (a.tags.length > 0) parts.push(`标签：${a.tags.join('、')}`)
+            if (a.note) parts.push(`备注：${a.note}`)
+            return `｜使用要求：${parts.join('；')}`
           }
-        }
 
-        if (matchErr) {
-          console.error('向量检索失败（不影响生成）:', matchErr)
-        } else if (matches && Array.isArray(matches) && matches.length > 0) {
-          evidence.materialCount = matches.length
-          evidence.layers.push('素材库相关参考')
-          referenceContent = matches
-            .map(
-              (m: { content?: string; similarity?: number }) =>
-                `（相似度 ${((m.similarity ?? 0) * 100).toFixed(0)}%）${(m.content ?? '').slice(0, 500)}`
-            )
-            .join('\n---\n')
+          // ── 创作根基：role=foundation 的用户指定素材，独立权威区块 ──
+          // 放宽截断到 1000 字（根基常含产品完整定位）；被 RLS 静默丢弃时
+          // （annotationMap 有 id 但 retrieved 无此条）自然不会出现，零副作用。
+          const FOUNDATION_SLICE = 1000
+          const foundationItem = retrieved.materials.find(
+            (m) => annotationMap.get(m.materialId)?.role === 'foundation'
+          )
+          if (foundationItem && foundationItem.content.trim().length > 0) {
+            evidence.layers.push('素材创作根基')
+            foundationContent =
+              `\n\n【创作根基 · 本篇最高优先级的事实来源】\n` +
+              `以下素材是用户明确指定的本篇创作根基。其中的名称、定位与事实必须严格遵循，` +
+              `严禁虚构与其冲突的信息；它决定本篇"表达什么"，优先级高于其他参考素材与通用创作经验：\n` +
+              `1. 素材原文：${foundationItem.content.slice(0, FOUNDATION_SLICE)}` +
+              `${formatUsage(annotationMap.get(foundationItem.materialId))}`
+          }
+
+          // ── 辅助参考素材：根基之外的素材沿用原区块（selected 置顶/相似度理由）──
+          // 注入总条数 ≤ MAX_INJECT_TOTAL（selected 已在结果中置顶、优先占额）；
+          // 空 content（图片素材）跳过不注入；每条 content 仍截前 500 字。
+          const referenceItems = retrieved.materials
+            .filter((m) => m.materialId !== foundationItem?.materialId)
+            .filter((m) => m.content.trim().length > 0)
+            .slice(0, MAX_INJECT_TOTAL)
+          if (referenceItems.length > 0) {
+            evidence.layers.push('素材库相关参考')
+            referenceContent = referenceItems
+              .map((m) => {
+                const head = selectedIdSet.has(m.materialId)
+                  ? '（用户指定）'
+                  : `（相似度 ${Math.round(m.relevanceScore * 100)}%）`
+                return `${head}${m.content.slice(0, 500)}｜理由：${m.relevanceReason}${formatUsage(
+                  annotationMap.get(m.materialId)
+                )}`
+              })
+              .join('\n---\n')
+          }
         }
 
         // 4) Creator Mode 历史作品检索：只用纯主题向量，不再混入 styleVec。
@@ -722,49 +808,40 @@ ${taskMode === 'new' ? '本次任务模式：新独立创作（New Creative Task
 文风风格：${writingStyle || '由身份自然决定'}
 ${categoryLine}
 目标字数：${wordCount} 字
-${memBlockFirst ? `\n${memBlockFirst}` : ''}${styleText}${effectiveCreatorText}${characterBlock.text}${referenceContent ? `\n\n【用户素材库中与主题相关的参考内容】\n${referenceContent}` : ''}${historyWorksBlock}${priorityBlock}
+${memBlockFirst ? `\n${memBlockFirst}` : ''}${styleText}${effectiveCreatorText}${characterBlock.text}${foundationContent}${referenceContent ? `\n\n【用户素材库中与主题相关的参考内容】\n${referenceContent}` : ''}${historyWorksBlock}${priorityBlock}
 
 要求：
 1. 严格按 5 个板块结构输出
-2. 【任务要求】需贴合上述"内容品类"的典型结构、节奏与受众预期；如历史记忆与本次表单冲突，以本次表单为准${bp ? '\n3. 【创作要素优先级】（冲突时高优先级覆盖低优先级，不可颠倒）：\n   ① 用户已确认的创作方案（内容类型/方向/视角/叙事结构/字数）——最高；\n   ② 该创作者的人格与历史风格——只决定"怎么表达"，不得改变第①条的方向；\n   ③ 素材库相关参考——只供事实与细节；\n   ④ 平台通用创作经验——兜底。\n   角色定位中的"身份"必须是"创作视角"（如何切入），不得写成"XX人/XX博主"等身份标签。' : ''}
+2. 【任务要求】需贴合上述"内容品类"的典型结构、节奏与受众预期；如历史记忆与本次表单冲突，以本次表单为准${bp ? '\n3. 【创作要素优先级】（冲突时高优先级覆盖低优先级，不可颠倒）：\n   ① 用户已确认的创作方案（内容类型/方向/视角/叙事结构/字数）——最高；\n   ② 该创作者的人格与历史风格——只决定"怎么表达"，不得改变第①条的方向；\n   ③ ' + (foundationContent ? '创作根基（用户指定的权威事实来源，名称/定位/事实必须严格遵循，严禁虚构冲突信息）优先级高于其余一切素材；' : '') + '素材库相关参考——只供事实与细节；\n   ④ 平台通用创作经验——兜底。\n   角色定位中的"身份"必须是"创作视角"（如何切入），不得写成"XX人/XX博主"等身份标签。' : ''}
 ${bp ? '4' : '3'}. 【字数硬性限制】板块必须明确写出"总字数严格控制在 ${wordCount} 字（±10%，即 ${Math.floor(wordCount * 0.9)}-${Math.ceil(wordCount * 1.1)} 字）"
 ${bp ? '5' : '4'}. 【禁止事项】板块至少列 3 条${creatorEnabled ? `\n${bp ? '6' : '5'}. 【禁止事项】必须包含任务隔离硬规则：${taskMode === 'new' ? '不得把历史作品中的具体角色名、剧情桥段、世界观设定带入本次创作；只允许借鉴抽象的语言节奏、叙事方式。' : '继续创作模式下，只允许继承本项目既有的角色/剧情/世界观，不得引入其他历史作品的具体内容。'}` : ''}
 ${bp ? '6' : '5'}. 语言精炼、指令清晰，可直接复制给大模型使用${bpPromptText}${improvePromptText ? `\n\n请为这次"${NEXT_ACTION_META.find((m) => m.key === improveCtx?.direction)?.label}"定向迭代重建系统提示词，在【任务要求】中体现该迭代方向与下方诊断结论。${improvePromptText}` : ''}`,
       },
     ]
 
-    const promptRes = await fetch(
-      'https://api.deepseek.com/v1/chat/completions',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: promptBuilderMessages,
-          temperature: 0.3,
-          max_tokens: 1500,
-        }),
-      }
-    )
+    const promptRes = await callDeepSeekChat({
+      messages: promptBuilderMessages as ChatMessage[],
+      temperature: 0.3,
+      max_tokens: 1500,
+      // 生成 1500 tokens 正常约 50s，默认 30s 会在高峰期把正常请求掐成超时，
+      // 用户侧表现为"系统提示词生成失败"。上限对齐 maxDuration=60（留 5s 响应余量）。
+      timeoutMs: 55_000,
+      language: outputLanguage,
+    })
 
     if (!promptRes.ok) {
-      console.error('系统提示词生成失败:', await promptRes.text())
+      console.error('系统提示词生成失败:', promptRes.error)
       return NextResponse.json(
-        { error: '系统提示词生成失败，请稍后重试' },
+        { error: '系统提示词生成失败，请稍后重试', detail: promptRes.error },
         { status: 500 }
       )
     }
 
-    const promptData = await promptRes.json()
-    const systemPrompt =
-      promptData?.choices?.[0]?.message?.content
+    const systemPrompt = promptRes.content
 
-    if (typeof systemPrompt !== 'string' || systemPrompt.trim().length === 0) {
+    if (systemPrompt.trim().length === 0) {
       return NextResponse.json(
-        { error: '系统提示词生成失败，请稍后重试' },
+        { error: '系统提示词生成失败，请稍后重试', detail: 'empty_content' },
         { status: 500 }
       )
     }
@@ -783,7 +860,7 @@ ${bp ? '6' : '5'}. 语言精炼、指令清晰，可直接复制给大模型使�
 文风要求：${writingStyle || '由身份自然决定'}
 ${categoryLine}
 目标字数：${wordCount} 字，允许误差±10%（即 ${Math.floor(wordCount * 0.9)}-${Math.ceil(wordCount * 1.1)} 字）
-${memBlockSecond ? `\n${memBlockSecond}` : ''}${effectiveCreatorText}${characterBlock.text}${historyWorksBlock}
+${memBlockSecond ? `\n${memBlockSecond}` : ''}${effectiveCreatorText}${characterBlock.text}${historyWorksBlock}${knowledgeBlock ? `\n\n${knowledgeBlock}` : ''}
 
 创作硬性规则：
 1、文案框架、叙事逻辑贴合当前内容品类；
@@ -810,34 +887,26 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
     }
 
     // max_tokens 给足余量：中文约 1 字 ≈ 1.5 token；improve 模式另留 ~300 token 给修改说明
-    const sampleRes = await fetch(
-      'https://api.deepseek.com/v1/chat/completions',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: sampleMessages,
-          temperature: 0.8,
-          max_tokens: Math.ceil(wordCount * 1.1 * 2) + (improveCtx ? 400 : 0),
-          ...(improveCtx ? { response_format: { type: 'json_object' as const } } : {}),
-        }),
-      }
-    )
+    const sampleRes = await callDeepSeekChat({
+      messages: sampleMessages as ChatMessage[],
+      temperature: 0.8,
+      max_tokens: Math.ceil(wordCount * 1.1 * 2) + (improveCtx ? 400 : 0),
+      jsonMode: !!improveCtx,
+      // 同上：大字数范文正常生成超过 30s，默认超时会把范文掐成"范文生成失败"
+      timeoutMs: 55_000,
+      // 正文是最重要的输出：语言必须跟随用户主题，网关层会做校验并在必要时自纠偏一次
+      language: outputLanguage,
+    })
 
     if (!sampleRes.ok) {
-      console.error('范文生成失败:', await sampleRes.text())
+      console.error('范文生成失败:', sampleRes.error)
       return NextResponse.json(
-        { error: '范文生成失败，请稍后重试' },
+        { error: '范文生成失败，请稍后重试', detail: sampleRes.error },
         { status: 500 }
       )
     }
 
-    const sampleData = await sampleRes.json()
-    const rawSample: string = sampleData?.choices?.[0]?.message?.content ?? ''
+    const rawSample: string = sampleRes.content
 
     // improve 模式：解析 {article, improveNote}；JSON 异常时降级把全文当正文，
     // 绝不让"修改说明"这个增强项拖垮整版生成。
@@ -903,6 +972,8 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
         layers: Array.from(new Set(evidence.layers)),
       }
 
+      usedKnowledge = summarizeInjectedUnits(knowledgeUnits)
+
       const versionRow = {
         user_id: auth.userId,
         topic: topic.slice(0, 500),
@@ -933,6 +1004,12 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
         // 一次 generation_id 串起 灵感→分析→plan→作品→反馈 全链路
         // 非灵感入口（直接 plan / improve）为 null，老链路不受影响
         inspiration_context: normalizeInspirationAnalysis(body.inspirationContext) ?? null,
+        // Creator Knowledge System Phase 3：本次真正依赖的知识单元快照。
+        // 与响应里的 usedKnowledgeUnits 取同一次 summarizeInjectedUnits 结果，
+        // 避免「页面当时说参考了 3 条、历史记录里只剩 2 条」的口径分裂。
+        // 空数组一律存 null：不用 [] 表达「没用到」，是为了把「确实没参考知识」
+        // 与「这条版本行早于本列上线、自然没有值」区分开。
+        used_knowledge: usedKnowledge.length ? usedKnowledge : null,
       }
 
       // improve 模式必然归属某项目（projectId 从版本行继承，不信任前端）；
@@ -1068,6 +1145,38 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
         // 让用户创作完回到 dashboard 后尽快拿到基于新作品的推荐；
         // fire-and-forget 失败不影响生成主流程（下次进推荐页仍有按需触发兜底）。
         void runBuild(auth.supabase, auth.userId, 'incremental').catch(() => {})
+
+        // ── Material Library 2.0 Phase 5：material_usages 反馈闭环 ──
+        // 两个写入都在 generation_history 成功落库（trackedEvent 非 null）后触发，
+        // 都用 void 前缀 fire-and-forget，不 await，失败静默降级。
+
+        // P5-a：用户主动选择的素材 → selected_by_user=true + work_id 回填
+        if (
+          selectedMaterialIds.length > 0 &&
+          creatorEnabled
+        ) {
+          void markSelectedByUser(
+            auth.userId,
+            trackedEvent.genId,
+            selectedMaterialIds
+          )
+        }
+
+        // P5-b：真正被注入 prompt 的素材 → actually_used=true + work_id 回填
+        // 注入素材 = retrieved.materials 里被注入的那些（content 非空 + 截断 ≤ MAX_INJECT_TOTAL）
+        if (creatorEnabled && retrieved.materials.length > 0) {
+          const injectedIds = retrieved.materials
+            .filter((m) => m.content.trim().length > 0)
+            .slice(0, MAX_INJECT_TOTAL)
+            .map((m) => m.materialId)
+          if (injectedIds.length > 0) {
+            void markActuallyUsed(
+              auth.userId,
+              trackedEvent.genId,
+              injectedIds
+            )
+          }
+        }
       }
     }
 
@@ -1092,6 +1201,9 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
       declarationTraits: declarationTraits.length > 0 ? declarationTraits : null,
       // 阶段四：本次登场角色快照（作品记录用，与角色库后续修改解耦）
       characters: characterBlock.used,
+      // Creator Knowledge System Phase 3：本次真正注入的知识单元摘要。
+      // 只记 layer 用户无从核对，回传原文才能验证「AI 到底有没有用上我的知识」。
+      usedKnowledgeUnits: usedKnowledge,
     })
   } catch (error) {
     console.error('prompt-optimizer API 错误:', error)

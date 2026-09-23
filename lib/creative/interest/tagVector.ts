@@ -8,6 +8,7 @@
 // ============================================================
 
 import type { TagDims } from './types'
+import { llmTimeoutSignal } from '@/lib/llm'
 
 export type { TagDims }
 
@@ -80,6 +81,7 @@ export async function batchExtractTagDims(
         Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
         'Content-Type': 'application/json',
       },
+      signal: llmTimeoutSignal(1200),
       body: JSON.stringify({
         model: 'deepseek-chat',
         messages: [

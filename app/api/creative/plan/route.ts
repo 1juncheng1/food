@@ -35,6 +35,11 @@ import { resolveMode, buildCreatorIdentity } from '@/lib/creative/personalizatio
 import { adoptRecommendation } from '@/lib/creative/interest/adopt'
 import { fetchCreatorStyleProfile } from '@/lib/creative/styleProfileRepo'
 import {
+  buildKnowledgeInjection,
+  summarizeInjectedUnits,
+} from '@/lib/creative/knowledgeInject'
+import type { CreatorKnowledgeUnit } from '@/lib/creative/knowledgeUnit'
+import {
   sanitizeCharacterInput,
   formatCharactersForPrompt,
 } from '@/lib/characters'
@@ -133,6 +138,15 @@ export async function POST(req: Request) {
       )
     }
 
+    // ── 限流：10 次/分钟/用户（三方向方案生成是重成本 LLM 路由）──
+    const rl = rateLimit(`creative-plan:${auth.userId}`, RATE_LIMIT, RATE_WINDOW_MS)
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: `操作太频繁，请 ${rl.retryAfterSec} 秒后再试` },
+        { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec) } }
+      )
+    }
+
     const body = (await req.json().catch(() => ({}))) as RequestBody
     const topic = str(body.topic, 500)
     if (!topic) {
@@ -184,6 +198,10 @@ export async function POST(req: Request) {
     let styleProfileText = ''
     let evidenceText = ''
     let recentWorksText = ''
+    // Creator Knowledge System Phase 3：本次实际注入方案的知识单元。
+    // 灵感模式/游客不会进入下方 creator 分支，因此恒为空 —— 与个人化数据同口径。
+    let knowledgeBlock = ''
+    let knowledgeUnits: CreatorKnowledgeUnit[] = []
 
     if (auth && mode === 'creator') {
       const { supabase, userId } = auth
@@ -236,6 +254,14 @@ export async function POST(req: Request) {
         : ''
 
       styleProfileText = buildStyleProfileText(profile)
+
+      // Creator Knowledge System Phase 3：方案阶段的知识注入。
+      // 只读「已确认 + 置信度达标」的单元 —— AI 侧写的候选到不了这里，
+      // 候选→确认必须由用户在 /knowledge 手动完成，这是整条授权链的落点。
+      // 读取失败一律降级为空：知识是增强项，不该成为方案生成的必经节点。
+      const knowledge = await buildKnowledgeInjection(supabase, userId, topic)
+      knowledgeBlock = knowledge.block
+      knowledgeUnits = knowledge.units
     }
 
     // ── AI 灵感分析：从 body 取出并转文本注入 plan（让 plan 延续灵感分析结论）──
@@ -259,6 +285,8 @@ export async function POST(req: Request) {
       clarifications: clarifications.length > 0 ? clarifications : undefined,
       // AI 灵感分析结论（已在 insight 态由用户确认）
       inspirationContextText,
+      // Creator Knowledge System Phase 3：创作者已确认的知识命题
+      knowledgeText: knowledgeBlock || undefined,
     }
 
     const plan = await generatePlan(planInput)
@@ -276,7 +304,12 @@ export async function POST(req: Request) {
       await adoptRecommendation(auth.supabase, auth.userId, body.rec_id.trim(), topic)
     }
 
-    return NextResponse.json({ plan })
+    return NextResponse.json({
+      plan,
+      // Creator Knowledge System Phase 3：本次方案真正参考了哪些知识。
+      // 回传原文而非仅条数 —— 用户才能在方案态核对「AI 有没有真的用上我的观点」。
+      usedKnowledgeUnits: summarizeInjectedUnits(knowledgeUnits),
+    })
   } catch (error) {
     console.error('creative plan API 错误:', error)
     return NextResponse.json({ error: '服务器内部错误' }, { status: 500 })

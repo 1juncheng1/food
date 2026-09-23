@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
@@ -95,31 +95,94 @@ export default function ExplorePage() {
   const [hasStyleVector, setHasStyleVector] = useState(false)
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  // ── 分页状态（P0-2：首批 ≤20 条，触底加载下一页）──
+  const PAGE_SIZE = 20
+  const [hasMore, setHasMore] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  // ref 镜像：供 IntersectionObserver 闭包读取最新值，避免 effect 频繁重建
+  const offsetRef = useRef(0)
+  const hasMoreRef = useRef(true)
+  const loadingMoreRef = useRef(false)
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
 
-  /** 加载帖子列表 */
-  const loadPosts = useCallback(async (token: string) => {
-    try {
-      const res = await fetch('/api/posts', {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => null)
-        setError(data?.error ?? `加载失败（${res.status}）`)
-        return
+  /**
+   * 加载帖子列表。
+   * - append=false（默认）：替换列表，重置 offset；用于首屏 / 刷新 / 删除失败回退
+   * - append=true：追加到列表末尾，推进 offset；用于触底加载下一页
+   *
+   * hasMore 判定：返回条数 < limit 即到末尾（与后端 RPC 行为一致）。
+   */
+  const loadPosts = useCallback(
+    async (token: string, opts: { append?: boolean } = {}) => {
+      const append = opts.append === true
+      // 并发保护：触底加载进行中或已无更多时跳过
+      if (append && (loadingMoreRef.current || !hasMoreRef.current)) return
+
+      const offset = append ? offsetRef.current : 0
+      if (append) {
+        setLoadingMore(true)
+        loadingMoreRef.current = true
       }
-      const data = await res.json()
-      setPosts(data.posts ?? [])
-      setHasStyleVector(!!data.hasStyleVector)
-      setError(null)
-    } catch {
-      setError('网络异常，请稍后重试')
+
+      // P2-1：路由切换时 abort 旧请求，避免旧响应覆盖新页面数据
+      const controller = new AbortController()
+      abortRef.current = controller
+      try {
+        const params = new URLSearchParams({
+          limit: String(PAGE_SIZE),
+          offset: String(offset),
+        })
+        const res = await fetch(`/api/posts?${params}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        })
+        if (!res.ok) {
+          const data = await res.json().catch(() => null)
+          setError(data?.error ?? `加载失败（${res.status}）`)
+          return
+        }
+        const data = await res.json()
+        const newPosts = (data.posts ?? []) as Post[]
+        setPosts((prev) => (append ? [...prev, ...newPosts] : newPosts))
+        setHasStyleVector(!!data.hasStyleVector)
+        setError(null)
+
+        // 推进 offset + 更新 hasMore（返回不足一页 = 已到末尾）
+        const nextOffset = offset + newPosts.length
+        offsetRef.current = nextOffset
+        const reachedEnd = newPosts.length < PAGE_SIZE
+        hasMoreRef.current = !reachedEnd
+        setHasMore(!reachedEnd)
+      } catch (e) {
+        // AbortError 静默：路由切换触发的取消是预期行为
+        if (e instanceof Error && e.name === 'AbortError') return
+        setError('网络异常，请稍后重试')
+      } finally {
+        if (append) {
+          setLoadingMore(false)
+          loadingMoreRef.current = false
+        }
+      }
+    },
+    []
+  )
+
+  // P2-1：组件卸载时 abort 进行中的请求
+  const abortRef = useRef<AbortController | null>(null)
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort()
     }
   }, [])
 
-  /** 下拉刷新：重新加载 */
+  /** 下拉刷新：重新加载（重置 offset 与 hasMore） */
   async function handleRefresh() {
     if (refreshing || !accessToken) return
     setRefreshing(true)
+    // 重置分页状态：刷新等同首次加载
+    offsetRef.current = 0
+    hasMoreRef.current = true
+    setHasMore(true)
     await loadPosts(accessToken)
     setRefreshing(false)
   }
@@ -281,17 +344,44 @@ export default function ExplorePage() {
         headers: { Authorization: `Bearer ${accessToken}` },
       })
       if (!res.ok) {
-        // 删除失败：重新加载列表恢复数据
+        // 删除失败：重新加载列表恢复数据（重置分页，从头拉）
         setError('删除失败，已恢复')
+        offsetRef.current = 0
+        hasMoreRef.current = true
+        setHasMore(true)
         await loadPosts(accessToken)
       }
     } catch {
       setError('网络异常，删除失败')
+      offsetRef.current = 0
+      hasMoreRef.current = true
+      setHasMore(true)
       await loadPosts(accessToken)
     } finally {
       setDeletingId(null)
     }
   }
+
+  // ── IntersectionObserver：触底加载下一页（P0-2）──
+  // 依赖 hasMore 而非 posts.length：只在 hasMore 翻转时重建 observer，避免每条新帖都重连
+  useEffect(() => {
+    if (!sentinelRef.current || !hasMore) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (
+          entries[0]?.isIntersecting &&
+          !loadingMoreRef.current &&
+          hasMoreRef.current &&
+          accessToken
+        ) {
+          void loadPosts(accessToken, { append: true })
+        }
+      },
+      { rootMargin: '200px' }
+    )
+    observer.observe(sentinelRef.current)
+    return () => observer.disconnect()
+  }, [hasMore, accessToken, loadPosts])
 
   useEffect(() => {
     async function init() {
@@ -636,6 +726,27 @@ export default function ExplorePage() {
                 </div>
               )
             })}
+          </div>
+        )}
+
+        {/* ── 触底哨兵：进入视口触发加载下一页（P0-2）── */}
+        {!loading && hasMore && (
+          <div
+            ref={sentinelRef}
+            className="flex items-center justify-center py-6"
+          >
+            {loadingMore && (
+              <span className="animate-pulse text-sm text-zinc-500">
+                加载更多…
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* ── 已加载全部提示 ── */}
+        {!loading && !hasMore && posts.length > 0 && (
+          <div className="flex items-center justify-center py-6">
+            <span className="text-xs text-zinc-600">没有更多了</span>
           </div>
         )}
       </div>

@@ -6,6 +6,7 @@
 // ============================================================
 
 import { cleanText } from './normalize'
+import { llmTimeoutSignal } from '@/lib/llm'
 
 export interface NamingResult {
   label: string
@@ -59,6 +60,7 @@ export async function batchNameClusters(
         Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
         'Content-Type': 'application/json',
       },
+      signal: llmTimeoutSignal(800),
       body: JSON.stringify({
         model: 'deepseek-chat',
         messages: [

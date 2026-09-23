@@ -20,18 +20,13 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import {
-  normalizeProblem,
-  formatProblemForPrompt,
-  type ProblemUnderstanding,
-  type CreativeBlueprint,
-} from '@/lib/creative/blueprint'
+import { normalizeProblem, formatProblemForPrompt } from '@/lib/creative/problemFormat'
+import type { ProblemUnderstanding, CreativeBlueprint } from '@/lib/creative/blueprint'
 import {
   normalizeSolution,
   formatSolutionFullText,
-  type SolutionResult,
-  type SolutionVersion,
-} from '@/lib/creative/problemSolver'
+} from '@/lib/creative/solutionFormat'
+import type { SolutionResult, SolutionVersion } from '@/lib/creative/problemSolver'
 import { getWork, saveWork, patchWork } from '@/lib/works'
 import { supabase } from '@/lib/supabaseClient'
 

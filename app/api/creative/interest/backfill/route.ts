@@ -7,6 +7,7 @@
 
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabaseServer'
+import { authFailureResponse } from '@/lib/apiAuth'
 import { runBackfill } from '@/lib/creative/interest/backfill'
 import { runBuild } from '@/lib/creative/interest/builder'
 import { rateLimit } from '@/lib/rateLimit'
@@ -24,14 +25,17 @@ export async function POST(req: Request) {
   const supabase = createServerClient(token)
   const { data: userData, error: authErr } = await supabase.auth.getUser()
   if (authErr || !userData.user) {
-    return NextResponse.json({ error: '未登录' }, { status: 401 })
+    return authFailureResponse(authErr)
   }
   const userId = userData.user.id
 
-  // ── 限流：一次性操作，严格限制 ──
-  const rl = rateLimit(`interest-backfill:${userId}`, 1, 600)
+  // ── 限流：一次性操作，严格限制（窗口必须是 600_000ms 而非 600ms）──
+  const rl = rateLimit(`interest-backfill:${userId}`, 1, 10 * 60_000)
   if (!rl.ok) {
-    return NextResponse.json({ error: '回填操作过于频繁，请 10 分钟后再试' }, { status: 429 })
+    return NextResponse.json(
+      { error: `回填操作过于频繁，请 ${rl.retryAfterSec} 秒后再试` },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec) } }
+    )
   }
 
   // ── 执行回填 ──

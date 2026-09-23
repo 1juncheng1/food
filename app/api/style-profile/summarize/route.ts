@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabaseServer'
 import { rateLimit } from '@/lib/rateLimit'
 import { parseStyleDimensions } from '@/lib/creative/styleLearning'
+import { callDeepSeekChat } from '@/lib/llm'
 import {
   assembleCreatorReport,
   buildStatsBrief,
@@ -141,23 +142,14 @@ async function runSummarize(
   const { brief } = buildStatsBrief(input)
 
   // ── 4. 调 DeepSeek：AI 只命名/定性/选证据，数字由服务端重算 ──
-  let res: Response
-  try {
-    res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'deepseek-chat',
-        temperature: 0.5,
-        max_tokens: 1200,
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content: `你是一位创作者画像分析师。根据下面的客观创作数据，分析这个创作者的「创作 DNA」。
+  const llmRes = await callDeepSeekChat({
+    temperature: 0.5,
+    max_tokens: 1200,
+    jsonMode: true,
+    messages: [
+      {
+        role: 'system',
+        content: `你是一位创作者画像分析师。根据下面的客观创作数据，分析这个创作者的「创作 DNA」。
 输出 JSON（不要 markdown、不要多余文字）：
 {
   "main": "主人格名，4-8字，如 冷峻解构者",
@@ -174,23 +166,17 @@ async function runSummarize(
 4. motifs 是内容母题（讲什么），narratives 是讲述方式（怎么讲），不要混淆；
 5. language 只给定性形容词，不要百分比、不要短句；
 6. 用户声明的喜欢/排斥必须体现在 description 的语言判断中，但不要原样照念。`,
-          },
-          { role: 'user', content: brief },
-        ],
-      }),
-    })
-  } catch (e) {
-    console.error('creator report 网络异常:', e)
-    return err(500, 'llm_failed', 'AI 服务连接失败，请稍后重试')
-  }
+      },
+      { role: 'user', content: brief },
+    ],
+  })
 
-  if (!res.ok) {
-    console.error('creator report LLM 失败:', await res.text().catch(() => ''))
+  if (!llmRes.ok) {
+    console.error('creator report LLM 失败:', llmRes.error)
     return err(500, 'llm_failed', 'AI 分析生成失败，请稍后重试')
   }
 
-  const resJson = await res.json().catch(() => null)
-  const raw: string = resJson?.choices?.[0]?.message?.content ?? ''
+  const raw: string = llmRes.content
   const draft = parseLlmDraft(raw)
   if (!draft) {
     console.warn('creator report JSON 异常，原始内容:', raw.slice(0, 300))

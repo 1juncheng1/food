@@ -8,6 +8,7 @@
 import { INTERPRET_BATCH_SIZE, INTERPRET_WINDOW_DAYS, RATIONALE_MAX } from './config'
 import { cleanText } from './normalize'
 import type { EngineEvent, ReasonCode, ReasonInterpretation } from './types'
+import { llmTimeoutSignal } from '@/lib/llm'
 
 const PROMPT_VERSION = 'behavior-reason-v1'
 
@@ -61,6 +62,7 @@ export async function batchInterpret(
         Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
         'Content-Type': 'application/json',
       },
+      signal: llmTimeoutSignal(1200),
       body: JSON.stringify({
         model: 'deepseek-chat',
         messages: [

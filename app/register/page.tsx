@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
+import { useAuth } from '@/components/auth-provider'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useCountdown } from '@/hooks/use-countdown'
@@ -11,41 +12,96 @@ import { OtpInput } from '@/components/auth/otp-input'
 
 type Step = 'idle' | 'code-sent'
 
+// 合法邮箱:要求 TLD ≥ 2 字符,挡住 "xxx@qq.c" 这类不存在域名的拼写
+// (HTML5 type=email 只查语法,单字符 TLD 会被放过,邮件必然退信)
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
+
 export default function RegisterPage() {
   const router = useRouter()
+  const { session, loading: authLoading } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [otp, setOtp] = useState('')
   const [step, setStep] = useState<Step>('idle')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [resending, setResending] = useState(false)
   const countdown = useCountdown(60)
+
+  // 已登录用户访问 /register:与 /login 对称,直接跳 dashboard
+  useEffect(() => {
+    if (!authLoading && session) router.replace('/dashboard')
+  }, [authLoading, session, router])
+
+  if (authLoading) {
+    return (
+      <div className="inner-page gen-stage flex items-center justify-center" data-mode="inspiration">
+        <div className="animate-pulse text-zinc-600 text-sm">加载中…</div>
+      </div>
+    )
+  }
+
+  // 进入验证码步骤的统一入口(新注册 signUp 成功 或 老的未确认用户 resend 成功)
+  const enterCodeSent = () => {
+    setStep('code-sent')
+    setOtp('')
+    countdown.start(60)
+  }
 
   // 步骤 1:发送验证码(signUp 触发 Supabase 发送 OTP 邮件)
   const handleSendCode = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
-    setLoading(true)
 
-    const { error } = await supabase.auth.signUp({ email, password })
+    const trimmedEmail = email.trim()
+    if (!EMAIL_RE.test(trimmedEmail)) {
+      setError('请输入正确的邮箱地址')
+      return
+    }
+
+    setLoading(true)
+    const { data, error } = await supabase.auth.signUp({ email: trimmedEmail, password })
     setLoading(false)
 
     if (error) {
-      // 邮箱枚举防护:user_already_registered 不暴露"已注册",统一文案
-      if (error.code === 'user_already_registered' || /already registered/i.test(error.message)) {
-        setError('如该邮箱未注册,验证码已发送;已注册请直接登录')
-      } else if (error.code === 'rate_limit_exceeded' || /rate limit/i.test(error.message)) {
+      if (error.code === 'rate_limit_exceeded' || /rate limit/i.test(error.message)) {
         setError('请求过于频繁,请稍后再试')
-      } else {
-        setError('邮件发送失败,请稍后重试')
+        return
       }
+      if (error.code === 'user_already_registered' || /already registered/i.test(error.message)) {
+        // 该邮箱可能是"之前注册但没完成验证"的用户——Supabase 对这种用户会
+        // 直接报 already_registered 且不发新码,导致用户永久卡死。
+        // 静默尝试 resend:未确认用户会收到新码并进验证码步骤;已确认用户
+        // resend 会报错,此时给中性文案引导去登录(不暴露邮箱是否注册)。
+        setLoading(true)
+        const { error: resendError } = await supabase.auth.resend({ email: trimmedEmail, type: 'signup' })
+        setLoading(false)
+        if (!resendError) {
+          enterCodeSent()
+          return
+        }
+        if (/rate limit/i.test(resendError.message)) {
+          setError('请求过于频繁,请稍后再试')
+        } else {
+          setError('如该邮箱已注册请直接登录,未收到验证码请稍后重试')
+        }
+        return
+      }
+      setError('邮件发送失败,请稍后重试')
+      return
+    }
+
+    // 防御:Supabase 未开启 email_confirm 时 signUp 会直接返回 session——
+    // 邮箱未验证却已登录。立即清掉,否则"去登录"会被 login 页已登录守卫
+    // 直接放行进 dashboard,整个 OTP 验证被绕过。
+    if (data.session) {
+      await supabase.auth.signOut({ scope: 'local' })
+      setError('注册服务暂不可用(邮箱验证未正确配置),请联系管理员')
       return
     }
 
     // 成功:进入 code-sent 步骤,启动 60s 倒计时
-    setStep('code-sent')
-    setOtp('')
-    countdown.start(60)
+    enterCodeSent()
   }
 
   // 步骤 2:验证 OTP 完成注册
@@ -60,7 +116,7 @@ export default function RegisterPage() {
 
     setLoading(true)
     const { error } = await supabase.auth.verifyOtp({
-      email,
+      email: email.trim(),
       token: otp,
       type: 'signup',
     })
@@ -81,14 +137,17 @@ export default function RegisterPage() {
     router.push('/dashboard')
   }
 
-  // 重新发送验证码(受 60s 倒计时限制)
+  // 重新发送验证码(受 60s 倒计时 + 请求飞行中防重入双重限制)
   const handleResend = async () => {
-    if (countdown.isCounting) return // 60s 内 disabled,双保险
+    if (countdown.isCounting || resending) return
     setError('')
+    setResending(true)
 
-    const { error } = await supabase.auth.resend({ email, type: 'signup' })
+    const { error } = await supabase.auth.resend({ email: email.trim(), type: 'signup' })
+    setResending(false)
+
     if (error) {
-      if (/rate limit/i.test(error.message)) {
+      if (error.code === 'rate_limit_exceeded' || /rate limit/i.test(error.message)) {
         setError('请求过于频繁,请稍后再试')
       } else {
         setError('邮件发送失败,请稍后重试')
@@ -141,6 +200,13 @@ export default function RegisterPage() {
             <Button type="submit" disabled={loading} className="w-full">
               {loading ? '发送中...' : '获取验证码并注册'}
             </Button>
+
+            <p className="text-sm text-zinc-500 pt-2 text-center">
+              已有账号？{' '}
+              <Link href="/login" className="text-indigo-400 hover:underline">
+                去登录
+              </Link>
+            </p>
           </form>
         )}
 
@@ -168,10 +234,14 @@ export default function RegisterPage() {
               <button
                 type="button"
                 onClick={handleResend}
-                disabled={countdown.isCounting || loading}
+                disabled={countdown.isCounting || loading || resending}
                 className="text-indigo-400 hover:underline disabled:text-zinc-500 disabled:no-underline"
               >
-                {countdown.isCounting ? `${countdown.seconds}s 后重新发送` : '重新发送验证码'}
+                {resending
+                  ? '发送中...'
+                  : countdown.isCounting
+                    ? `${countdown.seconds}s 后重新发送`
+                    : '重新发送验证码'}
               </button>
               <button
                 type="button"
@@ -187,13 +257,6 @@ export default function RegisterPage() {
             </div>
           </form>
         )}
-
-        <p className="text-sm text-zinc-500 mt-6 text-center">
-          已有账号？{' '}
-          <Link href="/login" className="text-indigo-400 hover:underline">
-            去登录
-          </Link>
-        </p>
       </div>
     </div>
   )

@@ -35,6 +35,9 @@ function toRow(item: CIItem, queryHash: string) {
     metrics: item.metrics,
     content_info: item.content_info,
     ai_analysis: item.ai_analysis,
+    // WFP1：语义向量随条目一起落库。此前 toRow 漏掉该列，导致 ci_items.embedding
+    // 恒为 NULL，消费侧的相关性排序（S2 市场候选/Feed 热点补位）全部失效。
+    embedding: item.embedding ?? null,
     query_hash: queryHash,
     fetched_at: item.fetched_at,
     expires_at: item.expires_at,
@@ -88,7 +91,26 @@ function fromRow(r: Record<string, unknown>): CIItem | null {
       : null,
     fetched_at: typeof r.fetched_at === 'string' ? r.fetched_at : new Date().toISOString(),
     expires_at: typeof r.expires_at === 'string' ? r.expires_at : new Date().toISOString(),
+    embedding: parseEmbedding(r.embedding),
   }
+}
+
+/**
+ * 行 → 向量。pgvector 经 PostgREST 多数返回 number[]，个别场景返回
+ * "[0.1,...]" 字符串，两种都接受；任何异常一律 null（检索降级，不冒充零向量）。
+ */
+function parseEmbedding(v: unknown): number[] | null {
+  const isNums = (a: unknown[]): a is number[] => a.every((n) => typeof n === 'number')
+  if (Array.isArray(v)) return isNums(v) ? v : null
+  if (typeof v === 'string') {
+    try {
+      const arr: unknown = JSON.parse(v)
+      return Array.isArray(arr) && isNums(arr) ? arr : null
+    } catch {
+      return null
+    }
+  }
+  return null
 }
 
 /** 缓存读取：返回指定 query_hash 的未过期条目；任何错误返回空数组（降级为无缓存） */

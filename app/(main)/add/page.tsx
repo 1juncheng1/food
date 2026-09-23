@@ -9,6 +9,15 @@ import {
   extractKnowledgeTraits,
 } from '@/lib/creative/knowledgeItem'
 import type { KnowledgeClarificationQuestion } from '@/lib/creative/knowledgeAnalyzer'
+import {
+  MATERIAL_TYPES,
+  MATERIAL_TYPE_RULES,
+  type MaterialType,
+  type MaterialSource,
+  type MaterialGroup,
+} from '@/lib/creative/material'
+
+const SOURCE_OPTIONS: MaterialSource[] = ['手输', '上传', '外部链接', 'AI生成']
 
 type Stage = 'idle' | 'analyzing' | 'clarify' | 'confirming' | 'saving' | 'done'
 
@@ -39,10 +48,29 @@ export default function AddPage() {
   const [showCorrection, setShowCorrection] = useState(false)
   const MAX_RETRY = 2
 
+  // ── Phase 2：素材元数据（materialType / 分组 / 来源）──
+  const [materialType, setMaterialType] = useState<MaterialType>('其他')
+  const [groupId, setGroupId] = useState<string | ''>('')
+  const [source, setSource] = useState<MaterialSource>('手输')
+  const [groups, setGroups] = useState<MaterialGroup[]>([])
+
   useEffect(() => {
     async function checkUser() {
       const session = await getValidSession()
-      if (!session) router.replace('/login')
+      if (!session) {
+        router.replace('/login')
+        return
+      }
+      // 顺带拉取分组列表（用于确认阶段的下拉）
+      try {
+        const res = await fetch('/api/material-groups', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        const data = await res.json()
+        if (res.ok) setGroups(data.groups ?? [])
+      } catch {
+        // 静默失败：分组加载失败不阻断添加流程
+      }
     }
     checkUser()
   }, [router])
@@ -171,10 +199,15 @@ export default function AddPage() {
         },
         body: JSON.stringify({
           content,
+          // 回传用户刚确认的 AI 分析结果：服务端清洗后直接入库，不再重复调用 LLM
+          knowledge: knowledge ?? undefined,
           clarifications: Object.values(clarifyAnswers)
             .filter((a) => a.answer.trim())
             .map((a) => ({ question_id: a.question_id, answer: a.answer })),
           save: true,
+          materialType,
+          groupId: groupId || null,
+          source,
         }),
       })
       const data = await res.json()
@@ -247,7 +280,12 @@ export default function AddPage() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({
+          content,
+          materialType,
+          groupId: groupId || null,
+          source,
+        }),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.error || '保存失败'); setStage('confirming'); return }
@@ -603,6 +641,73 @@ export default function AddPage() {
                   )}
                 </div>
               ) : null}
+
+              {/* ── Phase 2：素材元数据（materialType / 分组 / 来源）── */}
+              <div className="glass rounded-xl px-5 py-5 space-y-5">
+                <div>
+                  <p className="text-xs text-zinc-400 mb-1">素材类型</p>
+                  <p className="text-[11px] text-zinc-500 mb-3">
+                    选好后 AI 创作时按对应规则使用（默认「其他」）
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {MATERIAL_TYPES.map((t) => {
+                      const sel = materialType === t
+                      const rule = MATERIAL_TYPE_RULES[t]
+                      return (
+                        <button
+                          key={t}
+                          type="button"
+                          onClick={() => setMaterialType(t)}
+                          data-active={sel || undefined}
+                          className={`material-type-badge cursor-pointer transition ${
+                            sel ? 'ring-1 ring-offset-2 ring-offset-zinc-900' : ''
+                          }`}
+                          data-mt={t}
+                          title={rule.usageRule}
+                        >
+                          {rule.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs text-zinc-400 mb-1">分组</p>
+                    <p className="text-[11px] text-zinc-500 mb-2">归类到已有分组，便于管理</p>
+                    <select
+                      value={groupId}
+                      onChange={(e) => setGroupId(e.target.value)}
+                      className="w-full bg-zinc-900/60 border border-zinc-800 rounded-lg px-3 py-2.5 text-sm text-white outline-none focus:border-indigo-500/50 cursor-pointer"
+                    >
+                      <option value="">不分组</option>
+                      {groups.map((g) => (
+                        <option key={g.id} value={g.id}>
+                          {g.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-zinc-400 mb-1">来源</p>
+                    <p className="text-[11px] text-zinc-500 mb-2">素材来源（默认「手输」）</p>
+                    <select
+                      value={source}
+                      onChange={(e) => setSource(e.target.value as MaterialSource)}
+                      className="w-full bg-zinc-900/60 border border-zinc-800 rounded-lg px-3 py-2.5 text-sm text-white outline-none focus:border-indigo-500/50 cursor-pointer"
+                    >
+                      {SOURCE_OPTIONS.map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
               <div className="flex gap-3">
                 <button type="button" onClick={resetToIdle} className="px-5 py-2.5 rounded-xl text-sm border border-zinc-700 text-zinc-400 hover:border-zinc-600 transition">
                   重新输入

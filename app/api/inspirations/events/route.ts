@@ -13,6 +13,7 @@
 
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabaseServer'
+import { authFailureResponse } from '@/lib/apiAuth'
 import { getSuggestionById, markDismissed } from '@/lib/creative/interest/suggestionRepo'
 import { trackEvent } from '@/lib/creative/interest/eventTracker'
 import { runBuild } from '@/lib/creative/interest/builder'
@@ -43,7 +44,7 @@ export async function POST(req: Request) {
     const supabase = createServerClient(token)
     const { data: userData, error: authErr } = await supabase.auth.getUser()
     if (authErr || !userData.user) {
-      return NextResponse.json({ error: '登录状态失效' }, { status: 401 })
+      return authFailureResponse(authErr)
     }
     const userId = userData.user.id
 

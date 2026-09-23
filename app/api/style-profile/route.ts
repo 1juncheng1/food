@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { authFailureResponse } from '@/lib/apiAuth'
 import { createServerClient } from '@/lib/supabaseServer'
 import { generateEmbedding } from '@/lib/storage'
 import { averageVectors, parseVector, updateUserStyleVector } from '@/lib/styleVector'
@@ -142,7 +143,8 @@ export async function GET(req: Request) {
 
     if (selErr) {
       console.error('查询风格卡失败:', selErr)
-      return NextResponse.json({ error: `查询失败: ${selErr.message}` }, { status: 500 })
+      // 服务端日志保留细节；数据库报错可能含表名/策略名，不能回显给客户端
+      return NextResponse.json({ error: '查询风格卡失败' }, { status: 500 })
     }
 
     // 2) 已有记录直接返回
@@ -179,7 +181,8 @@ export async function GET(req: Request) {
 
     if (insErr) {
       console.error('插入风格卡失败:', insErr)
-      return NextResponse.json({ error: `保存风格卡失败: ${insErr.message}` }, { status: 500 })
+      // 服务端日志保留细节；数据库报错可能含表名/策略名，不能回显给客户端
+      return NextResponse.json({ error: '保存风格卡失败' }, { status: 500 })
     }
 
     return NextResponse.json({ profile: inserted })
@@ -228,7 +231,8 @@ export async function POST(req: Request) {
 
       if (rcErr) {
         console.error('重新统计风格卡失败:', rcErr)
-        return NextResponse.json({ error: `重新统计失败: ${rcErr.message}` }, { status: 500 })
+        // 服务端日志保留细节；数据库报错可能含表名/策略名，不能回显给客户端
+        return NextResponse.json({ error: '重新统计失败' }, { status: 500 })
       }
 
       return NextResponse.json({ profile: recomputed, recomputed: true, sampleCount: allContents.length })
@@ -297,7 +301,8 @@ export async function POST(req: Request) {
 
     if (error) {
       console.error('更新风格卡失败:', error)
-      return NextResponse.json({ error: `更新失败: ${error.message}` }, { status: 500 })
+      // 服务端日志保留细节；数据库报错可能含表名/策略名，不能回显给客户端
+      return NextResponse.json({ error: '更新风格卡失败' }, { status: 500 })
     }
 
     return NextResponse.json({ profile: data })
@@ -326,7 +331,7 @@ export async function PATCH(req: Request) {
       error: authErr,
     } = await supabase.auth.getUser(token)
     if (authErr || !user) {
-      return NextResponse.json({ error: '登录已过期' }, { status: 401 })
+      return authFailureResponse(authErr)
     }
 
     const body = (await req.json().catch(() => ({}))) as {

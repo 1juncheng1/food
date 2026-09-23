@@ -17,6 +17,7 @@
 //   前端在 insight 态用户确认后，把 analysis 文本注入 plan prompt。
 // ============================================================
 
+import { llmTimeoutSignal } from '@/lib/llm'
 import type { MarketReport } from './marketAnalyzer'
 import { formatMarketForPrompt, normalizeMarketReport } from './marketAnalyzer'
 
@@ -64,24 +65,11 @@ export interface ValueAssessment {
  * 机会矩阵象限：overall_score × competition_level 组合判断。
  * 前端展示用，不落库（由两个分数实时计算）。
  */
-export type OpportunityQuadrant =
-  | 'blue_ocean' // 高分低竞争：蓝海机会
-  | 'red_ocean' // 高分高竞争：红海需差异化
-  | 'needs_refinement' // 低分低竞争：选题待优化
-  | 'not_recommended' // 低分高竞争：不建议做
-
-/** 根据 overall_score 和 competition_level 计算机会象限 */
-export function getOpportunityQuadrant(
-  overallScore: number,
-  competitionLevel: number
-): OpportunityQuadrant {
-  const highScore = overallScore >= 5
-  const highCompetition = competitionLevel >= 5
-  if (highScore && !highCompetition) return 'blue_ocean'
-  if (highScore && highCompetition) return 'red_ocean'
-  if (!highScore && !highCompetition) return 'needs_refinement'
-  return 'not_recommended'
-}
+// 机会象限是纯推导函数，已抽到 ./opportunity（零运行时依赖），
+// 以便 'use client' 组件直接引用而不必加载本文件（含 DeepSeek 调用）。
+// 此处再导出以保持既有调用方不变。
+export { getOpportunityQuadrant } from './opportunity'
+export type { OpportunityQuadrant } from './opportunity'
 
 /** 优化建议 */
 export interface OptimizationSuggestions {
@@ -421,6 +409,7 @@ export async function analyzeInspiration(rawInput: string): Promise<{
           Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
           'Content-Type': 'application/json',
         },
+        signal: llmTimeoutSignal(1500),
         body: JSON.stringify({
           model: 'deepseek-chat',
           messages: [

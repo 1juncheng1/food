@@ -12,9 +12,32 @@ function str(v: unknown, max: number): string {
   return typeof v === 'string' ? v.trim().slice(0, max) : ''
 }
 
+/** UUID 校验（小写十六进制 8-4-4-4-12） */
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /** POST/DELETE 请求体 */
 interface FollowBody {
   followingId?: unknown
+}
+
+/**
+ * 解析并校验请求体：JSON 解析失败返回 400 而不是落到外层 catch 变成 500，
+ * 目标 ID 必须是合法 UUID（否则可写入任意字符串污染关注关系）。
+ */
+async function parseFollowBody(
+  req: Request
+): Promise<{ followingId: string } | { error: string }> {
+  let raw: FollowBody
+  try {
+    raw = (await req.json()) as FollowBody
+  } catch {
+    return { error: '请求体不是合法 JSON' }
+  }
+  const followingId = str(raw.followingId, 100)
+  if (!followingId) return { error: '缺少目标用户 ID' }
+  if (!UUID_PATTERN.test(followingId)) return { error: '目标用户 ID 格式无效' }
+  return { followingId }
 }
 
 // ────────────────────────────────────────────────────────────
@@ -33,12 +56,9 @@ export async function POST(req: Request) {
     }
     const { supabase, userId } = auth
 
-    const body = (await req.json()) as FollowBody
-    const followingId = str(body.followingId, 100)
-
-    if (!followingId) {
-      return NextResponse.json({ error: '缺少目标用户 ID' }, { status: 400 })
-    }
+    const body = await parseFollowBody(req)
+    if ('error' in body) return NextResponse.json({ error: body.error }, { status: 400 })
+    const followingId = body.followingId
 
     // 不能关注自己
     if (followingId === userId) {
@@ -91,12 +111,9 @@ export async function DELETE(req: Request) {
     }
     const { supabase, userId } = auth
 
-    const body = (await req.json()) as FollowBody
-    const followingId = str(body.followingId, 100)
-
-    if (!followingId) {
-      return NextResponse.json({ error: '缺少目标用户 ID' }, { status: 400 })
-    }
+    const body = await parseFollowBody(req)
+    if ('error' in body) return NextResponse.json({ error: body.error }, { status: 400 })
+    const followingId = body.followingId
 
     const { error: delErr } = await supabase
       .from('follows')

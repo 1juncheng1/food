@@ -11,7 +11,7 @@
 
 import { saveWork } from './works'
 import { recordGeneration } from './styleMemory'
-import { supabase } from './supabaseClient'
+import { getValidSession } from './supabaseClient'
 import type { CreativeBlueprint } from './creative/blueprint'
 import type { FrozenPlan } from './creative/plan'
 import type { NextActionKey } from './creative/diagnosis'
@@ -65,6 +65,18 @@ export interface GenerationParams {
    * 不传时 inspiration_context 为 null（老链路不受影响）。
    */
   inspirationContext?: InspirationAnalysis
+  /**
+   * Material Library 2.0 Phase 4：素材选择步骤用户确认的素材 id。
+   * Retrieval Service AC-5 已支持 selectedMaterialIds 强制置顶（score=1）。
+   * 不传或空数组 = 纯自动召回（AI 推荐/手动挑选/不用素材三种模式都透传）。
+   */
+  selectedMaterialIds?: string[]
+  /**
+   * 素材创作注解（根基 + 临时标签/备注，仅本次生成生效）。
+   * 传入时服务端以注解中的 materialId 作为 selectedMaterialIds；
+   * 未传时回落到 selectedMaterialIds 旧链路。
+   */
+  materialAnnotations?: import('./creative/material').MaterialAnnotation[]
 }
 
 /** 落盘时的创作参数（作品名 / 身份 / 文风 / 归类） */
@@ -140,16 +152,31 @@ export function replanGeneration(id: string): boolean {
 }
 
 /** 内部：两阶段生成链路 */
+/** 单条生成链路的总耗时上限（服务端 maxDuration 60s，留出排队与两阶段串行的余量） */
+const PIPELINE_TIMEOUT_MS = 150_000
+
 async function runPipeline(
   id: string,
   params: GenerationParams,
   meta: GenerationMeta,
   signal: AbortSignal
 ): Promise<void> {
+  // 请求挂死兜底：fetch 没有默认超时，服务端不返回时任务会永远停在 writing，
+  // 前端随之无限转圈。合并"用户主动中断"与"超时"两个信号，任一触发即中止。
+  const combined = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    combined.abort()
+  }, PIPELINE_TIMEOUT_MS)
+  const forwardAbort = () => combined.abort()
+  if (signal.aborted) combined.abort()
+  else signal.addEventListener('abort', forwardAbort, { once: true })
+
   try {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession()
+    // 生成是长耗时链路（蓝图 + 正文可能跨数分钟），出发那一刻必须确认 token 新鲜。
+    // getSession() 只读本地缓存、不做刷新，停留过久会带着过期 token 直发 → 401。
+    const session = await getValidSession()
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`
 
@@ -168,7 +195,7 @@ async function runPipeline(
         const bpRes = await fetch('/api/creative/blueprint', {
           method: 'POST',
           headers,
-          signal,
+          signal: combined.signal,
           body: JSON.stringify({
             topic: params.topic,
             templateId: params.templateId,
@@ -210,7 +237,7 @@ async function runPipeline(
     const res = await fetch('/api/prompt-optimizer', {
       method: 'POST',
       headers,
-      signal,
+      signal: combined.signal,
       body: JSON.stringify({
         generationId: id, // 与作品 id 一致，作为 generation_history 主键
         topic: params.topic,
@@ -231,10 +258,28 @@ async function runPipeline(
         characters: params.characters ?? [],
         // AI 灵感分析：透传到服务端落 generation_history.inspiration_context
         inspirationContext: params.inspirationContext ?? null,
+        // Material Library 2.0 Phase 4：素材选择步骤确认的素材 id
+        selectedMaterialIds: params.selectedMaterialIds?.length
+          ? params.selectedMaterialIds
+          : null,
+        // 素材创作注解（根基/标签/备注，仅本次生成）
+        materialAnnotations: params.materialAnnotations?.length
+          ? params.materialAnnotations
+          : null,
       }),
     })
     const data = await res.json()
-    if (!res.ok) throw new Error(data.error || '生成失败，请重试')
+    if (!res.ok) {
+      // 服务端附带 detail（timeout/http_429 等）时拼进文案：用户求助截图即可直接定位
+      const detail = typeof data.detail === 'string' ? data.detail : null
+      throw new Error(
+        data.error
+          ? detail
+            ? `${data.error}（原因: ${detail}）`
+            : data.error
+          : '生成失败，请重试'
+      )
+    }
     if (!data.systemPrompt || !data.sampleText) {
       throw new Error('AI 返回内容不完整，请重试')
     }
@@ -293,13 +338,21 @@ async function runPipeline(
 
     tasks.set(id, { status: 'done', blueprint: blueprint ?? undefined })
   } catch (e) {
-    // 被「换个方向」/新任务中断：不写 error，避免旧链路覆盖新任务状态
-    if ((e as Error)?.name === 'AbortError') return
+    if ((e as Error)?.name === 'AbortError') {
+      // 被「换个方向」/新任务中断：不写 error，避免旧链路覆盖新任务状态。
+      // 但超时中止必须写 error——否则任务永远停在 writing，界面无限转圈。
+      if (timedOut) {
+        tasks.set(id, { status: 'error', error: '生成超时，请重试' })
+      }
+      return
+    }
     tasks.set(id, {
       status: 'error',
       error: e instanceof Error ? e.message : '网络错误，请重试',
     })
   } finally {
+    clearTimeout(timer)
+    signal.removeEventListener('abort', forwardAbort)
     // 仅当当前 controller 仍是自己时清理（新任务已替换则不动）
     if (controllers.get(id)?.signal === signal) {
       controllers.delete(id)

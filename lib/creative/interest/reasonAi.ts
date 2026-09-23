@@ -10,6 +10,8 @@
 // 红线：AI 失败/超时/幻觉绝不丢卡——降级模板照常落库（reason_source=template）。
 // ============================================================
 
+import { llmTimeoutSignal } from '@/lib/llm'
+
 export interface AiReasonInput {
   title: string
   /** 所配簇 label；null = 无匹配簇（探索卡等），直接模板不送 AI */
@@ -123,6 +125,7 @@ export async function generateAiReasons(items: AiReasonInput[]): Promise<AiReaso
         Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
         'Content-Type': 'application/json',
       },
+      signal: llmTimeoutSignal(1600),
       body: JSON.stringify({
         model: 'deepseek-chat',
         messages: [

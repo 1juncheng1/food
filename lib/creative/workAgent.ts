@@ -268,3 +268,410 @@ export function formatFeedbackForPrompt(
  * 登录用户按 id 分桶（与 generated_works 一致）。
  */
 export const WORK_AGENT_KEY = 'work_agent_'
+
+// ── 7. 共创会话（对应 setup.sql 第 18 节两张表）────────────
+
+/** 三阶段状态机：clarify → propose → apply → done */
+export type AgentPhase = 'clarify' | 'propose' | 'apply' | 'done'
+
+/** 会话状态：进行中 / 已落地新版本 / 用户放弃 */
+export type AgentSessionStatus = 'active' | 'applied' | 'abandoned'
+
+/** 消息类型：既是展示分发的依据，也是后续统计共创行为的分类维度 */
+export type AgentMessageKind =
+  | 'intent_clarify' // AI 给出意图候选，等待用户选择
+  | 'proposal' // AI 给出多个修改方案，等待用户选择
+  | 'patch_preview' // AI 给出段落补丁预览，等待用户接受/拒绝
+  | 'confirm' // 用户已做决策的结果回执
+  | 'system_notice' // 降级/错误提示（非对话内容，但必须可见）
+
+/** 会话元信息指针（不存正文，避免与 generation_history 双写） */
+export interface AgentSessionMeta {
+  /** 用户在阶段1选中的意图候选 index */
+  chosenIntentIndex?: number | null
+  /** 用户在阶段2选中的方案 index */
+  chosenPlanIndex?: number | null
+  /** 累计用户发言轮次 */
+  turnCount?: number
+  /** 最近一次降级原因（可见即可诊断） */
+  lastError?: string | null
+}
+
+/** Work Agent 会话（work_agent_sessions 表一行） */
+export interface WorkAgentSession {
+  id: string
+  userId: string
+  projectId: string | null
+  /** 发起对话时的基底版本行 id（generation_history.id） */
+  baseVersionId: string | null
+  status: AgentSessionStatus
+  phase: AgentPhase
+  meta: AgentSessionMeta
+  createdAt: string
+  updatedAt: string
+}
+
+/** Work Agent 消息（work_agent_messages 表一行） */
+export interface WorkAgentMessage {
+  id: string
+  sessionId: string
+  role: 'user' | 'assistant'
+  kind: AgentMessageKind
+  /** 面向用户展示的文案（Markdown 轻量文本） */
+  content: string
+  /** 结构化载荷：IntentClarification / RevisionProposal / patches[] / FeedbackAnalysis */
+  payload: unknown
+  /** 用户在候选中选择的序号（null=未选择或自由输入）—— 数据飞轮核心字段 */
+  selectedIndex: number | null
+  createdAt: string
+}
+
+// ── 8. 阶段 1：意图澄清 ──────────────────────────────────
+
+/**
+ * 意图候选：用户一句模糊反馈（"感觉太平了"）背后的可能含义。
+ * IntentOption.evidence 字段记录 AI 是基于哪类上下文推断出该候选的
+ * （诊断 / 画像 / 素材），让"AI 为什么这么理解"可解释，而不是黑箱猜测。
+ */
+export interface IntentOption {
+  /** 候选标识（如 'conflict'；同批候选内唯一即可） */
+  id: string
+  /** 候选标题（≤12 字，直接作为按钮文案） */
+  label: string
+  /** 一句话解释这个含义具体指什么 */
+  description: string
+  /** 指向 6 类优化方向之一 */
+  intentType: NextActionKey
+  /** AI 推断该候选的上下文依据（可展示为"我看出来是因为…"） */
+  evidence?: string
+}
+
+/** 阶段 1 输出：一次澄清轮次的完整载荷 */
+export interface IntentClarification {
+  /** AI 对用户反馈的整体理解（一句话） */
+  understanding: string
+  /** 结合上下文发现的当前作品问题（≤4 条，直接展示给用户，作为"AI 看出了什么"） */
+  observedIssues: string[]
+  /** 候选含义（2-4 个） */
+  options: IntentOption[]
+  /** AI 推荐的候选 index（不确定时为 null） */
+  recommendedIndex: number | null
+}
+
+// ── 9. 阶段 2：修改方案 ──────────────────────────────────
+
+/** 修改策略：patch=段落级局部修改（默认，保护结构）/ rewrite=必须全文重写 */
+export type RevisionStrategy = 'patch' | 'rewrite'
+
+/**
+ * 修改方案：给用户看的"这次改哪里、改了会怎样、有什么代价"。
+ * 与全文重写的关键区别是 preserveItems：明确承诺"不动什么"。
+ * 没有这个承诺，"局部修改"就无法被用户验证。
+ */
+export interface RevisionPlan {
+  id: string
+  /** 方案名（≤12 字，作为按钮文案，如"重构开头"） */
+  title: string
+  /** 方案具体做法（≤100 字） */
+  description: string
+  /** 修改的影响/收益（对用户可见的价值承诺） */
+  expectedImpact: string
+  /** 修改区域（从 IMPACT_SCOPE_VALUES 中取） */
+  modificationArea: string[]
+  /** 该方案承诺保持不变的内容（硬约束，注入 LLM） */
+  preserveItems: string[]
+  /** 风险提示（如"会改变原开头叙事视角"） */
+  risk: string
+  /** patch=局部 / rewrite=全文（仅当用户诉求本质需要重写时给出） */
+  strategy: RevisionStrategy
+}
+
+/** 阶段 2 输出：一组可选方案 */
+export interface RevisionProposal {
+  /** 基于选中意图的一句话总结（"已确认方向：增强开头冲突"） */
+  summary: string
+  /** 2-3 个方案 */
+  plans: RevisionPlan[]
+  /** 建议方案 index */
+  recommendedIndex: number | null
+}
+
+// ── 10. 阶段 3：补丁预览 ─────────────────────────────────
+
+/** 补丁预览载荷：明确告知"即将改哪几段 / 保持什么不变" */
+export interface PatchPreview {
+  /** 本次修改依据的方案（可能为空，降级走 custom 意图时） */
+  planId: string | null
+  /** 即将改动的段落序号列表 */
+  targetSegments: number[]
+  /** 保持不变的承诺清单 */
+  preserveItems: string[]
+  /** AI 对本次修改的一句话说明 */
+  summary: string
+}
+
+// ── 11. 外部知识源接口（预留）─────────────────────────────
+
+/**
+ * 外部知识源能力接口。本期只定义契约，不接任何外部依赖：
+ * 实现由各源自行适配（新闻 / 知乎 / B站 / 抖音 / 网页搜索），
+ * 失败必须降级为空数组而非抛错——AI 缺素材可以继续工作，崩溃则整个流程中断。
+ */
+export interface WorkAgentKnowledgeSource {
+  /** 源标识（如 'news' / 'zhihu' / 'bilibili'） */
+  id: string
+  label: string
+  /** 是否启用（未配置密钥的源恒定返回空，不报错） */
+  enabled: boolean
+  /**
+   * 检索外部知识。返回结构化片段（≤ MAX_EXTERNAL_ITEMS 条）。
+   * 契约：内部任何异常都必须吞掉并返回空数组。
+   */
+  search(query: string, opts: { limit?: number }): Promise<ExternalKnowledgeItem[]>
+}
+
+export interface ExternalKnowledgeItem {
+  /** 来源标题 */
+  title: string
+  /** 摘要原文（注入 prompt 用，调用前已截断） */
+  snippet: string
+  /** 来源标注（展示与溯源用，如"知乎 · 2026-08"） */
+  source: string
+  /** 来源 id（溯源与去重） */
+  sourceId?: string
+}
+
+/** 注入 prompt 的外部知识条数上限（放防止外部长文挤占 token 预算） */
+export const MAX_EXTERNAL_ITEMS = 3
+
+// ── 12. Work Agent 上下文包 ──────────────────────────────
+
+/**
+ * Work Agent 上下文：三个阶段（澄清 / 提案 / 补丁）的 LLM 调用统一携带。
+ *
+ * 为什么必须显式这些块——AI 不是普通聊天机器人：
+ *   - work      → 知道"我们在讨论哪篇文章"
+ *   - diagnosis → 知道"这篇文章当前什么问题"
+ *   - goal      → 知道"用户最初想写什么"（防止迭代跑偏）
+ *   - creator   → 知道"这是谁的文风"（防止改成统一 AI 味）
+ *   - editing   → 知道"用户历史认可/拒绝什么"
+ *   - materials → 知道"用户自己有什么素材"（优先于 AI 编造案例）
+ *   - external  → 预留外部事实补充
+ *
+ * 所有块到达这里时已是「裁剪完成的纯文本」，由 workAgentContext.ts 统一装配，
+ * LLM 层只负责消费，不再各自拼 prompt（避免同一份画像在多处口径漂移）。
+ */
+export interface WorkAgentContext {
+  work: {
+    title: string
+    topic: string
+    versionNumber: number
+    versionId: string
+    createdAt: string
+    /** 截断后的正文（≤ WORK_CONTENT_LIMIT） */
+    content: string
+    /** 总段数（from splitParagraphs） */
+    segmentCount: number
+  }
+  /** 当前版本的 AI 五维诊断（可能为 null：未诊断或游客作品） */
+  diagnosis: CreativeDiagnosis | null
+  /** 用户原始创作目标（blueprint.problem_understanding 等） */
+  goal: string
+  /** Creator Profile 人格块（formatCreatorModel 输出） */
+  creator: string
+  /** 编辑偏好块（formatEditingProfileForPrompt 输出，样本不足时为空串） */
+  editing: string
+  /** 用户个人素材库召回结果（每条已截断） */
+  materials: Array<{ title: string; content: string; reason: string }>
+  /** 外部知识（本期为 stub，通常为空） */
+  external: ExternalKnowledgeItem[]
+  /** 上下文降级说明（如 embedding 失败），需对用户可见 */
+  degraded: string[]
+}
+
+// ── 13. DB 行 → 领域对象（session 路由与 chat 路由共用）────
+
+/**
+ * work_agent_sessions 行映射。
+ * 为什么容忍任意 Record：老库可能缺列（未跑第 18 节），
+ * 映射层必须比 DAO 更宽容——缺列降级为空值，而不是把 500 抛给用户。
+ */
+export function mapSessionRow(row: Record<string, unknown>): WorkAgentSession {
+  const rawMeta = row.meta
+  return {
+    id: String(row.id ?? ''),
+    userId: String(row.user_id ?? ''),
+    projectId: typeof row.project_id === 'string' ? row.project_id : null,
+    baseVersionId: typeof row.base_version_id === 'string' ? row.base_version_id : null,
+    status: (row.status === 'applied' || row.status === 'abandoned' ? row.status : 'active') as AgentSessionStatus,
+    phase: (['clarify', 'propose', 'apply', 'done'].includes(String(row.phase))
+      ? String(row.phase)
+      : 'clarify') as AgentPhase,
+    meta: typeof rawMeta === 'object' && rawMeta !== null ? (rawMeta as AgentSessionMeta) : {},
+    createdAt: String(row.created_at ?? ''),
+    updatedAt: String(row.updated_at ?? ''),
+  }
+}
+
+const MESSAGE_KINDS: AgentMessageKind[] = [
+  'intent_clarify',
+  'proposal',
+  'patch_preview',
+  'confirm',
+  'system_notice',
+]
+
+/** work_agent_messages 行映射（同上，缺列降级） */
+export function mapMessageRow(row: Record<string, unknown>): WorkAgentMessage {
+  const rawKind = String(row.kind ?? '')
+  const numIdx = Number(row.selected_index)
+  return {
+    id: String(row.id ?? ''),
+    sessionId: String(row.session_id ?? ''),
+    role: row.role === 'user' ? 'user' : 'assistant',
+    kind: (MESSAGE_KINDS.includes(rawKind as AgentMessageKind)
+      ? rawKind
+      : 'intent_clarify') as AgentMessageKind,
+    content: typeof row.content === 'string' ? row.content : '',
+    payload: row.payload ?? null,
+    selectedIndex: Number.isInteger(numIdx) ? numIdx : null,
+    createdAt: String(row.created_at ?? ''),
+  }
+}
+
+// ── 14. 阶段产出的兜底清洗（服务端用）─────────────────────
+
+function s2(v: unknown, max: number): string {
+  return typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : ''
+}
+
+function strArr(v: unknown, max: number, len: number): string[] {
+  return Array.isArray(v)
+    ? (v as unknown[]).map((x) => s2(x, len)).filter(Boolean).slice(0, max)
+    : []
+}
+
+/**
+ * 清洗 IntentClarification LLM 输出。
+ * 有效判定：必须有 understanding，且至少有 2 个候选（<2 就失去"多含义供选"的意义）。
+ */
+export function normalizeIntentClarification(raw: unknown): IntentClarification | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+
+  const understanding = s2(o.understanding, 200)
+  if (!understanding) return null
+
+  const rawOpts = Array.isArray(o.options) ? o.options : []
+  const options: IntentOption[] = []
+  for (const item of rawOpts) {
+    if (typeof item !== 'object' || item === null) continue
+    const c = item as Record<string, unknown>
+    const label = s2(c.label, 20)
+    const description = s2(c.description, 120)
+    const intentType = toNextAction(c.intentType ?? c.intent_type)
+    if (!label || !description || !intentType) continue
+    options.push({
+      id: s2(c.id, 40) || `opt-${options.length + 1}`,
+      label,
+      description,
+      intentType,
+      evidence: s2(c.evidence, 120) || undefined,
+    })
+    if (options.length >= 4) break
+  }
+  if (options.length < 2) return null
+
+  const recIdx = Number(o.recommendedIndex ?? o.recommended_index)
+  return {
+    understanding,
+    observedIssues: strArr(o.observedIssues ?? o.observed_issues, 4, 100),
+    options,
+    recommendedIndex:
+      Number.isInteger(recIdx) && recIdx >= 0 && recIdx < options.length ? recIdx : null,
+  }
+}
+
+/**
+ * 清洗 RevisionProposal LLM 输出。
+ * 有效判定：至少 2 个方案且每个方案必备 title/description/strategy。
+ * preserveItems 为空时兜底——"什么都不承诺不动"的方案会让局部修改失去可信度。
+ */
+/**
+ * 单个方案的字段级清洗。
+ * preserveItems 为空时兜底为「核心观点与整体结构」：
+ *   没有"不动什么"承诺的方案，等于允许 AI 任意发挥，局部修改就名存实亡。
+ */
+function parsePlanItem(raw: unknown, index: number): RevisionPlan | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const p = raw as Record<string, unknown>
+  const title = s2(p.title, 20)
+  const description = s2(p.description, 200)
+  if (!title || !description) return null
+  const preserve = strArr(p.preserveItems ?? p.preserve_items, 4, 30)
+  return {
+    id: s2(p.id, 40) || `plan-${index + 1}`,
+    title,
+    description,
+    expectedImpact: s2(p.expectedImpact ?? p.expected_impact, 120),
+    modificationArea: strArr(p.modificationArea ?? p.modification_area, 3, 10).filter((v) =>
+      (IMPACT_SCOPE_VALUES as readonly string[]).includes(v)
+    ),
+    preserveItems: preserve.length > 0 ? preserve : ['核心观点与整体结构'],
+    risk: s2(p.risk, 100),
+    strategy: p.strategy === 'rewrite' ? 'rewrite' : 'patch',
+  }
+}
+
+export function normalizeRevisionProposal(raw: unknown): RevisionProposal | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+
+  const rawPlans = Array.isArray(o.plans) ? o.plans : []
+  const plans: RevisionPlan[] = []
+  for (const item of rawPlans) {
+    const plan = parsePlanItem(item, plans.length)
+    if (plan) plans.push(plan)
+    if (plans.length >= 3) break
+  }
+  if (plans.length < 2) return null
+
+  const recIdx = Number(o.recommendedIndex ?? o.recommended_index)
+  return {
+    summary: s2(o.summary, 200),
+    plans,
+    recommendedIndex:
+      Number.isInteger(recIdx) && recIdx >= 0 && recIdx < plans.length ? recIdx : null,
+  }
+}
+
+/**
+ * 清洗单个 RevisionPlan（decide 落版时使用）。
+ * 客户端回传的方案不可信（可伪造"保持全文不变"骗过 LLM 硬约束），必须服务端重走一遍。
+ * 注意不能复用 normalizeRevisionProposal——那里要求至少 2 个方案才判定有效。
+ */
+export function normalizeRevisionPlan(raw: unknown): RevisionPlan | null {
+  return parsePlanItem(raw, 0)
+}
+
+/** 清洗补丁预览载荷（ stage 3 展示"即将改哪、保持什么"） */
+export function normalizePatchPreview(raw: unknown): PatchPreview | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  const summary = s2(o.summary, 200)
+  if (!summary) return null
+  // 先取值再断言：直接在 ?? 右侧写 as 会被解析成一个整体表达式导致类型退化
+  const rawSegs = (o.targetSegments ?? o.target_segments) as unknown
+  const segs = Array.isArray(rawSegs)
+    ? (rawSegs as unknown[])
+        .map((v) => Number(v))
+        .filter((n) => Number.isInteger(n) && n >= 1)
+        .slice(0, 5)
+    : []
+  return {
+    planId: s2(o.planId ?? o.plan_id, 40) || null,
+    targetSegments: segs,
+    preserveItems: strArr(o.preserveItems ?? o.preserve_items, 4, 30),
+    summary,
+  }
+}

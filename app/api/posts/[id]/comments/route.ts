@@ -59,7 +59,8 @@ export async function GET(
 
     if (error) {
       console.error('获取评论失败:', error)
-      return NextResponse.json({ error: `获取评论失败: ${error.message}` }, { status: 500 })
+      // 服务端日志保留细节；数据库报错可能含表名/策略名，不能回显给客户端
+      return NextResponse.json({ error: '获取评论失败' }, { status: 500 })
     }
 
     return NextResponse.json({ comments: data ?? [] })

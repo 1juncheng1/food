@@ -189,6 +189,41 @@
 **修复 full build 失败引出的两个既有 bug**（手动 full build 报 "commitClusters 失败" 定位过程发现）：
 1. **`fetchActiveClusters` select 了不存在的 `downgrade_streak` 列**（该值实际存于 stats jsonb）→ PostgREST 每次报错返回空数组 → **supersede 从未执行、跨期继承从未生效**（生产实锤：全表 0 条 superseded 行、单用户 active 簇堆积 48 个）。修复 [interestRepo.ts](lib/creative/interest/interestRepo.ts)：移除该列 + error 时打日志
 2. **`commitClusters` 只返回布尔**，真实 DB 错误被吞 → failBuild 只会写"commitClusters 失败"。已改为返回 `string | null`（错误信息），builder 透传写入 interest_builds.error
+
+---
+
+## 6. Work Agent（作品智能协作体）（2026-09-22 新增）
+
+把「继续优化」从「一句反馈 → AI 全文重写」重构为「上下文驱动的 AI 共创伙伴」。**定位变更**：从"AI 生成文章工具"迈向"用户与 AI 共同完成作品的创作伙伴"。
+
+**核心原则（改动前必读）**：AI 不是聊天机器窗口，而是**携带完整作品上下文的编辑伙伴**；每一步都必须用户点选才推进，AI 无权跳过阶段直接改文章。
+
+### 三阶段流程
+```
+say            → 2-4 个候选含义（每个带 evidence 依据）
+select_intent  → 2-3 个修改方案（含 preserveItems "不动什么"承诺）
+select_plan    → 段落补丁预览 → 用户接受 → decide 服务端融合 → V(N+1)
+                 rewrite 策略 → 明确告知后走 handleImprove 全文重写
+```
+
+### 新增文件
+| 文件 | 职责 |
+|---|---|
+| `app/api/creative/work-agent/session/route.ts` | 会话生命周期（创建/恢复/放弃） |
+| `app/api/creative/work-agent/chat/route.ts` | 三阶段状态机 |
+| `lib/creative/workAgentContext.ts` | **上下文装配唯一出口**（7 类上下文 + `formatContextForPrompt`） |
+| `lib/creative/intentClarifier.ts` | 阶段 1 意图候选 |
+| `lib/creative/revisionPlan.ts` | 阶段 2 修改方案 |
+| `components/creative/work-agent-chat.tsx` | 对话式前端（替换 `work-feedback-panel.tsx`，后者保留回滚） |
+
+### 数据库
+`setup.sql` 第 18 节：新增 `work_agent_sessions` / `work_agent_messages`；`generation_history` 加 `session_id`、`revision_plan`。
+
+### 本次修掉的"AI 文风"根因
+改造前 `patchEngine` 只拿到「用户一句话 + 正文」——**全系统唯一一处改用户文章却不知道这是谁写的 LLM 调用**。现注入：诊断 / 原始创作目标（blueprint.problem_understanding）/ Creator Profile / 编辑偏好 / 个人素材库 / 外部知识（预留接口）。
+
+### 状态
+tsc --noEmit 0 error。尚未在 Supabase 执行第 18 节 SQL，也未做端到端实聊验证。
 3. 13:25 失败真因推断：fetchActiveClusters 坏 → 无继承 → LLM 对相同主题再次生成与现存 active 簇相同的 slug → 撞唯一索引 `interest_clusters_active_code_idx`（(user_id, cluster_code) where active）。修复后 supersede 先释放 code，继承插入无冲突
 
 **修复后 full build E2E（c48d25e7）**：status=done、35 事件、9 旧簇全部 superseded、3 新 active，**`c_game_lit_social` 稳定码跨期继承成功**（此前每次随机新码）；推荐队列 3 张新卡（continuation 创业 / core_gap 数字归隐 / exploration 三国谋士）正确替换旧队列 ✅

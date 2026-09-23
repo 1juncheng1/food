@@ -3,6 +3,7 @@ import { authenticateWithToken, extractBearerToken } from '@/lib/storage'
 import { rateLimit } from '@/lib/rateLimit'
 import { fetchCreatorStyleProfile } from '@/lib/creative/styleProfileRepo'
 import { parseCreatorReport } from '@/lib/creative/creatorReport'
+import { callDeepSeekChat, stripJsonFence } from '@/lib/llm'
 
 export const maxDuration = 45
 export const dynamic = 'force-dynamic'
@@ -64,50 +65,36 @@ export async function POST(req: Request) {
     if (hint) lines.push(`【用户本人补充的一句话（同样可信）】${hint}`)
     lines.push('【基础事实】仅知道：这是一个使用本产品创作解说/故事类内容的用户。其余一概不知。')
 
-    let res: Response
-    try {
-      res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          temperature: 0.6,
-          max_tokens: 400,
-          response_format: { type: 'json_object' },
-          messages: [
-            {
-              role: 'system',
-              content: `任务：帮用户为"把用户自己写进故事"生成一个「我」角色的设定草稿（background 身份背景 + personality 性格与说话方式）。
+    let raw: string
+    const llmRes = await callDeepSeekChat({
+      temperature: 0.6,
+      max_tokens: 400,
+      jsonMode: true,
+      messages: [
+        {
+          role: 'system',
+          content: `任务：帮用户为"把用户自己写进故事"生成一个「我」角色的设定草稿（background 身份背景 + personality 性格与说话方式）。
 硬性要求：
 1. 只能基于给定材料归纳推测，严禁编造具体职业、公司、城市、年龄、姓名等"事实"；背景里允许写"从事内容创作/对xx主题持续感兴趣"这类由材料支撑的描述；
 2. background 40-80 字：身份感的模糊勾勒 + 材料中体现的关注领域，不用第二人称，用角色设定口吻（如"长期观察…的内容创作者"）；
 3. personality 40-80 字：性格倾向与说话方式（可参考语言风格与排斥元素，如"表达克制、不说教"）；
 4. 输出 JSON：{"background":"...","personality":"..."}，不要 markdown 与解释；
 5. 材料太少时写得更泛化，宁可空泛不可编造。`,
-            },
-            { role: 'user', content: lines.join('\n') },
-          ],
-        }),
-      })
-    } catch (e) {
-      console.error('self-draft 网络异常:', e)
-      return NextResponse.json({ error: 'AI 服务连接失败，请稍后重试' }, { status: 500 })
-    }
+        },
+        { role: 'user', content: lines.join('\n') },
+      ],
+    })
 
-    if (!res.ok) {
-      console.error('self-draft LLM 失败:', await res.text().catch(() => ''))
+    if (!llmRes.ok) {
+      console.error('self-draft LLM 失败:', llmRes.error)
       return NextResponse.json({ error: '草稿生成失败，请稍后重试' }, { status: 500 })
     }
 
-    const resJson = await res.json().catch(() => null)
-    const raw: string = resJson?.choices?.[0]?.message?.content ?? ''
+    raw = llmRes.content
     let background = ''
     let personality = ''
     try {
-      const parsed = JSON.parse(raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')) as {
+      const parsed = JSON.parse(stripJsonFence(raw)) as {
         background?: unknown
         personality?: unknown
       }

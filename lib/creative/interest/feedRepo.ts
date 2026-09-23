@@ -65,7 +65,10 @@ async function getTodayExcludedIds(
     .from('creator_events')
     .select('target_id')
     .eq('user_id', userId)
-    .in('type', ['recommend_dismiss', 'recommend_impression'])
+    // 列名必须是 event_type：creator_events 无 type 列，错列名会让 PostgREST 报错
+    // 并走进上面的 error 分支静默返回空集合——结果是当日已看/已 ✕ 的卡从未被排除，
+    // Feed 翻页反复出现同一批卡（"刷到哪就没了"的体感放大器）。
+    .in('event_type', ['recommend_dismiss', 'recommend_impression'])
     .gte('occurred_at', todayStart.toISOString())
   if (error) {
     console.error('[feed] 查询当日排除 ID 失败:', error)
@@ -159,20 +162,23 @@ export async function getFeedPage(
   const limit = Math.min(Math.max(opts.limit ?? FEED_PAGE_SIZE, 1), 50)
   const cursor = opts.cursor ? decodeCursor(opts.cursor) : null
 
-  // 1. 查当日已 dismiss/已曝光的卡 ID，排除这些
-  const excludedIds = await getTodayExcludedIds(supabase, userId)
+  // 1. 并行启动：当日已 dismiss/已曝光的卡 ID + 全部 active 推荐卡（P1-4 优化）
+  // 两个查询无依赖关系，原串行实现浪费 ~100-200ms
+  const [excludedIds, mainQueryRes] = await Promise.all([
+    getTodayExcludedIds(supabase, userId),
+    supabase
+      .from('interest_suggestions')
+      .select(
+        'id, cluster_code, slot, source, title, description, topic, form_hint, score, score_breakdown, evidence, market_refs, core_question, why_recommend, creation_angle, related_knowledge, reason_source'
+      )
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .order('score', { ascending: false })
+      .order('id', { ascending: true }),
+  ])
 
-  // 2. 查全部 active 推荐卡（用户日上限 100，全量读取无性能问题）
-  const { data, error } = await supabase
-    .from('interest_suggestions')
-    .select(
-      'id, cluster_code, slot, source, title, description, topic, form_hint, score, score_breakdown, evidence, market_refs, core_question, why_recommend, creation_angle, related_knowledge, reason_source'
-    )
-    .eq('user_id', userId)
-    .eq('status', 'active')
-    .order('score', { ascending: false })
-    .order('id', { ascending: true })
-
+  // 2. 主查询结果处理
+  const { data, error } = mainQueryRes
   if (error) {
     console.error('[feed] 查询 Feed 页失败:', error)
     return { cards: [], next_cursor: null, no_more: false, remaining: 0 }
@@ -214,8 +220,44 @@ export async function getFeedPage(
 }
 
 /**
+ * 查当日已出卡数（recommend_impression 事件按 target_id 去重）。
+ *
+ * 日上限的正确口径：FEED_DAILY_CAP 要限制的是"用户当天看了多少张"，
+ * 而不是"系统当天生成了多少张"。旧实现数的是生成量（created_at），
+ * 补货一频繁就会在用户根本没翻几页时撞上 100 → no_more → 又变成"刷到哪就没了"。
+ *
+ * 兜底：若前端未上报 impression，本值恒为 0，日上限形同虚设——
+ * 成本由 refill 的最小间隔（REFILL_MIN_INTERVAL_MS）兜底，不会失控。
+ */
+export async function getDailyServedCount(
+  supabase: SupabaseClient,
+  userId: string
+): Promise<number> {
+  const todayStart = new Date()
+  todayStart.setUTCHours(0, 0, 0, 0)
+  const { data, error } = await supabase
+    .from('creator_events')
+    .select('target_id')
+    .eq('user_id', userId)
+    .eq('event_type', 'recommend_impression')
+    .gte('occurred_at', todayStart.toISOString())
+    .limit(500)
+  if (error) {
+    console.error('[feed] 查当日已出卡数失败:', error.message)
+    return 0
+  }
+  const ids = new Set(
+    (data ?? [])
+      .map((r) => (r as { target_id?: unknown }).target_id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+  )
+  return ids.size
+}
+
+/**
  * 查当日新增推荐卡数量（interest_suggestions created_at 按天）。
- * 日 100 张上限依据（spec AC-6）：达上限后返回 no_more 且不触发新 LLM 调用。
+ * 仅作成本侧观测（generated_today），不再作为日上限依据——口径已改用
+ * getDailyServedCount（用户实际看到的卡数）。
  */
 export async function getDailySuggestionCount(
   supabase: SupabaseClient,

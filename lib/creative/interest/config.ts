@@ -190,6 +190,35 @@ export const FIRST_BUILD_MIN_EVENTS = 5
 export const INTERPRET_BATCH_SIZE = 20
 export const INTERPRET_WINDOW_DAYS = 90
 
+// ── WF12 MVP：Feed 轻量补货（refill）与热点补位 ──
+//
+// build 与 refill 的分工，是"无限流不断供"的核心：
+//   runBuild = 理解用户（拉事件 → 补 embedding → 原因解释 → 聚类 → 分层 → 趋势
+//              → 装配画像 → 造卡），3 次 LLM，耗时 20-150s；
+//              且第一步就会 supersedeOldBuild 清空旧队列——用户正在翻的游标立即
+//              失效，重建期间翻页必然撞到"队列空"降级。这就是"刷到哪里就没了"的根因。
+//   refill   = 只造卡（复用上次 build 落库的簇 → 候选生成 → 打分 → 追加队列），
+//              1 次 LLM，秒级完成，且不清空队列，翻页体验连续。
+//
+// 因此 Feed 库存不足时补货走 refill，只有 refill 不可行（无画像/无簇）时才回退 runBuild。
+// 这些是调度参数而非评分权重，不改变 scoreCandidate 口径，故不触发 RULE_VERSION 升版。
+
+/** 同一用户两次 refill 的最小间隔（成本闸门：与请求频率解耦） */
+export const REFILL_MIN_INTERVAL_MS = 5 * 60_000
+/** 单次 refill 的 S4 探索生成条数（小于 build 的 24，控制单次 LLM 成本） */
+export const REFILL_BATCH_SIZE = 12
+/** refill 卡中配 AI 理由的最高分条数（其余模板降级，不额外烧 LLM） */
+export const REFILL_REASON_TOP_N = 6
+/** refill 新卡与在库卡的标题去重阈值（字符 bigram Jaccard） */
+export const REFILL_TEXT_DEDUPE_THRESHOLD = 0.7
+/** 在途锁 TTL：超时未完成视为进程冻结遗留，自动释放 */
+export const REFILL_LOCK_TTL_MS = 3 * 60_000
+/** refill 构造 AI 理由所需的真实行为事实回看窗口（天） */
+export const REFILL_FACTS_WINDOW_DAYS = 90
+
+/** 每页 Feed 最多补入的全局热点卡数（仅在个性化卡不足 limit 时补位，不挤占个性化） */
+export const FEED_TRENDING_INJECT_MAX = 2
+
 // ── 趋势参数（M2 trends 消费） ──
 export const TRENDS_EWMA_ALPHA = 0.5 // 新窗口权重
 /** |slope| 超过该阈值判定上升/下降；d7 窗口零贡献判定 dormant */

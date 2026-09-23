@@ -164,6 +164,111 @@ supabase/
          → 可基于任意旧版继续迭代 → finalized 最终作品
 ```
 
+### 1c. Work Agent（AI 共创协作体）
+
+> 把「继续优化」从「一句反馈 → AI 全文重写」升级为「加载上下文 → 多轮对话 → 用户点选 → 局部修改 → 落新版本」。
+> 前端入口 `components/creative/work-agent-chat.tsx`（已替换 `work-feedback-panel.tsx`，后者保留供回滚）。
+
+```
+用户输入想法
+ → POST /api/creative/work-agent/chat  action=say
+     assembleWorkContext() 装配 7 类上下文
+     clarifyIntent()         → 2-4 个候选含义（每个带 evidence）
+     用户点选
+ → action=select_intent
+     proposeRevisions()      → 2-3 个修改方案（含 preserveItems 承诺）
+     用户点选
+ → action=select_plan
+     strategy=patch   → generateEditPatches()（已注入全上下文）→ 补丁预览 → 用户接受
+     strategy=rewrite → 回前端走 handleImprove('custom', instruction) 全文重写
+     接受后 → /api/creative/patch/decide  → 服务端 applyPatches → INSERT V(N+1)
+                                          → 回写 session_id / revision_plan
+                                          → 会话 status=applied
+```
+
+| 文件 | 职责 |
+|---|---|
+| `app/api/creative/work-agent/session/route.ts` | 会话生命周期（创建/恢复/放弃）；刷新后对话不失忆 |
+| `app/api/creative/work-agent/chat/route.ts` | 三阶段状态机（say / select_intent / select_plan） |
+| `lib/creative/workAgentContext.ts` | 上下文装配唯一出口 + `formatContextForPrompt()` 文本化 |
+| `lib/creative/intentClarifier.ts` | 阶段 1：模糊反馈 → 候选含义 |
+| `lib/creative/revisionPlan.ts` | 阶段 2：已确认意图 → 多个修改方案 |
+| `lib/creative/patchEngine.ts` | 阶段 3：段落补丁（已改造为接收 `contextText` + `plan`） |
+| `lib/creative/workAgent.ts` | 全部纯类型 + 清洗函数 + DB 行映射（前端可安全引用） |
+
+**AI 必须携带的上下文**（`assembleWorkContext` 产出，三个阶段共用同一份，避免口径漂移）：
+`work`（是哪篇）· `diagnosis`（现在什么毛病）· `goal`（用户最初想写什么，来自 blueprint.problem_understanding）
+· `creator`（谁写的，防统一 AI 文风）· `editing`（历史接受/拒绝偏好）· `materials`（用户自己的素材）· `external`（外部知识预留接口）
+
+关键约束（改动前必读）：
+- 任一步 LLM 失败都必须返回**可见**的降级提示，不静默跳到下一阶段
+- 降级顺序：补丁失败 → 提示用户确认后改走全文重写；**绝不偷偷重写**
+- 素材优先于 AI 编造；上下文中没有真实案例时，禁止编造具体数据
+- 历史对话**不进** prompt（阶段输出已是用户确认过的结论）
+
+**方向验收（Feedback Alignment）——改完必须核对「到底改没改对方向」**：
+
+此前这条链路是单向的：生成出新版本就默认"改好了"，用户只能自己通读全文才能发现
+AI 根本没按他说的改，或者顺手改掉了要求保留的部分。验收层把闭环补上。
+
+| 文件 | 职责 |
+|---|---|
+| `lib/creative/feedbackAlignment.ts` | 验收核心：确定性预检 + LLM 逐条核对 + 结论由代码裁定（含测试 23 例） |
+| `app/api/creative/alignment/route.ts` | 取服务端权威正文 → 核对 → 返回报告；校验不可用时返回 `report: null`，**不报错**（新版本已落库，验收只是锦上添花） |
+
+判定规则（一律由 `verdictOf()` 裁定，不采信 LLM 自评）：
+修改点全命中 + 保持项未破坏 + score ≥ 70 → `aligned`；任一保持项被破坏 → 最多 `partial`；score < 40 → `off`。
+
+两条接入点：补丁链路（共创面板 accept 拿到 versionId 后自行发起）· 全文重写链路（父组件落盘后回传结果，复用同一张卡展示）。
+
+**防卡死（改动前必读，这几条都踩过坑）**：
+- `stage` 的语义只能是「**有请求在飞行中**」，绝不能用来表示「等待用户点选」——
+  恢复会话时把 stage 设成 `propose`/`patch` 会让界面永久转圈且输入框禁用，而实际上没有任何请求在跑
+- 对话请求带 90s 超时 abort；生成链路带 150s 超时并写回 error 终态
+  （`AbortError` 由新任务主动中断时除外——那种情况不写 error，避免旧链路覆盖新任务状态）
+- 前端轮询（300ms）必须有收敛上限，且**每个失败分支都要复位 `improvingDirection`**，
+  否则共创面板与方向卡会永久停留在"进行中"
+- 服务端降级（没能拆出候选 / 没能给出方案）必须能继续推进：
+  缺候选时用用户原话构造 custom 意图、缺方案时用保底方案，
+  **不能 400**——那会把用户晾在"我没能拆成候选"这句提示上，界面等同卡死
+
+### 1d. 语言一致性（Language Consistency）
+
+> LLM 输出语言跟随用户输入，而不是全部硬编码成中文。
+
+```
+用户在文本框写的东西 ──► detectLanguage() ──► resolveTargetLanguage()
+                                                      │
+                     ┌────────────────────────────────┘
+                     ▼
+            languageDirective(lang) 注入 system prompt
+                     ▼
+            callDeepSeekChat 发起请求
+                     ▼
+            checkLanguageConsistency(输出) ──不一致──► 剩余预算内自纠偏重试一次
+```
+
+| 文件 | 职责 |
+|---|---|
+| `lib/languageConsistency.ts` | 检测 / 指令 / 守卫三层纯函数（含测试 `lib/languageConsistency.test.ts`） |
+| `lib/llm.ts` | LLM 网关层统一接管：注入指令 → 校验输出 → 自纠偏重试 |
+
+三层缺一不可：
+- **检测**：Unicode script 统计（含 URL/代码/数字剥离、简繁字表、拉丁语系特征词），确定性、不烧 token
+- **指令**：替换原先散落的「所有内容用中文」；显式豁免技术字段（`intent_type` / `strategy` / `modification_area` / `slug` / `content_type`），否则「请用中文输出」会把下游 switch 依赖的枚举值本地化
+- **守卫**：跑偏时在剩余预算内重试一次；预算不足或调用方关闭重试时保留首次结果——语言瑕疵好过内容丢失
+
+**语言裁决权重按链路而异**（这是最容易搞错的一点）：
+
+| 链路 | 语言以谁为准 | 理由 |
+|---|---|---|
+| `patchEngine` 局部修改 | **成稿正文** > 反馈 | 英文反馈要求改中文稿时，补丁必须仍是中文 |
+| `diagnosis` 五维诊断 | **成稿正文** > topic | 点评一篇英文稿却给中文结论无法对照使用 |
+| `plan` / `prompt-optimizer` 生成 | **用户 topic** | 创作者亲笔写的表达最能代表期望语言 |
+| `feedbackAnalyzer` / `intentClarifier` / `revisionPlan` | **用户即时反馈** | 对话式回应应跟随用户此刻的发言 |
+
+未传给网关 `language` 参数的调用点行为与改造前逐行等价，不产生回归。
+
 ### 2. 反馈系统
 ```
 /article/[id] 四个反馈按钮（乐观更新 + 失败回滚；like/dislike 再点取消；单按钮精准 pending）
@@ -213,8 +318,10 @@ GET /api/style-profile → 从 scripts + generation_history embedding 求平均
 | 表 | 用途 | 主键 | RLS |
 |---|---|---|---|
 | scripts | 素材库（含 embedding 向量） | uuid | 用户只能读写自己的 |
-| generation_history | 生成历史（embedding；版本列 project_id/version_number/blueprint/analysis/improve_direction/improve_note；版本行 id 为 `${pid}::v${N}`） | text（前端 UUID） | 用户只能读写自己的 |
+| generation_history | 生成历史（embedding；版本列 project_id/version_number/blueprint/analysis/improve_direction/improve_note/user_feedback/edit_patches/session_id/revision_plan；版本行 id 为 `${pid}::v${N}`） | text（前端 UUID） | 用户只能读写自己的 |
 | creative_projects | 创作项目（title/topic/status:active\|finalized/current_version） | uuid | 用户只能读写自己的 |
+| work_agent_sessions | Work Agent 共创会话（project_id/base_version_id/status:active\|applied\|abandoned/phase:clarify\|propose\|apply\|done） | uuid | 用户只能读写自己的 |
+| work_agent_messages | Work Agent 对话轨迹（role/kind/payload/selected_index；selected_index 记录用户挑了第几个，是偏好分析的核心信号） | uuid | 只能读自己的，仅可 insert（不可篡改历史） |
 | generation_feedback | 反馈记录 | uuid | 用户只能读写自己的 |
 | style_profiles | 风格卡（style_vector + style_dimensions 五维画像）与 Creator Model（creator_personality/topic_preferences/favorite_elements/avoid_elements 用户声明；ai_creator_summary/model_meta AI 归纳） | user_id | 用户只能读写自己的 |
 | posts | 社交动态（style_vector；post_type=moment\|archive，archive 存创作档案快照，source_project_id 溯源） | uuid | 公开帖可读，只能改自己的 |
@@ -247,3 +354,183 @@ GET /api/style-profile → 从 scripts + generation_history embedding 求平均
 - **布局**：内页用 `.inner-page` + `.inner-container`，max-width 800px 居中
 - **分类字段**：所有 Supabase 操作必须包含 `category` 字段
 - **localStorage 去重**：`getWorks()` 读取时按 id 去重
+
+---
+
+## Creator Knowledge System（创作者知识系统）
+
+> 一句话：**AI 负责「归纳」，人负责「确认」** —— 只有用户亲手确认过的知识，才允许参与生成。
+> 这套系统把「创作者知道、但 AI 不知道」的东西，变成 AI 写稿时真正拿来用的论据。
+
+### 三层数据结构（责任边界严格分离）
+
+| 层 | 落点 | 谁写 | 含义 |
+| --- | --- | --- | --- |
+| 素材理解 | `scripts.knowledge`（6 维标签 + `claims`） | AI | 「这条素材具体说了什么」 |
+| 知识单元 | `creator_knowledge`（跨素材归纳） | AI 提候选，**人确认** | 「创作者总体上持什么主张」 |
+| 生成注入 | plan / blueprint / prompt-optimizer 的 prompt 块 | 运行时 | 「这次创作实际用上了哪些主张」 |
+
+### 四个阶段
+
+1. **理解** —— `/api/creative/analyze-knowledge` → `knowledgeAnalyzer`：抽取单条素材的 6 维标签与 claims
+2. **归纳** —— `/api/creative/knowledge/build` → `knowledgeAggregator`：跨素材分组，LLM 归纳成「候选」单元
+   - 只 upsert 自己历史上产生的单元，**用户人工编辑过的单元永不被 AI 覆盖**
+   - 同一 `source_item_id` 只计一次证据（`mergeSources`），重复素材不重复加权
+3. **确认** —— `/api/creative/knowledge/[id]` PATCH：用户在 `/knowledge` 把候选提升为「已确认」
+   - **这是唯一的授权闸门**，AI 侧没有任何路径绕过
+4. **注入** —— Phase 3：`knowledgeInject` 在生成时读取「已确认 + 置信度 ≥ 0.6」的单元，
+   已在**三条链路**全部接通（见下节）
+
+### 注入口径（关键设计）
+
+迁移 0005 原本设想「`domain_scope` 数组 `&&` 重叠粗筛 + LLM 仲裁」，但落地时 `domainScope`
+的值是 LLM 从用户素材里提炼的**自由文本**（并非受控词表），对着自由文本做数组等值重叠
+几乎必然落空。因此改为沿用 `lib/material/retrieval.ts` 已有的「主题词字面交集」口径：
+
+- 权重：`concept` 命中 3 分，`domainScope` 每个命中词 2 分
+- 同一词条出现在多个字段时**只计一次**，避免同一信号重复加权、挤掉真正相关的单元
+- 长度 < 2 的词不参与匹配（中文单字必然误命中）
+- 排序「相关度 → 置信度 → id」三级兜底，**同输入必得同输出**，便于复现与回归
+- 单次最多注入 `MAX_INJECT_UNITS`（5）条
+
+这条选择同时守住了迁移里更硬的一条原则 —— **不为知识单元再建一套向量检索**：
+打分是纯函数、零额外 token、可单元测试，不存在「人类查 TK、AI 另有一套 ESA」的口径分裂。
+
+### 注入点：三条链路，同一口径
+
+| 链路 | 文件 | 注入位置 | 回传 |
+| --- | --- | --- | --- |
+| AI 创作方案 | `app/api/creative/plan/route.ts` | `GeneratePlanInput.knowledgeText` → `buildUserPrompt` | `usedKnowledgeUnits` |
+| 创作蓝图 | `app/api/creative/blueprint/route.ts` | 追加进 `styleProfileText` | `usedKnowledgeUnits` |
+| 正文生成 | `app/api/prompt-optimizer/route.ts` | 拼接进写正文的 system prompt | `usedKnowledgeUnits` |
+
+**为什么方案阶段就要注入，不能只留给正文**：方案决定「写什么、从哪个角度写」，
+正文只决定「怎么写」。若只有正文侧知道这些命题，AI 可能早在方案阶段就定了一个
+与该创作者已知结论相悖的方向，等正文再补救已经晚了——方向一旦错了，
+文笔再贴合也是替他说了不认同的话。
+
+方案阶段的 prompt 因此额外约束：**推荐方向优先采纳相关命题作为论述支点，
+三个方向均不得与这些命题相矛盾**。
+
+蓝图链路仅在 `plan.mode === 'creator'` 时注入，与风格卡完全同口径：
+灵感模式要求剥离全部隐性个人数据，而知识单元是用户多条素材的交叉归纳，
+比风格卡更私人，这里不能破例。
+
+### 用户侧可见性
+
+「AI 到底有没有用上我的知识」以前无从核对（`/knowledge` 上的「注入生成中」徽标
+只画在 UI 上，生产链路无人调用）。现在方案态直接给出答案：
+
+- `/generate` 方案态 → `PlanPanel` 顶部「本次参考了你的 N 条知识」卡片
+- 展示 `concept` / `kind` / `claim` 原文，可一键跳转 `/knowledge` 管理
+- **空数组时不渲染任何东西** —— 没用到就是没用到，不给假的「注入中」提示
+- 前端只用 `import type` 引入 `InjectedUnitSummary`，编译后被完全擦除，不增加浏览器包体积
+- 刻意不回传 `sourceItemIds`：那是素材溯源信息，属于内部债务追踪，没有理由出现在给浏览器的响应里
+
+### 注入留痕：历史作品可复盘（`generation_history.used_knowledge`）
+
+响应里的 `usedKnowledgeUnits` 只活在当次 HTTP 请求里，刷新即消失——于是历史版本
+永远答不上来「这一版当时是拿着哪几条知识写的」。迁移 `0006_generation_used_knowledge.sql`
+补上这最后一环：知识单元快照随版本行落库，成为可读的教育尚可的一部分。
+
+- **写入**：`prompt-optimizer` 的 `versionRow.used_knowledge`。`versionRow` 被项目新版本 /
+  新建项目 V1 / 降级 upsert 三个分支共用，改一处即覆盖全路径；
+  与响应里的 `usedKnowledgeUnits` 取同一个 `summarizeInjectedUnits` 结果，
+  避免「页面当时说参考了 3 条、历史里只剩 2 条」的口径分裂
+- **读出**：`GET /api/creative/projects/[projectId]` → 每版本 `usedKnowledge`
+  （经 `normalizeInjectedUnits` 校验）
+- **展示**：`/article/[id]` 的「本次参考了你的 N 条知识」卡片，随版本切换展示该版本当时的依据；
+  查看历史版本时额外提示「记录可能与现在的知识库已有出入」
+- **空值语义**：空数组一律存 `null` —— 区分「确实没参考知识」与「该行早于本列上线」
+- **JSONB 快照而非关联表**：快照是「生成当时的事实」，用户之后改 claim 措辞、撤回确认、
+  标为已过期，都不应改写历史。外键 join 会让历史随当前行漂移
+- **不可信输入**：jsonb 里躺什么形状取决于写入那天的代码版本，回读一律走
+  `normalizeInjectedUnits` 逐字段校验；缺 `concept`/`claim` 的条目直接丢弃
+  （宁可少展示一条，也不把 `undefined` 渲染给用户）
+
+### 降级约定
+
+知识是增强项，不是主链路的必经节点。表未迁移（42P01）、查询报错、数据异常时
+一律返回空并跳过注入，**绝不阻断生成**；灵感模式与游客也读不到任何知识单元。
+
+---
+
+## 登录态稳定性：为什么禁止裸调 getSession()
+
+曾经有一类难以复现的故障：用户在 `/generate` 停留一段时间后点「生成文章」，
+或切到某个页面时突然 401「登录已过期」。根因不是会话真的失效，
+而是**保护写了却没铺开**：
+
+- `getValidSession()` 具备完整防过期能力（提前 120 秒刷新、并发共享同一次刷新、
+  刷新失败不直接判未登录），但它一度只在 `add` / `materials` / `knowledge` 三处使用；
+- 其余调用点直接裸调 `supabase.auth.getSession()` —— 它**只读 localStorage 缓存、
+  不做任何刷新**。SDK 的 `autoRefreshToken` 在标签页休眠、被浏览器节流或内部 tick
+  失败时并不保证执行，于是停留超过 JWT 有效期后，这些点取到的就是过期 token。
+
+**约定：客户端取会话一律走 `getValidSession()`，禁止裸调 `getSession()`。**
+
+### 网络故障 ≠ 未登录：为什么服务端不许把「查不动网络」翻译成 401
+
+与上面并列的第二类「假掉线」，根因在**服务端的错误翻译**：
+
+`supabase.auth.getUser()` 在网络故障时**不抛异常**，而是把
+`AuthRetryableFetchError`（`name='AuthRetryableFetchError'`、`status=0`、
+`message='fetch failed'`）作为 error 原样返回。若沿用
+`if (error || !user) return 401`，一次网络抖动就被判定成「登录已过期」，
+前端拿到 401 又普遍处理为「踢回 /login」——用户看到的是莫名其妙被登出，
+而回到登录页后登录请求走的还是同一条网络，于是彻底登不进去。
+浏览器侧的 `Failed to fetch` 与服务端的 401 常常是同一个根因的两种表现。
+
+**约定：服务端一律用 `authFailureResponse()`（`lib/apiAuth.ts`）翻译鉴权失败。**
+
+- 传输故障（`AuthRetryableFetchError` / `status=0` / 网络类错误信息）→ **503 + `retryable: true`**
+- 真正的凭证失效（`AuthApiError` 且带 4xx 状态码，说明请求**到达了**服务端）→ 401
+
+**前端对称约定：只有 401 才允许 `router.push('/login')`；503 必须提示重试，
+不许当作未登录处理。** 参考实现见 `app/(main)/inspiration-feed/page.tsx`。
+护栏测试在 `lib/apiAuth.test.ts`：「任何网络类错误都不得再返回 401」。
+
+配套禁忌：**服务端不得参与 token 轮换**。Supabase 的 rotation 语义是
+「一次刷新成功后，旧 refresh_token 立即作废」，浏览器下一次刷新即
+`Invalid Refresh Token`，表现同样是"莫名掉线"。因此服务端创建 Supabase 客户端
+必须走 `createServerClient()`（显式关闭 `persistSession` / `autoRefreshToken`），
+禁止在 API 路由里直接 `createClient()`。
+
+但逐个替换几十处调用点无法根治（必然漏），所以 `AuthProvider` 额外加了一层根部保鲜：
+
+- 定时器对齐到「过期前 5 分钟」触发一次 `getValidSession()`，而非盲目轮询；
+- `visibilitychange`（可见）与 `window.focus` 时立即验活并重算调度 ——
+  「切回页面就 401」正是这个场景：离开期间错过刷新窗口，回来时本地 session 已过期，
+  而 UI 仍停留在已登录状态。
+
+这层保鲜让既有的全部调用点自动受益：session 一直是新的，无论谁去读都不会读到过期值。
+重耗时链路（如 `generationTask` 的生成流程）则仍应在出发那一刻显式调用
+`getValidSession()`，因为「请求正在飞行途中过期」是根部保鲜覆盖不到的窗口。
+
+### 涉及的表
+
+| 表名 | 用途 | 主键 | RLS |
+| --- | --- | --- | --- |
+| `creator_knowledge` | 创作者知识单元（跨素材归纳；status：候选 / 已确认 / 已拒绝 / 已过期） | uuid | 用户只能读写自己的 |
+
+### 涉及的路由
+
+| 路由 | 方法 | 说明 |
+| --- | --- | --- |
+| `/api/creative/analyze-knowledge` | POST | 素材理解：6 维标签 + claims |
+| `/api/creative/knowledge` | GET | 列出知识单元（可按 status 过滤） |
+| `/api/creative/knowledge/build` | POST | 跨素材聚合归纳，产出「候选」单元（绝不改写已确认） |
+| `/api/creative/knowledge/[id]` | PATCH | 改 status（确认 / 拒绝 / 撤回）或修正 claim |
+| `/api/prompt-optimizer` | POST | Phase 3 注入点：拼入知识块，并回传 `usedKnowledgeUnits` |
+
+前端页面：`app/(main)/knowledge/page.tsx`
+
+### 涉及的模块
+
+| 模块 | 主要导出 | 作用 |
+| --- | --- | --- |
+| `lib/creative/knowledgeAnalyzer.ts` | `analyzeKnowledge`、`reAnalyzeKnowledge`、`normalizeAnalyzeResult` | 素材理解（含澄清提问） |
+| `lib/creative/knowledgeItem.ts` | `CLAIM_KINDS`、`KnowledgeClaim`、`normalizeClaims` 等 | 素材级 claims 的结构定义与清洗 |
+| `lib/creative/knowledgeUnit.ts` | `KNOWLEDGE_STATUSES`、`CreatorKnowledgeUnit`、`normalizeKnowledgeUnit`、`isUnitInjectable`、`needsReconfirmation`、`mergeSources` | 知识单元状态机 + 清洗 + 注入门槛判定 |
+| `lib/creative/knowledgeAggregator.ts` | `groupClaims`、`UnitGroup`、归纳主流程 | 跨素材分组与候选归纳 |
+| `lib/creative/knowledgeInject.ts` | `buildKnowledgeInjection`、`relevanceScore`、`selectUnitsForPrompt`、`formatKnowledgeForPrompt`、`summarizeInjectedUnits`、`normalizeInjectedUnits` | Phase 3：注入生成链路（确定性打分，零 token）+ `used_knowledge` jsonb 回读校验 |

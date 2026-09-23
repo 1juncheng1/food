@@ -17,6 +17,8 @@
 // ============================================================
 
 import { normalizeFeedbackAnalysis, type FeedbackAnalysis } from './workAgent'
+import { callDeepSeekChat, llmTimeoutMs, stripJsonFence } from '@/lib/llm'
+import { languageDirective, resolveTargetLanguage, type LanguageCode } from '@/lib/languageConsistency'
 
 // ── 类型与常量 ────────────────────────────────────────────
 
@@ -29,6 +31,8 @@ export interface AnalyzeFeedbackInput {
   topic?: string
   /** 当前版本的 AI 诊断报告（jsonb，可选——让 AI 知道当前作品的诊断结果） */
   diagnosis?: unknown
+  /** 目标输出语言；不传时从用户反馈推断（这是对反馈的即时回应，反馈语言优先） */
+  language?: LanguageCode
 }
 
 const FEEDBACK_JSON_KEYS = [
@@ -42,7 +46,7 @@ const FEEDBACK_JSON_KEYS = [
 
 // ── Prompt 构造 ───────────────────────────────────────────
 
-function buildSystemPrompt(): string {
+function buildSystemPrompt(lang: LanguageCode): string {
   return [
     '你是创作反馈分析专家。用户给出一篇已生成作品和一条自由反馈，',
     '你需要把反馈翻译为结构化的优化蓝图，供下一版生成时注入。',
@@ -67,7 +71,9 @@ function buildSystemPrompt(): string {
     '',
     '硬性输出要求：',
     '1. 只输出一个 JSON 对象，不要 markdown 代码块、不要任何解释或前后缀文字；',
-    '2. 所有字符串字段使用中文；',
+    // intent_type 是下游 switch 消费的枚举值，一旦被本地化就会走不到任何分支，
+    // 必须显式豁免——这是"全局语言指令"最容易踩的坑。
+    languageDirective(lang, { exemptFields: ['intent_type'] }),
     '3. JSON 必须严格包含以下 key：',
     FEEDBACK_JSON_KEYS,
     '   intent_type 的值只能从 hit/style/emotion/depth/video/script/custom 中取；',
@@ -121,38 +127,37 @@ export async function analyzeFeedback(
   if (freeText.length < 2) return null // 反馈过短无法分析
   if (freeText.length > 2000) return null // 反馈过长视为异常
 
+  // 这是对某条反馈的即时回应，故反馈语言优先；作品正文只作次要依据
+  // （避免用户用第二语言提反馈时，分析结果的语言和他对不上）
+  const target =
+    input.language ??
+    resolveTargetLanguage([
+      { text: freeText, weight: 100, label: 'feedback' },
+      { text: input.topic, weight: 30, label: 'topic' },
+      { text: input.currentContent, weight: 20, label: 'article' },
+    ]).language
+
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: [
-            { role: 'system', content: buildSystemPrompt() },
-            { role: 'user', content: buildUserPrompt(input) },
-          ],
-          temperature: 0.4,
-          max_tokens: 800,
-          response_format: { type: 'json_object' },
-        }),
+      const res = await callDeepSeekChat({
+        messages: [
+          { role: 'system', content: buildSystemPrompt(target) },
+          { role: 'user', content: buildUserPrompt(input) },
+        ],
+        temperature: 0.4,
+        max_tokens: 800,
+        jsonMode: true,
+        timeoutMs: llmTimeoutMs(800),
+        language: target,
+        // 3 次循环本身就是重试；只在首次尝试做语言自纠偏，避免堆叠耗时
+        languageRetry: attempt === 0,
       })
 
       if (!res.ok) {
-        console.error('反馈分析失败:', await res.text())
+        console.error('反馈分析失败:', res.error)
         return null
       }
-      const data = await res.json()
-      const raw: string = data?.choices?.[0]?.message?.content ?? ''
-      if (!raw.trim()) return null
-
-      const cleaned = raw
-        .replace(/^```(?:json)?\s*/i, '')
-        .replace(/\s*```$/, '')
-      const parsed = normalizeFeedbackAnalysis(JSON.parse(cleaned))
+      const parsed = normalizeFeedbackAnalysis(JSON.parse(stripJsonFence(res.content)))
       if (parsed) return parsed
     } catch (e) {
       console.error(`反馈分析异常（第 ${attempt + 1} 次）:`, e)

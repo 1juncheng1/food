@@ -6,6 +6,7 @@
 
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabaseServer'
+import { authFailureResponse } from '@/lib/apiAuth'
 import { getProfile } from '@/lib/creative/interest/interestRepo'
 import { BUILD_MAX_AGE_HOURS } from '@/lib/creative/interest/config'
 
@@ -18,7 +19,7 @@ export async function GET(req: Request) {
   const supabase = createServerClient(token)
   const { data: userData, error: authErr } = await supabase.auth.getUser()
   if (authErr || !userData.user) {
-    return NextResponse.json({ error: '未登录' }, { status: 401 })
+    return authFailureResponse(authErr)
   }
   const userId = userData.user.id
 

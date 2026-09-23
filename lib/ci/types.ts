@@ -63,6 +63,19 @@ export interface CIItem {
     reference_value: string | null
   } | null
 
+  /**
+   * 语义向量（bge-m3 1024 维），服务侧检索用，不进任何前端响应。
+   *
+   * 存在意义：ci_items 是跨用户共享的市场情报池，只有带上向量才能做
+   * 「用户兴趣 × 市场热点」的相关性排序（S2 市场候选 / Feed 热点补位）。
+   * 该列自 WF0 建列以来从未被写入——消费侧（getMarketCandidates）因此
+   * 恒过滤掉全部条目，S2 来源实际是死代码。WFP1 在落库前补算修复。
+   *
+   * 未补算为 null（key 缺失/超时/超条目上限），检索侧按"无向量"降级处理，
+   * 不做零向量冒充。
+   */
+  embedding?: number[] | null
+
   fetched_at: string
   /** TTL 到期后不作为分析依据 */
   expires_at: string

@@ -15,6 +15,7 @@ import {
   decodeCursor,
   getFeedPage,
   getDailySuggestionCount,
+  getDailyServedCount,
   applyExploreQuota,
   FEED_DAILY_CAP,
   FEED_TOPUP_THRESHOLD,
@@ -216,6 +217,44 @@ describe('getDailySuggestionCount', () => {
     }
     const count = await getDailySuggestionCount(supabase as never, 'user-1')
     expect(count).toBe(0)
+  })
+})
+
+// ── getDailyServedCount（WF12：日上限口径从"生成量"改为"已出卡数"）──
+
+describe('getDailyServedCount', () => {
+  function makeServedChain(terminal: unknown) {
+    const chain: Record<string, ReturnType<typeof vi.fn>> = {}
+    chain.select = vi.fn().mockReturnValue(chain)
+    chain.eq = vi.fn().mockReturnValue(chain)
+    chain.gte = vi.fn().mockReturnValue(chain)
+    chain.limit = vi.fn().mockReturnValue(chain)
+    chain.then = vi.fn((resolve: (v: unknown) => unknown) =>
+      Promise.resolve(terminal).then(resolve)
+    )
+    return chain
+  }
+
+  it('同一张卡多次曝光只计一次（按 target_id 去重）', async () => {
+    const chain = makeServedChain({
+      data: [
+        { target_id: 'r1' },
+        { target_id: 'r1' },
+        { target_id: 'r2' },
+        { target_id: null },
+      ],
+      error: null,
+    })
+    const supabase = { auth: { getUser: vi.fn() }, from: vi.fn().mockReturnValue(chain) }
+    const n = await getDailyServedCount(supabase as never, 'user-1')
+    expect(n).toBe(2)
+  })
+
+  it('查询出错返回 0（降级为不限制，成本由补货最小间隔兜底）', async () => {
+    const chain = makeServedChain({ data: null, error: { message: 'DB error' } })
+    const supabase = { auth: { getUser: vi.fn() }, from: vi.fn().mockReturnValue(chain) }
+    const n = await getDailyServedCount(supabase as never, 'user-1')
+    expect(n).toBe(0)
   })
 })
 

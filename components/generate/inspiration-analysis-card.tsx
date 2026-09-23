@@ -20,7 +20,7 @@ import type {
   OptimizationSuggestions,
   OpportunityQuadrant,
 } from '@/lib/creative/inspirationAnalyzer'
-import { getOpportunityQuadrant } from '@/lib/creative/inspirationAnalyzer'
+import { getOpportunityQuadrant } from '@/lib/creative/opportunity'
 import type { MarketReport, MarketStrategyAction } from '@/lib/creative/marketAnalyzer'
 
 interface RecalledMaterialPreview {

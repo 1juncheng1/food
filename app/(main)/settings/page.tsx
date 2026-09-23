@@ -1,7 +1,17 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
 import {
   InterviewDialog,
 } from '@/components/creative/interview-dialog'
@@ -33,6 +43,15 @@ export default function SettingsPage() {
   // 导出状态
   const [exporting, setExporting] = useState(false)
   const [exportMsg, setExportMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+
+  // 注销账号
+  const router = useRouter()
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
+  // 密码二次确认：服务端会用它重新校验身份后才允许注销
+  const [deletePassword, setDeletePassword] = useState('')
 
   // 昵称（auth.users.user_metadata.display_name，个人主页展示用）
   const [nickname, setNickname] = useState('')
@@ -141,6 +160,35 @@ export default function SettingsPage() {
       setExportMsg({ type: 'error', text: '网络异常，请稍后重试' })
     } finally {
       setExporting(false)
+    }
+  }
+
+  /** 永久注销账号 */
+  async function handleDeleteAccount() {
+    if (deleting) return
+    setDeleteError('')
+    setDeleting(true)
+    try {
+      const res = await fetch('/api/delete-account', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ password: deletePassword }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => null)
+        setDeleteError(err?.error ?? '注销失败，请稍后重试')
+        return
+      }
+      // 清除本地状态，跳转到首页
+      await supabase.auth.signOut()
+      router.push('/')
+    } catch {
+      setDeleteError('网络异常，请稍后重试')
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -317,6 +365,92 @@ export default function SettingsPage() {
               {exportMsg.text}
             </p>
           )}
+        </section>
+
+        {/* ── 危险区域：注销账号 ── */}
+        <section className="border border-red-500/20 rounded-xl px-6 py-6 mt-8 bg-red-500/5">
+          <h2 className="text-sm font-medium text-red-300 mb-6">危险区域</h2>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-zinc-300">注销账号</p>
+              <p className="text-xs text-zinc-500 mt-1">
+                永久删除你的账号和所有数据，包括灵感、素材库、生成历史、关注关系。此操作不可撤销。
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteOpen(true)
+                setDeleteConfirm('')
+                setDeletePassword('')
+                setDeleteError('')
+              }}
+              className="border-red-500/40 text-red-400 hover:bg-red-500/10 hover:text-red-300 shrink-0"
+            >
+              注销账号
+            </Button>
+          </div>
+
+          <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+            <DialogContent showCloseButton={!deleting}>
+              <DialogHeader>
+                <DialogTitle className="text-red-300">确认注销账号</DialogTitle>
+                <DialogDescription>
+                  此操作将永久删除你的账号和所有数据，包括灵感、素材库、生成历史、风格卡、关注关系。操作不可撤销，数据无法恢复。
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="py-2">
+                <p className="text-xs text-zinc-400 mb-2">
+                  请输入 <span className="text-red-400 font-mono">删除</span> 以确认：
+                </p>
+                <input
+                  type="text"
+                  value={deleteConfirm}
+                  onChange={(e) => setDeleteConfirm(e.target.value)}
+                  disabled={deleting}
+                  placeholder="删除"
+                  className="w-full bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-4 py-2 text-sm text-zinc-200 focus:outline-none focus:border-red-500/50"
+                />
+                <p className="text-xs text-zinc-400 mb-2 mt-4">
+                  请输入当前账号密码（服务端会二次校验后才允许注销）：
+                </p>
+                <input
+                  type="password"
+                  value={deletePassword}
+                  onChange={(e) => setDeletePassword(e.target.value)}
+                  disabled={deleting}
+                  placeholder="登录密码"
+                  autoComplete="current-password"
+                  className="w-full bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-4 py-2 text-sm text-zinc-200 focus:outline-none focus:border-red-500/50"
+                />
+              </div>
+
+              {deleteError && (
+                <p className="text-xs text-red-400">{deleteError}</p>
+              )}
+
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setDeleteOpen(false)}
+                  disabled={deleting}
+                >
+                  取消
+                </Button>
+                <Button
+                  onClick={handleDeleteAccount}
+                  disabled={
+                    deleting || deleteConfirm.trim() !== '删除' || deletePassword.length === 0
+                  }
+                  className="bg-red-600 text-white hover:bg-red-500 disabled:opacity-40"
+                >
+                  {deleting ? '注销中…' : '永久注销'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </section>
       </div>
     </div>

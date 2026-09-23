@@ -20,6 +20,7 @@ import type { CIPlatform } from '../../ci/types'
 import { cosineSimilarity } from './vectorMath'
 import type { Candidate } from './candidates'
 import { cleanTopicExcerpt } from './normalize'
+import { llmTimeoutSignal } from '@/lib/llm'
 import type { InterestLayer } from './types'
 import { EXPLORATION_MAX_SEEDS } from './config'
 
@@ -308,6 +309,7 @@ export async function getExplorationCandidates(
         Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
         'Content-Type': 'application/json',
       },
+      signal: llmTimeoutSignal(1200),
       body: JSON.stringify({
         model: 'deepseek-chat',
         messages: [

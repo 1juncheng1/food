@@ -87,7 +87,12 @@ export async function GET(req: Request) {
 // ── POST：记录/更新发布表现（覆盖式）──
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as PerformanceBody
+    let body: PerformanceBody
+    try {
+      body = (await req.json()) as PerformanceBody
+    } catch {
+      return NextResponse.json({ error: '请求体不是合法 JSON' }, { status: 400 })
+    }
 
     const auth = await authenticate(req)
     if (!auth) {
@@ -126,7 +131,8 @@ export async function POST(req: Request) {
 
     if (error) {
       console.error('performance POST 更新失败:', error)
-      return NextResponse.json({ error: `记录失败: ${error.message}` }, { status: 500 })
+      // 服务端日志保留细节；数据库报错可能含表名/策略名，不能回显给客户端
+      return NextResponse.json({ error: '记录失败' }, { status: 500 })
     }
     if (!data || data.length === 0) {
       return NextResponse.json({ error: '作品记录不存在或已失效' }, { status: 404 })

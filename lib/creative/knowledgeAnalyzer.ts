@@ -9,10 +9,20 @@
 //   5. 与 FeedbackAnalyzer/IntentClarity 同模式：LLM 调用 + normalize 兜底
 // ============================================================
 
-import { KNOWLEDGE_DIMENSIONS, type KnowledgeItem } from './knowledgeItem'
+import { callDeepSeekChat } from '@/lib/llm'
+import {
+  KNOWLEDGE_DIMENSIONS,
+  normalizeClaims,
+  type KnowledgeItem,
+} from './knowledgeItem'
 
-const DEEPSEEK_API_URL = 'https://api.siliconflow.cn/v1/chat/completions'
-const DEEPSEEK_MODEL = 'deepseek-ai/DeepSeek-V3'
+// 使用 DeepSeek 官方通道（与项目其他 15+ 个分析器一致，走 lib/llm.ts 统一封装）。
+// 历史上这里走过硅基流动 deepseek-ai/DeepSeek-V3，实测延迟 3s~36s 且极不稳定；
+// 官方 deepseek-chat 同任务稳定在 0.5~1.2s。
+const MODEL_NAME = 'deepseek-chat'
+
+/** LLM 请求超时：素材分析是用户同步等待路径，30s 兜底快速降级 */
+const LLM_TIMEOUT_MS = 30_000
 
 // ── 1. 类型定义 ───────────────────────────────────────────
 
@@ -71,10 +81,36 @@ function buildSystemPrompt(): string {
     "emotion_profile": "情绪的细粒度描述（可选）",
     "thought_profile": "思想的细粒度描述（可选）",
     "creation_usage": "创作用途详述（可选）",
+    "claims": [
+      {
+        "text": "AI 不会取代老师，而是把老师从重复劳动中解放出来",
+        "kind": "观点",
+        "confidence": 0.8,
+        "source": "素材明确表述，无外部出处",
+        "applicableScopes": ["AI 教育", "教育类内容"]
+      }
+    ],
     "confidence": 0.85
   }
 }
 \`\`\`
+
+### claims（知识主张）—— Creator Knowledge System 的上游燃料
+
+6 维标签回答"这条素材是什么类型"，claims 回答"这条素材到底说了什么"。二者不可互相替代。
+
+每条 claim 是一个**完整命题**，字段：
+- text: string —— 完整句子形式的命题，禁止写成词组或标签
+- kind: '事实'（客观事实）| '数据'（数据/统计）| '观点'（观点判断）| '经历'（个人经历）
+- confidence: number —— 0-1；有明确出处或可验证的给 0.8+，纯主观断言给 0.4-0.6
+- source: string —— 素材内提及的出处，没有则填空字符串
+- applicableScopes: string[] —— 适用场景（决定在什么选题下才该引用），最多 3 个，没有则空数组
+
+抽取要求：
+- 优先抽"这条素材到底说了什么"，而不是它属于什么类别
+- kind="观点" 尤其重要：用户表达出的立场必须保留原意，禁止概括成中性标签
+  （反例：把"AI 不是取代老师，而是辅助老师"缩写成"AI 与教育"）
+- 宁缺毋滥：没有明确主张时给空数组，禁止把 meaning 换种说法重复塞进来
 
 ### 场景 B：信息不足，需要澄清
 
@@ -121,7 +157,8 @@ ${KNOWLEDGE_DIMENSIONS.audience.values.join(' / ')}
 5. **confidence**：0-1 之间，<0.6 表示不确定
 6. **tags 严格从枚举中选**，不要输出枚举外的值
 7. **meaning 和 content_type 必须非空**
-8. **content_tags 和 usage_tags 至少 1 个**`
+8. **content_tags 和 usage_tags 至少 1 个**
+9. **claims 宁缺毋滥**：没有明确的事实/数据/观点/经历时给空数组，不要把 meaning 换个说法塞进去充当 claim`
 }
 
 function buildUserPrompt(input: AnalyzeKnowledgeInput): string {
@@ -155,64 +192,42 @@ ${input.category}`
 export async function analyzeKnowledge(
   input: AnalyzeKnowledgeInput
 ): Promise<AnalyzeKnowledgeResult> {
-  try {
-    const apiKey = process.env.SILICONFLOW_API_KEY
-    if (!apiKey) {
-      console.error('knowledgeAnalyzer: SILICONFLOW_API_KEY 未配置')
-      return { needs_clarification: false, degraded: true }
-    }
+  // callDeepSeekChat 内置超时/错误处理/key 检查，失败统一返回 { ok:false }
+  const res = await callDeepSeekChat({
+    messages: [
+      { role: 'system', content: buildSystemPrompt() },
+      { role: 'user', content: buildUserPrompt(input) },
+    ],
+    temperature: 0.3,
+    // 1000 → 1400：claims 每条都是完整命题，token 消耗明显高于标签枚举
+    max_tokens: 1400,
+    jsonMode: true,
+    timeoutMs: LLM_TIMEOUT_MS,
+  })
 
-    const response = await fetch(DEEPSEEK_API_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: DEEPSEEK_MODEL,
-        messages: [
-          { role: 'system', content: buildSystemPrompt() },
-          { role: 'user', content: buildUserPrompt(input) },
-        ],
-        temperature: 0.3,
-        max_tokens: 1000,
-        response_format: { type: 'json_object' },
-      }),
-    })
-
-    if (!response.ok) {
-      console.error('knowledgeAnalyzer: LLM 调用失败', response.status)
-      return { needs_clarification: false, degraded: true }
-    }
-
-    const data = await response.json()
-    const content = data?.choices?.[0]?.message?.content
-    if (!content) {
-      return { needs_clarification: false, degraded: true }
-    }
-
-    // 解析 JSON
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(content)
-    } catch {
-      // 尝试提取 JSON 块
-      const match = content.match(/\{[\s\S]*\}/)
-      if (!match) {
-        return { needs_clarification: false, degraded: true }
-      }
-      try {
-        parsed = JSON.parse(match[0])
-      } catch {
-        return { needs_clarification: false, degraded: true }
-      }
-    }
-
-    return normalizeAnalyzeResult(parsed)
-  } catch (e) {
-    console.error('knowledgeAnalyzer 异常:', e)
+  if (!res.ok) {
+    console.error('knowledgeAnalyzer: LLM 调用失败:', res.error)
     return { needs_clarification: false, degraded: true }
   }
+
+  // 解析 JSON
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(res.content)
+  } catch {
+    // 尝试提取 JSON 块
+    const match = res.content.match(/\{[\s\S]*\}/)
+    if (!match) {
+      return { needs_clarification: false, degraded: true }
+    }
+    try {
+      parsed = JSON.parse(match[0])
+    } catch {
+      return { needs_clarification: false, degraded: true }
+    }
+  }
+
+  return normalizeAnalyzeResult(parsed)
 }
 
 // ── 4. 兜底清洗 ───────────────────────────────────────────
@@ -305,6 +320,8 @@ function normalizeKnowledgeFromLLM(raw: unknown): KnowledgeItem | null {
 
   if (!meaning || !content_type) return null
 
+  const claims = normalizeClaims(o.claims)
+
   const content_tags = arr(o.content_tags ?? o.contentTags, KNOWLEDGE_DIMENSIONS.content.values, 3)
   const thought_tags = arr(o.thought_tags ?? o.thoughtTags, KNOWLEDGE_DIMENSIONS.thought.values, 3)
   const emotion_tags = arr(o.emotion_tags ?? o.emotionTags, KNOWLEDGE_DIMENSIONS.emotion.values, 3)
@@ -330,9 +347,11 @@ function normalizeKnowledgeFromLLM(raw: unknown): KnowledgeItem | null {
     emotion_profile: s(o.emotion_profile ?? o.emotionProfile, 200) || undefined,
     thought_profile: s(o.thought_profile ?? o.thoughtProfile, 200) || undefined,
     creation_usage: s(o.creation_usage ?? o.creationUsage, 300) || undefined,
+    // claims 最多 5 条；无主张的素材（如纯情绪素材）会得到 undefined，不写库
+    claims: claims.length > 0 ? claims : undefined,
     confidence,
     analyzed_at: new Date().toISOString(),
-    ai_model: DEEPSEEK_MODEL,
+    ai_model: MODEL_NAME,
     clarification_asked: false, // 由调用方在传 clarifications 后设置为 true
   }
 }
@@ -360,77 +379,55 @@ export interface ReAnalyzeKnowledgeInput {
 export async function reAnalyzeKnowledge(
   input: ReAnalyzeKnowledgeInput
 ): Promise<{ knowledge: KnowledgeItem | null; degraded: boolean }> {
+  const res = await callDeepSeekChat({
+    messages: [
+      { role: 'system', content: buildReAnalyzeSystemPrompt() },
+      { role: 'user', content: buildReAnalyzeUserPrompt(input) },
+    ],
+    temperature: 0.3,
+    // 同上：容纳 claims
+    max_tokens: 1400,
+    jsonMode: true,
+    timeoutMs: LLM_TIMEOUT_MS,
+  })
+
+  if (!res.ok) {
+    console.error('knowledgeAnalyzer: reAnalyze LLM 调用失败:', res.error)
+    return { knowledge: null, degraded: true }
+  }
+
+  let parsed: unknown
   try {
-    const apiKey = process.env.SILICONFLOW_API_KEY
-    if (!apiKey) {
-      console.error('knowledgeAnalyzer: SILICONFLOW_API_KEY 未配置')
-      return { knowledge: null, degraded: true }
-    }
-
-    const response = await fetch(DEEPSEEK_API_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: DEEPSEEK_MODEL,
-        messages: [
-          { role: 'system', content: buildReAnalyzeSystemPrompt() },
-          {
-            role: 'user',
-            content: buildReAnalyzeUserPrompt(input),
-          },
-        ],
-        temperature: 0.3,
-        max_tokens: 1000,
-        response_format: { type: 'json_object' },
-      }),
-    })
-
-    if (!response.ok) {
-      console.error('knowledgeAnalyzer: reAnalyze LLM 调用失败', response.status)
-      return { knowledge: null, degraded: true }
-    }
-
-    const data = await response.json()
-    const content = data?.choices?.[0]?.message?.content
-    if (!content) {
-      return { knowledge: null, degraded: true }
-    }
-
-    let parsed: unknown
+    parsed = JSON.parse(res.content)
+  } catch {
+    const match = res.content.match(/\{[\s\S]*\}/)
+    if (!match) return { knowledge: null, degraded: true }
     try {
-      parsed = JSON.parse(content)
+      parsed = JSON.parse(match[0])
     } catch {
-      const match = content.match(/\{[\s\S]*\}/)
-      if (!match) return { knowledge: null, degraded: true }
-      try {
-        parsed = JSON.parse(match[0])
-      } catch {
-        return { knowledge: null, degraded: true }
-      }
-    }
-
-    // re_analyze 模式下 LLM 只返回 knowledge（不会 clarification）
-    const o = parsed as Record<string, unknown>
-    const rawKnowledge = o.knowledge ?? parsed
-    let knowledge = normalizeKnowledgeFromLLM(rawKnowledge)
-    if (!knowledge) {
       return { knowledge: null, degraded: true }
     }
+  }
 
-    // 纠错后 confidence 降 0.1（最低 0.3）
-    knowledge = {
+  // re_analyze 模式下 LLM 只返回 knowledge（不会 clarification）
+  const o = parsed as Record<string, unknown>
+  const rawKnowledge = o.knowledge ?? parsed
+  const knowledge = normalizeKnowledgeFromLLM(rawKnowledge)
+  if (!knowledge) {
+    return { knowledge: null, degraded: true }
+  }
+
+  // 纠错后 confidence 降 0.1（最低 0.3）
+  return {
+    knowledge: {
       ...knowledge,
+      // 用户纠错的往往是标签或意义，不是主张本身。LLM 若这次没重述 claims，
+      // 沿用旧的，避免一次纠错把历史主张静默清空。
+      claims: knowledge.claims ?? input.previousKnowledge.claims,
       confidence: Math.max(0.3, knowledge.confidence - 0.1),
       clarification_asked: true, // 纠错也算一次"用户参与"
-    }
-
-    return { knowledge, degraded: false }
-  } catch (e) {
-    console.error('knowledgeAnalyzer reAnalyze 异常:', e)
-    return { knowledge: null, degraded: true }
+    },
+    degraded: false,
   }
 }
 
@@ -454,10 +451,26 @@ function buildReAnalyzeSystemPrompt(): string {
     "emotion_profile": "情绪的细粒度描述（可选）",
     "thought_profile": "思想的细粒度描述（可选）",
     "creation_usage": "创作用途详述（可选）",
+    "claims": [
+      {
+        "text": "完整句子形式的命题（不要写成词组或标签）",
+        "kind": "事实 | 数据 | 观点 | 经历",
+        "confidence": 0.8,
+        "source": "素材内提及的出处，没有则空字符串",
+        "applicableScopes": ["适用场景"]
+      }
+    ],
     "confidence": 0.75
   }
 }
 \`\`\`
+
+## claims 修正原则
+
+- claims 是"这条素材到底说了什么"（事实/数据/观点/经历），不要写成标签
+- 若用户的纠错涉及素材含义，请同步修正 claims；否则原样保留
+- text 必须是完整命题；kind="观点" 要保留用户原立场，禁止概括为中性标签
+- 没有明确主张时给空数组
 
 ## 6 维标签枚举（必须只从这些值中选，每维 1-3 个）
 

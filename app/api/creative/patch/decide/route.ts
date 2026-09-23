@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { authFailureResponse } from '@/lib/apiAuth'
 import { createServerClient } from '@/lib/supabaseServer'
 import {
   applyPatches,
@@ -6,7 +7,7 @@ import {
   validatePatches,
   type ModificationPatch,
 } from '@/lib/creative/patchEngine'
-import { normalizeFeedbackAnalysis } from '@/lib/creative/workAgent'
+import { normalizeFeedbackAnalysis, normalizeRevisionPlan } from '@/lib/creative/workAgent'
 import {
   applyMemoryEvent,
   parseEditingProfile,
@@ -38,6 +39,8 @@ interface DecideBody {
   freeText?: unknown // 用户反馈原文（记忆事件溯源用）
   analysis?: unknown // FeedbackAnalysis（记忆事件语义来源）
   summary?: unknown // AI 补丁摘要（improve_note 用）
+  sessionId?: unknown // Work Agent 会话 id（可选；本次修改属于哪一次共创讨论）
+  plan?: unknown // 用户确认的修改方案 RevisionPlan（可选；落为新版本的"修改原因"证据）
 }
 
 function str(v: unknown, max: number): string {
@@ -75,7 +78,7 @@ export async function POST(req: Request) {
       error: authErr,
     } = await supabase.auth.getUser(token)
     if (authErr || !user) {
-      return NextResponse.json({ error: '登录已过期' }, { status: 401 })
+      return authFailureResponse(authErr)
     }
 
     const body = (await req.json().catch(() => ({}))) as DecideBody
@@ -85,6 +88,9 @@ export async function POST(req: Request) {
     if (!generationId) return NextResponse.json({ error: '缺少版本标识' }, { status: 400 })
 
     const analysis = normalizeFeedbackAnalysis(body.analysis)
+    const sessionId = str(body.sessionId, 100)
+    // 方案由客户端回传 → 服务端必须重洗一遍，防止伪造"保持全文不变"绕过 LLM 硬约束
+    const plan = normalizeRevisionPlan(body.plan)
 
     // ── 查基底版本行（RLS + 显式归属双校验）──
     const { data: row, error: rowErr } = await supabase
@@ -124,6 +130,16 @@ export async function POST(req: Request) {
 
     if (!accepted) {
       await recordMemory()
+      // 补丁被拒 → 会话回退到方案阶段，让用户换一种改法，而不是把这次共创判死。
+      // status 仍为 active：用户明显还想改（否则不会点"继续调整"）。
+      if (sessionId) {
+        const { error: rejErr } = await supabase
+          .from('work_agent_sessions')
+          .update({ phase: 'propose', updated_at: new Date().toISOString() })
+          .eq('id', sessionId)
+          .eq('user_id', user.id)
+        if (rejErr) console.error('decide：会话回退失败:', rejErr.message)
+      }
       return NextResponse.json({ ok: true, rejected: true })
     }
 
@@ -188,6 +204,9 @@ export async function POST(req: Request) {
         improve_note: str(body.summary, 300) || summarizePatches(valid),
         user_feedback: freeText || null,
         edit_patches: valid,
+        // 复盘线索：这个版本由哪次共创讨论产出、用户当初选的是哪个方案
+        session_id: sessionId || null,
+        revision_plan: plan ?? null,
       })
       return { vn, err: insertErr ?? null }
     }
@@ -209,6 +228,37 @@ export async function POST(req: Request) {
       .from('creative_projects')
       .update({ current_version: vn, updated_at: new Date().toISOString() })
       .eq('id', pid)
+
+    // ── 会话收尾：本次共创已落地成哪个版本 ──
+    // 这一步不做的话，版本表里就只有"改完了"，没有"怎么商量出来的"，
+    // 数据飞轮拿不到「用户选了什么」这一步的关键信号。
+    if (sessionId) {
+      const { data: curSession } = await supabase
+        .from('work_agent_sessions')
+        .select('meta')
+        .eq('id', sessionId)
+        .eq('user_id', user.id)
+        .maybeSingle()
+      const prevMeta =
+        curSession && typeof curSession.meta === 'object' && curSession.meta !== null
+          ? (curSession.meta as Record<string, unknown>)
+          : {}
+      const { error: doneErr } = await supabase
+        .from('work_agent_sessions')
+        .update({
+          status: 'applied',
+          phase: 'done',
+          meta: {
+            ...prevMeta,
+            appliedVersionId: `${pid}::v${vn}`,
+            appliedVersionNumber: vn,
+          },
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', sessionId)
+        .eq('user_id', user.id)
+      if (doneErr) console.error('decide：会话收尾失败:', doneErr.message)
+    }
 
     return NextResponse.json({
       ok: true,

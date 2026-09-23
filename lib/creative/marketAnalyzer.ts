@@ -13,6 +13,8 @@
 // 禁止编造具体标题/数据/创作者名（详见 buildSystemPrompt）。
 // ============================================================
 
+import { llmTimeoutSignal } from '@/lib/llm'
+
 // ── 类型 ────────────────────────────────────────────────────
 
 /** 数据来源模式：落库 + 前端展示免责标注的依据 */
@@ -228,6 +230,7 @@ const llmEstimateProvider: MarketDataProvider = {
             Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
             'Content-Type': 'application/json',
           },
+          signal: llmTimeoutSignal(1800),
           body: JSON.stringify({
             model: 'deepseek-chat',
             messages: [
@@ -319,6 +322,7 @@ const webSearchProvider: MarketDataProvider = {
             Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
             'Content-Type': 'application/json',
           },
+          signal: llmTimeoutSignal(1800),
           body: JSON.stringify({
             model: 'deepseek-chat',
             messages: [

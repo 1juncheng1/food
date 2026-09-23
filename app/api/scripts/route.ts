@@ -1,9 +1,11 @@
-import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
+import { createServerClient } from '@/lib/supabaseServer'
+import { authFailureResponse } from '@/lib/apiAuth'
 import { toCategory } from '@/lib/constants'
 import { rateLimit } from '@/lib/rateLimit'
 import { updateUserStyleVector } from '@/lib/styleVector'
 import { trackEvent } from '@/lib/creative/interest/eventTracker'
+import { MATERIAL_TYPES, type MaterialType } from '@/lib/creative/material'
 
 // 防止 Vercel 函数超时，设置最大执行时间为 60 秒
 export const maxDuration = 60
@@ -22,15 +24,10 @@ export async function POST(req: Request) {
     }
 
     // 用 token 创建 Supabase 客户端（这样 RLS 会生效，确保用户只能写自己的数据）
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      },
-    })
+    // 必须走 createServerClient：它显式关闭 persistSession/autoRefreshToken。
+    // 服务端一旦参与 token 轮换（rotation），浏览器持有的 refresh_token 会立即作废，
+    // 用户下一次刷新就变成 "Invalid Refresh Token" —— 即"莫名其妙掉登录"。
+    const supabase = createServerClient(token)
 
     // 获取当前用户
     const {
@@ -39,7 +36,7 @@ export async function POST(req: Request) {
     } = await supabase.auth.getUser()
 
     if (userError || !user) {
-      return NextResponse.json({ error: '用户验证失败' }, { status: 401 })
+      return authFailureResponse(userError)
     }
 
     // 简单限流：每用户每分钟最多 10 次，防止恶意刷接口
@@ -66,6 +63,36 @@ export async function POST(req: Request) {
         { status: 400 }
       )
     }
+
+    // ── Phase 2 新增字段（materialType/groupId/source，全部可选）──
+    const materialType: MaterialType | undefined = body.materialType
+    const groupId: string | null = body.groupId ?? null
+    const source: string | null = typeof body.source === 'string' ? body.source : null
+
+    // materialType 校验：传了就必须是 9 种枚举之一
+    if (materialType !== undefined && !(MATERIAL_TYPES as readonly string[]).includes(materialType)) {
+      return NextResponse.json(
+        { error: '素材类型不合法，请从 9 种类型中选择' },
+        { status: 400 }
+      )
+    }
+
+    // groupId 校验：传了就必须归属当前用户（防跨用户攻击）
+    if (groupId) {
+      const { data: groupRow, error: groupError } = await supabase
+        .from('material_groups')
+        .select('id')
+        .eq('id', groupId)
+        .eq('user_id', user.id)
+        .maybeSingle()
+      if (groupError || !groupRow) {
+        return NextResponse.json(
+          { error: '所选分组不存在或无权访问' },
+          { status: 400 }
+        )
+      }
+    }
+    // source 直接存，不做枚举校验（接受任意字符串）
 
     // 调用 SiliconFlow Embedding API 把文本转成向量
     const embeddingResponse = await fetch('https://api.siliconflow.cn/v1/embeddings', {
@@ -102,6 +129,9 @@ export async function POST(req: Request) {
         type: 'text',
         category,
         embedding,
+        material_type: materialType ?? null,
+        group_id: groupId,
+        source,
       })
       .select('id')
       .single()

@@ -15,6 +15,8 @@
 // 纯类型 + 纯函数 + 服务端 LLM 调用，前端只 import 类型。
 // ============================================================
 
+import { llmTimeoutSignal } from '@/lib/llm'
+
 /** 澄清维度：5 个关键信息缺口（按对最终结果影响从大到小排序） */
 export type ClarificationDimension =
   | 'goal' // 用户目标：为什么需要这个内容
@@ -432,6 +434,7 @@ export async function judgeIntentClarity(
           Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
           'Content-Type': 'application/json',
         },
+        signal: llmTimeoutSignal(800),
         body: JSON.stringify({
           model: 'deepseek-chat',
           messages: [

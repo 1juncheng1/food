@@ -12,7 +12,9 @@
 //   - 失败降级：全文重写链路（prompt-optimizer improve 模式）始终可用
 // ============================================================
 
-import type { FeedbackAnalysis } from './workAgent'
+import type { FeedbackAnalysis, RevisionPlan } from './workAgent'
+import { callDeepSeekChat, llmTimeoutMs, stripJsonFence } from '@/lib/llm'
+import { languageDirective, resolveTargetLanguage, type LanguageCode } from '@/lib/languageConsistency'
 
 // ── 1. 类型 ───────────────────────────────────────────────
 
@@ -44,6 +46,22 @@ export interface PatchGenerationInput {
   rejectedPatches?: ModificationPatch[]
   /** 上一轮已生成的补丁（继续调整时的上下文） */
   previousPatches?: ModificationPatch[]
+  /**
+   * Work Agent 统一上下文块：诊断 / 原始目标 / 创作者画像 / 编辑偏好 / 个人素材。
+   * 由 formatContextForPrompt(ctx, { includeContent: false }) 产出（正文由本函数自带，不重复注入）。
+   *
+   * 为什么必填（尽管类型上可选以兼容旧调用方）：
+   *   没有它，LLM 只知道「一篇匿名文章 + 一句反馈」，改写结果必然退化成通用 AI 腔调——
+   *   这是局部修改链路最大的失败模式，也是本次重构要修的核心问题。
+   */
+  contextText?: string
+  /** 用户在阶段 2 确认的修改方案（其 preserveItems 并入硬约束） */
+  plan?: RevisionPlan | null
+  /**
+   * 目标输出语言。不传时自动推断，且**以被改写正文的语言为准**（而非反馈语言）：
+   * 英文反馈要求改中文稿件时，补丁必须仍是中文。
+   */
+  language?: LanguageCode
 }
 
 // ── 2. 纯函数：段落切分与融合（前后端共用）────────────────
@@ -186,10 +204,12 @@ export function normalizeEditPatches(
 
 const MAX_PATCH_CONTENT_LENGTH = 12000 // 超长文章不适合补丁流（输入截断会破坏段落定位），直接降级
 
-function buildSystemPrompt(): string {
+function buildSystemPrompt(lang: LanguageCode): string {
   return [
     '你是文章修改补丁专家。用户对一篇已生成文章提出反馈，',
     '你的任务不是重写全文，而是生成「段落级修改补丁」：只改真正需要改的段落，其余段落原样保留。',
+    '',
+    languageDirective(lang, { extra: 'revised_text 的语言必须与原文一致，不要翻译语种。' }),
     '',
     '输出规则：',
     '- 用户会提供带编号的段落列表（[1] [2] ...）；segment_index 必须取自该编号（1-based）；',
@@ -200,23 +220,51 @@ function buildSystemPrompt(): string {
     '- 补丁数量 ≤5；没有真正需要修改的段落就不要输出该段；',
     '- 「必须保持不变」清单是硬约束，涉及内容禁止出现在 revised_text 的改动中；',
     '- revised_text 的文风、人称、时态必须与原文一致；',
+    '  若上下文给出了创作者画像，改写必须贴合该画像的表达习惯——把作者的个人语感',
+    '  改成通用书面腔，等同于改坏了，即使用户没明说这条要求；',
+    '- 需要案例/数据支撑时，优先使用上下文「用户个人素材库」里的真实素材；',
+    '  素材库没有且你不掌握事实时，禁止编造具体数字、人名、机构名，改为强化论述本身；',
     '- 修改范围优先参考「影响范围」标注的段落位置（如"开头"对应前 1-2 段）；',
     '- 如果反馈本质上需要全文重写（如"换个话题重写"），输出空 patches 数组。',
     '',
     '硬性输出要求：',
     '1. 只输出一个 JSON 对象，不要 markdown 代码块、不要任何解释文字；',
-    '2. 所有字符串使用中文；',
+    languageDirective(lang),
     '3. JSON 结构：{"patches":[{"segment_index":1,"segment_excerpt":"...","original_excerpt":"...","revised_text":"...","reason":"..."}],"summary":"一句话说明本次共改了什么"}',
   ].join('\n')
 }
 
 function buildUserPrompt(input: PatchGenerationInput, segments: string[]): string {
-  const lines: string[] = [
-    '请为以下文章生成段落级修改补丁。',
-    '',
-    `用户反馈原文：${input.freeText}`,
-  ]
+  const lines: string[] = ['请为以下文章生成段落级修改补丁。']
+
+  // 上下文优先：让 LLM 先读完「这篇是谁写的、现在什么毛病、用户最初想表达什么」，
+  // 再看那句反馈。顺序反了就会退化成脱离作品的通用改写。
+  if (input.contextText) {
+    lines.push('', '=== 作品上下文（必须优先遵循）===', input.contextText, '=== 上下文结束 ===')
+  }
+
+  lines.push('', `用户反馈原文：${input.freeText}`)
   if (input.topic) lines.push(`创作主题：${input.topic}`)
+
+  // 保持项并集：analysis（AI 自行判断）∪ plan（用户确认的承诺），去重后一次性下发
+  const preserve = [
+    ...(input.plan?.preserveItems ?? []),
+    ...(input.analysis?.preserveItems ?? []),
+  ].filter((v, i, a) => v && a.indexOf(v) === i)
+
+  if (input.plan) {
+    lines.push(
+      '',
+      '--- 用户已确认的修改方案（必须按此执行，不得自行扩大范围）---',
+      `方案：${input.plan.title}`,
+      `做法：${input.plan.description}`,
+      input.plan.expectedImpact ? `预期影响：${input.plan.expectedImpact}` : '',
+      input.plan.modificationArea.length
+        ? `修改范围：${input.plan.modificationArea.join('、')}`
+        : '',
+      input.plan.risk ? `风险提示：${input.plan.risk}` : ''
+    )
+  }
   if (input.analysis) {
     lines.push(
       `AI 对反馈的理解：${input.analysis.userIntentSummary}`,
@@ -227,10 +275,11 @@ function buildUserPrompt(input: PatchGenerationInput, segments: string[]): strin
     if (input.analysis.impactScope?.length) {
       lines.push(`影响范围：${input.analysis.impactScope.join('、')}`)
     }
-    if (input.analysis.preserveItems?.length) {
-      lines.push(`必须保持不变（硬约束）：${input.analysis.preserveItems.join('、')}`)
-    }
   }
+  if (preserve.length > 0) {
+    lines.push(`必须保持不变（硬约束）：${preserve.join('、')}`)
+  }
+
   lines.push('', `--- 文章段落列表（共 ${segments.length} 段）---`)
   segments.forEach((seg, i) => {
     lines.push(`[${i + 1}] ${seg}`)
@@ -269,36 +318,39 @@ export async function generateEditPatches(
   const segments = splitParagraphs(content)
   if (segments.length < 2) return null // 单段文章无从"局部修改"
 
+  // 输出语言必须以「被改写的正文」为准，而不是用户的反馈。
+  // 反例：用户用英文说 "make the ending more emotional"，但稿件本身是中文时，
+  // 若按反馈语言生成补丁，就会把整段中文改成英文——这是本链路最严重的失败模式。
+  // 反馈只在正文语言判不出时才作为次要依据。
+  const target =
+    input.language ??
+    resolveTargetLanguage([
+      { text: content, weight: 100, label: 'article' },
+      { text: input.topic, weight: 40, label: 'topic' },
+      { text: freeText, weight: 20, label: 'feedback' },
+    ]).language
+
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: [
-            { role: 'system', content: buildSystemPrompt() },
-            { role: 'user', content: buildUserPrompt(input, segments) },
-          ],
-          temperature: 0.5,
-          max_tokens: 3000,
-          response_format: { type: 'json_object' },
-        }),
+      const res = await callDeepSeekChat({
+        messages: [
+          { role: 'system', content: buildSystemPrompt(target) },
+          { role: 'user', content: buildUserPrompt(input, segments) },
+        ],
+        temperature: 0.5,
+        max_tokens: 3000,
+        jsonMode: true,
+        language: target,
+        // 第二次尝试是兜底重来，不再叠加语言自纠偏，避免把总耗时拖到网关超时
+        languageRetry: attempt === 0,
+        timeoutMs: attempt === 0 ? 45_000 : llmTimeoutMs(3000),
       })
 
       if (!res.ok) {
-        console.error('补丁生成失败:', await res.text())
+        console.error('补丁生成失败:', res.error)
         return null
       }
-      const data = await res.json()
-      const raw: string = data?.choices?.[0]?.message?.content ?? ''
-      if (!raw.trim()) continue
-
-      const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-      const { patches, summary } = normalizeEditPatches(JSON.parse(cleaned))
+      const { patches, summary } = normalizeEditPatches(JSON.parse(stripJsonFence(res.content)))
 
       // 锚点校验：全部失配 → 重试一次（附上轮被剔信息没有额外通道，靠 LLM 重新对齐）
       if (patches.length === 0) continue

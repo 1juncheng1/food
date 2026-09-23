@@ -7,6 +7,8 @@
 //   - 降级卡 reason 不再用答非所问的「大众创作方向」：
 //       guest       → 引导登录
 //       cold_start  → 告知画像积累中、第一篇创作后即有定制选题
+//   - 成本防线：游客与失效 token 不触发 ingestGlobalTrending（走 Tavily 付费搜索，
+//     匿名请求不应成为成本入口）；仅登录用户的 cold_start 路径保留后台懒触发
 // ============================================================
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -115,7 +117,7 @@ describe('GET /api/inspirations：降级文案诚实化（行为E）', () => {
 })
 
 describe('GET /api/inspirations：P1 真实热点冷启动', () => {
-  it('游客请求且当日有全局热点 → 返回真实热点卡 fallback_source=trending，并后台触发摄取', async () => {
+  it('游客请求且当日有全局热点 → 返回真实热点卡 fallback_source=trending，但不触发后台摄取', async () => {
     getGlobalTrending.mockResolvedValue([
       { title: '真实热点1', description: '热点描述1', category: 'AI工具最新趋势', url: 'https://x/1', platform: 'web_search' },
       { title: '真实热点2', description: '热点描述2', category: '副业变现新方向', url: null, platform: 'news' },
@@ -129,16 +131,17 @@ describe('GET /api/inspirations：P1 真实热点冷启动', () => {
     // WF10 诚实文案不回退：游客仍看到登录引导 reason
     expect(body.inspirations[0].reason).toContain('登录')
     await flushAsync()
-    expect(ingestGlobalTrending).toHaveBeenCalledTimes(1)
+    // 摄取走 Tavily 付费搜索，匿名请求不得成为成本入口
+    expect(ingestGlobalTrending).not.toHaveBeenCalled()
   })
 
-  it('无当日热点 → 回退静态模板 fallback_source=template，仍触发一次后台摄取（懒触发）', async () => {
+  it('无当日热点 → 回退静态模板 fallback_source=template，游客不触发摄取', async () => {
     const res = await get()
     const body = await res.json()
     expect(body.fallback_source).toBe('template')
     expect(body.inspirations[0].title).toBe('模板选题A')
     await flushAsync()
-    expect(ingestGlobalTrending).toHaveBeenCalledTimes(1)
+    expect(ingestGlobalTrending).not.toHaveBeenCalled()
   })
 
   it('冷启动登录用户同样走真实热点路径', async () => {

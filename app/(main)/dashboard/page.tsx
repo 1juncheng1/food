@@ -207,6 +207,11 @@ export default function DashboardPage() {
     return () => window.removeEventListener('pagehide', onPageHide)
   }, [])
 
+  // P2-3：进入 dashboard 后台预取灵感推荐页路由（用户高概率下一步进入）
+  useEffect(() => {
+    router.prefetch('/inspiration-feed')
+  }, [router])
+
   async function handleDeleteWork(work: GeneratedWork, e: React.MouseEvent) {
     e.stopPropagation()
     const id = work.id

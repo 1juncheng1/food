@@ -18,6 +18,8 @@ import {
 import { parseCreatorReport, type CreatorReport, type DnaItem } from './creatorReport'
 import type { ClarificationAnswer } from './intentClarity'
 import { KNOWLEDGE_DIMENSIONS, type UsageTag } from './knowledgeItem'
+import { llmTimeoutSignal } from '@/lib/llm'
+import { languageDirective, resolveTargetLanguage, type LanguageCode } from '@/lib/languageConsistency'
 
 /** 语言风格三维（结构化，替代旧的自由文本书写） */
 export interface PlanLanguageStyle {
@@ -364,75 +366,10 @@ export function normalizePlan(raw: unknown): CreativePlan | null {
   }
 }
 
-/**
- * 用户确认方案：把 AI 建议 + 用户修改 + 用户澄清回答冻结为蓝图超集。
- * 纯函数，无 LLM / IO；前端在点击"使用方案，生成文章"时调用。
- *
- * 阶段 3：clarifications 来自用户澄清面板的原始回答。
- * - 直接挂到 FrozenPlan.clarifications 落库（供跨设备恢复）
- * - 同时把 clarifications 中的 scenario 注入 problem_understanding
- *   （AI 可能没输出 scenario，但用户明确说了使用场景）
- */
-export function freezePlan(
-  plan: CreativePlan,
-  edits?: PlanEdits,
-  clarifications?: ClarificationAnswer[]
-): FrozenPlan {
-  const selectedKey = edits?.directionKey ?? plan.recommended_direction_key
-  const direction =
-    plan.directions.find((d) => d.key === selectedKey) ?? plan.directions[0]
-
-  const languageStyle: PlanLanguageStyle = {
-    pace: edits?.languageStyle?.pace ?? direction.language_style.pace,
-    mood: edits?.languageStyle?.mood ?? direction.language_style.mood,
-    expression: edits?.languageStyle?.expression ?? direction.language_style.expression,
-  }
-
-  const viewpoint = edits?.viewpoint?.trim() || direction.viewpoint
-  const contentType = edits?.contentType?.trim() || plan.content_type
-
-  // 阶段 3：从 clarifications 中提取 scenario，覆盖 problem_understanding.scenario
-  // 用户明确说了"使用场景=小红书"，AI 不能把它改成"公众号"——用户回答优先于 AI 推断
-  let problemUnderstanding = plan.problem
-  if (problemUnderstanding && clarifications?.length) {
-    const scenarioAnswer = clarifications.find((c) => c.dimension === 'scenario')
-    if (scenarioAnswer?.answer) {
-      problemUnderstanding = {
-        ...problemUnderstanding,
-        scenario: scenarioAnswer.answer,
-      }
-    }
-  }
-
-  return {
-    // ── 旧蓝图字段（进化系统/版本/诊断继续读这些）──
-    title_direction: direction.title,
-    positioning: direction.desc ? `${direction.title}：${direction.desc}` : direction.title,
-    target_audience: plan.target_audience,
-    structure: direction.structure,
-    emotion_curve: direction.emotion_curve,
-    opening_hook: direction.opening_hook,
-    core_conflict: direction.core_conflict,
-    ending: direction.ending,
-    strategy: direction.strategy,
-    persona_hint: viewpoint,
-    // ── 超集新字段 ──
-    content_type: contentType,
-    language_style: languageStyle,
-    // 内容战略块随冻结方案落库（"为什么这样写"的战略决策记录）
-    ...(plan.strategy ? { content_strategy: plan.strategy } : {}),
-    ...(direction.strategy_mode ? { strategy_mode: direction.strategy_mode } : {}),
-    // 市场约束随冻结方案落库，进入正文生成 prompt 作为硬约束
-    ...(plan.market_constraints ? { market_constraints: plan.market_constraints } : {}),
-    word_count: edits?.wordCount ?? plan.recommended_word_count,
-    // 阶段 3：AI 推断的素材用途标签（替代 CATEGORY_TO_USAGE 映射）
-    ...(plan.usage_tag ? { usage_tag: plan.usage_tag } : {}),
-    // 问题理解随冻结方案落库（generation_history.blueprint jsonb，零表结构变更）
-    problem_understanding: problemUnderstanding,
-    // 阶段 3：用户澄清回答原始值（跨设备恢复用）
-    ...(clarifications?.length ? { clarifications } : {}),
-  }
-}
+// freezePlan 是纯函数，已抽到 ./planFreeze（零运行时依赖），
+// 以便生成页（'use client'）引用时不会把本文件（含 DeepSeek 调用）拖进浏览器 bundle。
+// 此处再导出以保持既有调用方不变。
+export { freezePlan } from './planFreeze'
 
 // ── 服务端：方案生成 Prompt ─────────────────────────────────
 
@@ -500,6 +437,19 @@ export interface GeneratePlanInput {
    * undefined 时：走原 plan 生成路径，无行为变化。
    */
   inspirationContextText?: string
+  /**
+   * Creator Knowledge System Phase 3：创作者自己确认过的知识单元。
+   * 由 /api/creative/plan 调用 buildKnowledgeInjection 产出，
+   * 灵感模式与无命中时为空（undefined/空串均无行为变化）。
+   *
+   * 为什么方案阶段就要注入，不能只留给正文：方案决定"写什么、从哪个角度写"，
+   * 正文只决定"怎么写"。若只有正文侧知道这些命题，AI 可能早在方案阶段就定了
+   * 一个与该创作者已知结论相悖的方向，等到正文再补救已经晚了——方向一旦错，
+   * 文笔再贴合也是替他说了不认同的话。
+   */
+  knowledgeText?: string
+  /** 目标输出语言；不传时从用户主题推断 */
+  language?: LanguageCode
 }
 
 const PLAN_JSON_KEYS = [
@@ -517,13 +467,15 @@ const PLAN_JSON_KEYS = [
   'market_constraints',
 ].join(', ')
 
-function buildSystemPrompt(creatorMode: boolean): string {
+function buildSystemPrompt(creatorMode: boolean, lang: LanguageCode): string {
   return [
     '你是资深短视频内容策划总监，擅长只凭一个主题就为创作者设计高完播率的内容方案。',
     '你的任务：理解用户主题，产出一份结构化"创作方案"——包含内容类型判断、3 个显著不同的创作方向、每个方向的创作视角/叙事结构/语言风格，以及字数建议。',
     '硬性要求：',
     '1. 只输出一个 JSON 对象，不要 markdown 代码块、不要任何解释或前后缀文字；',
-    '2. 所有字符串字段使用中文；directions 必须是长度恰好为 3 的数组；word_count_options 为 3 个 100-5000 的正整数；',
+    // content_type 是下游的内容形态枚举，本地化后无法匹配 → 显式豁免
+    languageDirective(lang, { exemptFields: ['content_type'] }),
+    '3. directions 必须是长度恰好为 3 的数组；word_count_options 为 3 个 100-5000 的正整数；',
     '3. 三个方向必须是同一主题下显著不同的切入角度（如：心理解析 / 冲突拆解 / 商业分析），禁止只换措辞的同质方向；每个方向都要能独立成片；',
     '4. viewpoint（创作视角）必须是"分析/讲述动作"，禁止使用身份标签：',
     '   错误示例："深度影评人""科普博主"（这是标签，不是视角）；',
@@ -608,6 +560,10 @@ function buildUserPrompt(input: GeneratePlanInput): string {
     lines.push(`\n${input.charactersText}`)
     lines.push('请让至少一个方向围绕上述角色设计（在该方向的 structure、core_conflict 中体现角色位置），其余方向可自由发挥。')
   }
+  if (input.knowledgeText) {
+    lines.push(`\n${input.knowledgeText}`)
+    lines.push('请让推荐方向优先采纳其中与本次主题直接相关的命题作为论述支点（在 viewpoint、core_conflict 或 structure 中体现）；三个方向均不得与这些命题相矛盾——创作者已确认过的结论，不要在这个方案里提出相反主张。')
+  }
 
   if (input.mode === 'creator') {
     lines.push('')
@@ -626,6 +582,14 @@ function buildUserPrompt(input: GeneratePlanInput): string {
  * LLM 偶发返回非合法 JSON（尤其长输出被截断时），此处做最多 3 次尝试。
  */
 export async function generatePlan(input: GeneratePlanInput): Promise<CreativePlan | null> {
+  // 主题是创作者亲手写的表达，最能代表他期望的输出语言，权重最高
+  const target =
+    input.language ??
+    resolveTargetLanguage([
+      { text: input.topic, weight: 100, label: 'topic' },
+      { text: input.hints?.style, weight: 30, label: 'style' },
+      { text: input.inspirationContextText, weight: 10, label: 'inspiration' },
+    ]).language
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
@@ -634,10 +598,11 @@ export async function generatePlan(input: GeneratePlanInput): Promise<CreativePl
           Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
           'Content-Type': 'application/json',
         },
+        signal: llmTimeoutSignal(4600),
         body: JSON.stringify({
           model: 'deepseek-chat',
           messages: [
-            { role: 'system', content: buildSystemPrompt(input.mode === 'creator') },
+            { role: 'system', content: buildSystemPrompt(input.mode === 'creator', target) },
             { role: 'user', content: buildUserPrompt(input) },
           ],
           temperature: 0.6,

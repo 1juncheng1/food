@@ -9,6 +9,7 @@
 
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabaseServer'
+import { rateLimit, getClientIp } from '@/lib/rateLimit'
 import { getActiveSuggestions } from '@/lib/creative/interest/suggestionRepo'
 import { getProfile } from '@/lib/creative/interest/interestRepo'
 import { getFallbackInspirations } from '@/lib/creative/interest/fallbackTemplates'
@@ -99,14 +100,28 @@ async function fallbackResponse(reason: DegradeReason, building = false, stale =
   })
 }
 
+const RATE_LIMIT_PER_MIN = 30
+const RATE_WINDOW_MS = 60_000
+
 export async function GET(req: Request) {
   try {
+    // ── 限流：按客户端 IP（未登录路径无任何身份维度可用）──
+    // 本路由会 fire-and-forget 触发 runBuild（多次 LLM）与全局热点摄取（付费搜索），
+    // 无 IP 限流时匿名循环即可放大外部 API 成本。
+    const ipRl = rateLimit(`inspirations:${getClientIp(req)}`, RATE_LIMIT_PER_MIN, RATE_WINDOW_MS)
+    if (!ipRl.ok) {
+      return NextResponse.json(
+        { error: `请求过于频繁，请 ${ipRl.retryAfterSec} 秒后再试` },
+        { status: 429, headers: { 'Retry-After': String(ipRl.retryAfterSec) } }
+      )
+    }
+
     const authHeader = req.headers.get('authorization') ?? ''
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
     if (!token) {
-      // 游客路径：大众方向——P1 起为当日真实全局热点（无数据时 reader 回退模板），
-      // 并懒触发后台摄取（日闸门+在途锁保证全平台一天一轮，不阻塞本次响应）
-      void ingestGlobalTrending().catch(() => {})
+      // 游客路径：只读当日已摄取的全局热点（reader 在读不到时回退模板）。
+      // 注意：游客不触发 ingestGlobalTrending —— 摄取走 Tavily 付费搜索，
+      // 匿名请求不应成为成本入口（登录用户的 cold_start 路径仍保留懒触发）。
       return await fallbackResponse('guest')
     }
 

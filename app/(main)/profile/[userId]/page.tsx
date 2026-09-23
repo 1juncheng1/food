@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
@@ -56,6 +56,9 @@ interface ProfileData {
   posts: Post[]
 }
 
+/** 核心信息（不含 posts）：首屏优先渲染，不被作品列表阻塞 */
+type ProfileInfo = Omit<ProfileData, 'posts'>
+
 /** 格式化时间为相对时间 */
 function timeAgo(dateStr: string): string {
   const date = new Date(dateStr)
@@ -78,40 +81,71 @@ function getContentSummary(content: string): string {
 export default function ProfilePage() {
   const params = useParams<{ userId: string }>()
   const router = useRouter()
-  const [data, setData] = useState<ProfileData | null>(null)
+  // ── state 拆分（P0-3）：核心信息优先渲染，posts 独立加载 ──
+  // profileInfo：用户卡 + 统计 + 风格卡（不含 posts 数组）
+  // posts：作品列表独立 state，客户端切片显示（前 10 条，触底"查看更多"）
+  const [profileInfo, setProfileInfo] = useState<ProfileInfo | null>(null)
+  const [posts, setPosts] = useState<Post[]>([])
+  const [visibleCount, setVisibleCount] = useState(10)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [followBusy, setFollowBusy] = useState(false)
   const [accessToken, setAccessToken] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  // 客户端切片显示：visibleCount 控制当前展示条数，触底加载更多
+  const visiblePosts = posts.slice(0, visibleCount)
+  const hasMorePosts = visibleCount < posts.length
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
 
-  /** 加载个人主页数据 */
-  async function loadProfile(token: string) {
-    try {
-      const res = await fetch(`/api/profile/${params.userId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (!res.ok) {
-        const errData = await res.json().catch(() => null)
-        setError(errData?.error ?? `加载失败（${res.status}）`)
-        return
+  /** 加载个人主页数据：拆分为核心信息 + posts 两个独立 state */
+  const loadProfile = useCallback(
+    async (token: string) => {
+      // P2-1：路由切换时 abort 旧请求，避免旧响应覆盖新页面数据
+      const controller = new AbortController()
+      abortRef.current = controller
+      try {
+        const res = await fetch(`/api/profile/${params.userId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        })
+        if (!res.ok) {
+          const errData = await res.json().catch(() => null)
+          setError(errData?.error ?? `加载失败（${res.status}）`)
+          return
+        }
+        const json = await res.json()
+        const profile: ProfileData = json.profile
+        // 拆分：核心信息（不含 posts）立即渲染，posts 独立 state
+        const { posts: _posts, ...info } = profile
+        setProfileInfo(info)
+        setPosts(_posts ?? [])
+        setVisibleCount(10) // 重置切片
+        setError(null)
+      } catch (e) {
+        // AbortError 静默：路由切换触发的取消是预期行为
+        if (e instanceof Error && e.name === 'AbortError') return
+        setError('网络异常，请稍后重试')
       }
-      const json = await res.json()
-      setData(json.profile)
-      setError(null)
-    } catch {
-      setError('网络异常，请稍后重试')
+    },
+    [params.userId]
+  )
+
+  // P2-1：组件卸载时 abort 进行中的请求
+  const abortRef = useRef<AbortController | null>(null)
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort()
     }
-  }
+  }, [])
 
   /** 关注/取消关注 */
   async function handleToggleFollow() {
-    if (!accessToken || !data || followBusy) return
+    if (!accessToken || !profileInfo || followBusy) return
     setFollowBusy(true)
-    const wasFollowing = data.isFollowing
+    const wasFollowing = profileInfo.isFollowing
 
     // 乐观更新
-    setData((prev) =>
+    setProfileInfo((prev) =>
       prev
         ? {
             ...prev,
@@ -132,7 +166,7 @@ export default function ProfilePage() {
       })
       if (!res.ok) {
         // 回退
-        setData((prev) =>
+        setProfileInfo((prev) =>
           prev
             ? {
                 ...prev,
@@ -149,7 +183,7 @@ export default function ProfilePage() {
     } catch {
       setError('网络异常，请稍后重试')
       // 回退
-      setData((prev) =>
+      setProfileInfo((prev) =>
         prev
           ? {
               ...prev,
@@ -163,21 +197,16 @@ export default function ProfilePage() {
     }
   }
 
-  /** 删除帖子 */
+  /** 删除帖子（乐观更新 posts + profileInfo.postCount）*/
   async function handleDeletePost(postId: string) {
     if (!accessToken || deletingId) return
     if (!confirm('确定删除这条灵感吗？')) return
 
     setDeletingId(postId)
-    // 乐观删除：立即从列表移除
-    setData((prev) =>
-      prev
-        ? {
-            ...prev,
-            posts: prev.posts.filter((p) => p.id !== postId),
-            postCount: prev.postCount - 1,
-          }
-        : prev
+    // 乐观删除：立即从 posts 移除 + postCount - 1
+    setPosts((prev) => prev.filter((p) => p.id !== postId))
+    setProfileInfo((prev) =>
+      prev ? { ...prev, postCount: prev.postCount - 1 } : prev
     )
 
     try {
@@ -198,6 +227,21 @@ export default function ProfilePage() {
     }
   }
 
+  // ── IntersectionObserver：触底"查看更多"（客户端切片，无网络请求）──
+  useEffect(() => {
+    if (!sentinelRef.current || !hasMorePosts) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setVisibleCount((prev) => prev + 10)
+        }
+      },
+      { rootMargin: '200px' }
+    )
+    observer.observe(sentinelRef.current)
+    return () => observer.disconnect()
+  }, [hasMorePosts])
+
   useEffect(() => {
     async function init() {
       const { data: { session } } = await supabase.auth.getSession()
@@ -211,7 +255,7 @@ export default function ProfilePage() {
       setLoading(false)
     }
     init()
-  }, [params.userId, router])
+  }, [params.userId, router, loadProfile])
 
   if (loading) {
     return (
@@ -238,20 +282,20 @@ export default function ProfilePage() {
     )
   }
 
-  if (!data) return null
+  if (!profileInfo) return null
 
-  const initial = data.authorName ? data.authorName[0].toUpperCase() : 'U'
-  const creator = data.styleProfile?.creator ?? null
+  const initial = profileInfo.authorName ? profileInfo.authorName[0].toUpperCase() : 'U'
+  const creator = profileInfo.styleProfile?.creator ?? null
 
   /** 语言事实（语气/节奏/开头/篇幅）：人格卡内折叠展示；无人格时平铺 */
-  const styleFacts = data.styleProfile ? (
+  const styleFacts = profileInfo.styleProfile ? (
     <>
       {/* 语气标签 */}
       <div className="mb-5">
         <p className="text-xs text-zinc-500 mb-2.5">语气标签</p>
         <div className="flex flex-wrap gap-2">
-          {data.styleProfile.tone_tags.length > 0 ? (
-            data.styleProfile.tone_tags.map((tag) => (
+          {profileInfo.styleProfile.tone_tags.length > 0 ? (
+            profileInfo.styleProfile.tone_tags.map((tag) => (
               <span
                 key={tag}
                 className="text-xs px-2.5 py-1 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
@@ -270,19 +314,19 @@ export default function ProfilePage() {
         <div>
           <p className="text-xs text-zinc-500 mb-1.5">节奏偏好</p>
           <p className="text-sm text-zinc-300">
-            {data.styleProfile.pace_preference || '未知'}
+            {profileInfo.styleProfile.pace_preference || '未知'}
           </p>
         </div>
         <div>
           <p className="text-xs text-zinc-500 mb-1.5">常用开头</p>
           <p className="text-sm text-zinc-300">
-            {data.styleProfile.common_opening || '未知'}
+            {profileInfo.styleProfile.common_opening || '未知'}
           </p>
         </div>
         <div>
           <p className="text-xs text-zinc-500 mb-1.5">平均字数</p>
           <p className="text-sm text-zinc-300">
-            {data.styleProfile.avg_length || 0}
+            {profileInfo.styleProfile.avg_length || 0}
           </p>
         </div>
       </div>
@@ -301,33 +345,33 @@ export default function ProfilePage() {
             </div>
             <div className="min-w-0 flex-1">
               <h1 className="text-xl font-semibold text-white">
-                {data.authorName || '未知用户'}
+                {profileInfo.authorName || '未知用户'}
               </h1>
               <div className="flex gap-5 mt-2 text-sm text-zinc-400">
                 <span>
-                  <span className="text-zinc-200 font-medium">{data.postCount}</span> 帖子
+                  <span className="text-zinc-200 font-medium">{profileInfo.postCount}</span> 帖子
                 </span>
                 <span>
-                  <span className="text-zinc-200 font-medium">{data.followerCount}</span> 粉丝
+                  <span className="text-zinc-200 font-medium">{profileInfo.followerCount}</span> 粉丝
                 </span>
                 <span>
-                  <span className="text-zinc-200 font-medium">{data.followingCount}</span> 关注
+                  <span className="text-zinc-200 font-medium">{profileInfo.followingCount}</span> 关注
                 </span>
               </div>
             </div>
 
             {/* 关注按钮（不是自己时显示） */}
-            {!data.isOwn && (
+            {!profileInfo.isOwn && (
               <button
                 onClick={handleToggleFollow}
                 disabled={followBusy}
                 className={`px-5 py-2 rounded-lg text-sm font-medium transition shrink-0 ${
-                  data.isFollowing
+                  profileInfo.isFollowing
                     ? 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
                     : 'bg-indigo-600 text-white hover:bg-indigo-500'
                 } disabled:opacity-40 disabled:cursor-not-allowed`}
               >
-                {followBusy ? '处理中…' : data.isFollowing ? '已关注' : '关注'}
+                {followBusy ? '处理中…' : profileInfo.isFollowing ? '已关注' : '关注'}
               </button>
             )}
           </div>
@@ -338,7 +382,7 @@ export default function ProfilePage() {
           <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-6 mb-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-medium text-zinc-200">创作者人格</h2>
-              {data.isOwn && (
+              {profileInfo.isOwn && (
                 <Link
                   href="/style-profile"
                   className="text-xs text-indigo-400 hover:text-indigo-300 transition"
@@ -401,12 +445,12 @@ export default function ProfilePage() {
               <div className="mt-4">{styleFacts}</div>
             </details>
           </div>
-        ) : data.styleProfile ? (
+        ) : profileInfo.styleProfile ? (
           <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-6 mb-6">
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-sm font-medium text-zinc-200">创作风格</h2>
               <span className="text-xs text-zinc-500">
-                {data.styleProfile.source === 'manual' ? '手动编辑' : '自动统计'}
+                {profileInfo.styleProfile.source === 'manual' ? '手动编辑' : '自动统计'}
               </span>
             </div>
             {styleFacts}
@@ -420,13 +464,13 @@ export default function ProfilePage() {
         {/* ── 帖子列表 ── */}
         <div>
           <h2 className="text-sm font-medium text-zinc-200 mb-4">发布的灵感</h2>
-          {data.posts.length === 0 ? (
+          {posts.length === 0 ? (
             <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-8">
               <p className="text-sm text-zinc-500 text-center">还没有发布过灵感</p>
             </div>
           ) : (
             <div className="space-y-4">
-              {data.posts.map((post) => {
+              {visiblePosts.map((post) => {
                 const summary = getContentSummary(post.content)
                 return (
                   <div
@@ -440,7 +484,7 @@ export default function ProfilePage() {
                       </span>
                       <span className="text-xs text-zinc-600">{timeAgo(post.created_at)}</span>
                       {/* 删除按钮（仅自己的帖子显示） */}
-                      {data.isOwn && (
+                      {profileInfo.isOwn && (
                         <button
                           onClick={() => handleDeletePost(post.id)}
                           disabled={deletingId === post.id}
@@ -506,6 +550,25 @@ export default function ProfilePage() {
                   </div>
                 )
               })}
+
+              {/* ── 触底哨兵：客户端切片显示更多（P0-3）── */}
+              {hasMorePosts && (
+                <div
+                  ref={sentinelRef}
+                  className="flex items-center justify-center py-6"
+                >
+                  <span className="animate-pulse text-sm text-zinc-500">
+                    加载更多…
+                  </span>
+                </div>
+              )}
+
+              {/* ── 已显示全部 ── */}
+              {!hasMorePosts && posts.length > 0 && (
+                <div className="flex items-center justify-center py-6">
+                  <span className="text-xs text-zinc-600">没有更多了</span>
+                </div>
+              )}
             </div>
           )}
         </div>

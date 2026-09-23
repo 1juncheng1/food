@@ -9,6 +9,7 @@
 // ============================================================
 
 import type { CIItem } from './types'
+import { callDeepSeekChat, stripJsonFence } from '@/lib/llm'
 
 /** 富化后的条目级分析字段 */
 export interface EnrichedFields {
@@ -62,53 +63,42 @@ export async function enrichItems(items: CIItem[]): Promise<CIItem[]> {
     }))
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'deepseek-chat',
-            messages: [
-              {
-                role: 'system',
-                content: [
-                  '你是内容分析器。给你一批网页/新闻搜索结果（可能是某个创作主题相关的市场内容），逐条分析它们对内容创作者的参考价值。',
-                  '只基于给定的 title/excerpt 文本分析，禁止编造文本中不存在的具体事实（数据、人名、事件细节）。',
-                  'excerpt 太短无法判断的字段输出 null，禁止硬编。',
-                  '',
-                  '每条输出以下字段：',
-                  '- opening_structure：开头结构（≤40字，如"疑问句开场+权威背书"）',
-                  '- core_viewpoint：核心观点（≤60字，概括其立场/结论）',
-                  '- emotion_type：主导情绪（2-8字，如"职业焦虑""乐观期待""愤怒"）',
-                  '- narrative_structure：叙事结构（≤40字，如"问题→分析→建议"）',
-                  '- reference_value：对创作者的参考价值（≤60字，如"可参考其数据引用方式"）',
-                  '',
-                  '硬性输出要求：只输出一个 JSON 对象，格式：',
-                  '{"items":[{"external_id":"...","opening_structure":"...","core_viewpoint":"...","emotion_type":"...","narrative_structure":"...","reference_value":"..."}]}',
-                  'items 必须覆盖输入的每一条（按 external_id 对应），禁止增删。',
-                ].join('\n'),
-              },
-              {
-                role: 'user',
-                content: JSON.stringify({ items: input }),
-              },
-            ],
-            temperature: 0.3,
-            max_tokens: 2500,
-            response_format: { type: 'json_object' },
-          }),
+        const res = await callDeepSeekChat({
+          messages: [
+            {
+              role: 'system',
+              content: [
+                '你是内容分析器。给你一批网页/新闻搜索结果（可能是某个创作主题相关的市场内容），逐条分析它们对内容创作者的参考价值。',
+                '只基于给定的 title/excerpt 文本分析，禁止编造文本中不存在的具体事实（数据、人名、事件细节）。',
+                'excerpt 太短无法判断的字段输出 null，禁止硬编。',
+                '',
+                '每条输出以下字段：',
+                '- opening_structure：开头结构（≤40字，如"疑问句开场+权威背书"）',
+                '- core_viewpoint：核心观点（≤60字，概括其立场/结论）',
+                '- emotion_type：主导情绪（2-8字，如"职业焦虑""乐观期待""愤怒"）',
+                '- narrative_structure：叙事结构（≤40字，如"问题→分析→建议"）',
+                '- reference_value：对创作者的参考价值（≤60字，如"可参考其数据引用方式"）',
+                '',
+                '硬性输出要求：只输出一个 JSON 对象，格式：',
+                '{"items":[{"external_id":"...","opening_structure":"...","core_viewpoint":"...","emotion_type":"...","narrative_structure":"...","reference_value":"..."}]}',
+                'items 必须覆盖输入的每一条（按 external_id 对应），禁止增删。',
+              ].join('\n'),
+            },
+            {
+              role: 'user',
+              content: JSON.stringify({ items: input }),
+            },
+          ],
+          temperature: 0.3,
+          max_tokens: 2500,
+          jsonMode: true,
         })
         if (!res.ok) {
-          console.error('CI enrich 失败:', await res.text())
-          return new Map()
+          console.error('CI enrich 失败:', res.error)
+          continue // 重试
         }
-        const data = await res.json()
-        const text: string = data?.choices?.[0]?.message?.content
-        if (typeof text !== 'string' || !text.trim()) return new Map()
 
-        const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+        const cleaned = stripJsonFence(res.content)
         const parsed = JSON.parse(cleaned) as { items?: unknown }
         if (!Array.isArray(parsed.items)) return new Map()
 

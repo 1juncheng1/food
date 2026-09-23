@@ -7,28 +7,51 @@
 //   - 无 active 卡但有画像 → 全局热点补位
 //   - 无画像 → 冷启动全局热点流
 //   - 日达 100 张上限 → no_more:true
-//   - 库存 ≤8 → fire-and-forget 触发 build
+//   - 库存 ≤8 → fire-and-forget 触发补货（topUpQueue）
+//     注：refill 内部何时回退 runBuild 由 refill.test.ts 覆盖，不在此穿透断言
 // ============================================================
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { getUser, getProfile, findRunningBuild, runBuild, getGlobalTrending, getFeedPage, getDailySuggestionCount } = vi.hoisted(() => ({
+const {
+  getUser, getProfile, findRunningBuild, getLastBuild, fetchActiveClusters,
+  getGlobalTrending, getPersonalizedTrending, ingestGlobalTrending,
+  getFeedPage, getDailySuggestionCount, getDailyServedCount, topUpQueue,
+} = vi.hoisted(() => ({
   getUser: vi.fn().mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null }),
   getProfile: vi.fn().mockResolvedValue({ profile: null }),
   findRunningBuild: vi.fn().mockResolvedValue(null),
-  runBuild: vi.fn().mockResolvedValue(null),
+  getLastBuild: vi.fn().mockResolvedValue(null),
+  fetchActiveClusters: vi.fn().mockResolvedValue([]),
   getGlobalTrending: vi.fn().mockResolvedValue([]),
+  getPersonalizedTrending: vi.fn().mockResolvedValue([]),
+  ingestGlobalTrending: vi.fn().mockResolvedValue('skipped'),
   getFeedPage: vi.fn().mockResolvedValue({ cards: [], next_cursor: null, no_more: false, remaining: 0 }),
   getDailySuggestionCount: vi.fn().mockResolvedValue(0),
+  getDailyServedCount: vi.fn().mockResolvedValue(0),
+  // 补货入口：本端点的契约只是「触发它」。refill 内部何时回退 runBuild
+  // 属于 refill 自己的职责，由 lib/creative/interest/refill.test.ts 覆盖，
+  // 不在这里穿透断言（否则 refill 的整条真实依赖链要进端点单测）。
+  topUpQueue: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/lib/supabaseServer', () => ({
   createServerClient: () => ({ auth: { getUser } }),
 }))
-vi.mock('@/lib/creative/interest/interestRepo', () => ({ getProfile, findRunningBuild }))
-vi.mock('@/lib/creative/interest/builder', () => ({ runBuild }))
-vi.mock('@/lib/ci/globalTrending', () => ({ getGlobalTrending }))
-vi.mock('@/lib/creative/interest/feedRepo', () => ({ getFeedPage, getDailySuggestionCount, FEED_DAILY_CAP: 100, FEED_TOPUP_THRESHOLD: 8 }))
+vi.mock('@/lib/creative/interest/interestRepo', () => ({
+  getProfile, findRunningBuild, fetchActiveClusters, getLastBuild,
+}))
+vi.mock('@/lib/creative/interest/refill', () => ({ topUpQueue }))
+vi.mock('@/lib/ci/globalTrending', () => ({
+  getGlobalTrending, getPersonalizedTrending, ingestGlobalTrending,
+}))
+vi.mock('@/lib/creative/interest/feedRepo', () => ({
+  getFeedPage,
+  getDailySuggestionCount,
+  getDailyServedCount,
+  FEED_DAILY_CAP: 100,
+  FEED_TOPUP_THRESHOLD: 8,
+}))
 vi.mock('@/lib/creative/interest/suggestionRepo', () => ({ SuggestionRow: {} }))
 vi.mock('@/lib/creative/interest/reasonAi', () => ({
   buildReasonText: vi.fn().mockReturnValue('基于你的创作兴趣推荐'),
@@ -50,10 +73,15 @@ beforeEach(() => {
   getUser.mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null })
   getProfile.mockResolvedValue({ profile: null })
   findRunningBuild.mockResolvedValue(null)
-  runBuild.mockResolvedValue(null)
+  getLastBuild.mockResolvedValue(null)
+  fetchActiveClusters.mockResolvedValue([])
   getGlobalTrending.mockResolvedValue([])
+  getPersonalizedTrending.mockResolvedValue([])
+  ingestGlobalTrending.mockResolvedValue('skipped')
   getFeedPage.mockResolvedValue({ cards: [], next_cursor: null, no_more: false, remaining: 0 })
   getDailySuggestionCount.mockResolvedValue(0)
+  getDailyServedCount.mockResolvedValue(0)
+  topUpQueue.mockResolvedValue(undefined)
 })
 
 const flushAsync = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -146,7 +174,7 @@ describe('正常分页', () => {
 // ── 补卡触发（AC-5）──
 
 describe('补卡触发', () => {
-  it('库存 ≤8 且无在途 build → fire-and-forget runBuild', async () => {
+  it('库存 ≤8 且无在途 build → fire-and-forget 触发补货（topUpQueue）', async () => {
     getProfile.mockResolvedValue({ profile: { build_id: 'b1' } })
     getFeedPage.mockResolvedValue({
       cards: [],
@@ -156,7 +184,7 @@ describe('补卡触发', () => {
     })
     await GET(makeRequest({ token: 'tok' }))
     await flushAsync()
-    expect(runBuild).toHaveBeenCalledTimes(1)
+    expect(topUpQueue).toHaveBeenCalledTimes(1)
   })
 
   it('库存 >8 不触发 build', async () => {
@@ -169,7 +197,7 @@ describe('补卡触发', () => {
     })
     await GET(makeRequest({ token: 'tok' }))
     await flushAsync()
-    expect(runBuild).not.toHaveBeenCalled()
+    expect(topUpQueue).not.toHaveBeenCalled()
   })
 
   it('有在途 build 时不重复触发', async () => {
@@ -180,7 +208,7 @@ describe('补卡触发', () => {
     })
     await GET(makeRequest({ token: 'tok' }))
     await flushAsync()
-    expect(runBuild).not.toHaveBeenCalled()
+    expect(topUpQueue).not.toHaveBeenCalled()
   })
 })
 
@@ -188,18 +216,20 @@ describe('补卡触发', () => {
 
 describe('日 100 张上限', () => {
   it('达上限 → no_more:true 且不触发 build', async () => {
-    getDailySuggestionCount.mockResolvedValue(100)
+    // 口径是「用户当日实际看到的卡数」，不是系统生成量
+    getDailyServedCount.mockResolvedValue(100)
     const res = await GET(makeRequest({ token: 'tok' }))
     const body = await res.json()
     expect(body.no_more).toBe(true)
     expect(body.cards).toHaveLength(0)
     await flushAsync()
-    expect(runBuild).not.toHaveBeenCalled()
+    expect(topUpQueue).not.toHaveBeenCalled()
     expect(getFeedPage).not.toHaveBeenCalled()
   })
 
   it('未达上限正常处理', async () => {
-    getDailySuggestionCount.mockResolvedValue(50)
+    getDailyServedCount.mockResolvedValue(50)
+    getDailySuggestionCount.mockResolvedValue(80) // 仅 generated_today 观测
     getProfile.mockResolvedValue({ profile: { build_id: 'b1' } })
     getFeedPage.mockResolvedValue({
       cards: [], next_cursor: null, no_more: false, remaining: 20,
@@ -207,6 +237,9 @@ describe('日 100 张上限', () => {
     const res = await GET(makeRequest({ token: 'tok' }))
     const body = await res.json()
     expect(body.no_more).toBe(false)
+    expect(body.daily_count).toBe(50)
+    // 生成量 80 但没撞 100 上限 → 证明上限口径已与生成量解耦
+    expect(body.generated_today).toBe(80)
     expect(getFeedPage).toHaveBeenCalled()
   })
 })

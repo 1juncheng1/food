@@ -91,8 +91,13 @@ export async function POST(
       return NextResponse.json({ error: '无效的帖子 ID' }, { status: 400 })
     }
 
-    // ── 解析请求体 ──
-    const body = (await req.json()) as InteractionBody
+    // ── 解析请求体（JSON 非法应返回 400，而不是落到外层 catch 变成 500）──
+    let body: InteractionBody
+    try {
+      body = (await req.json()) as InteractionBody
+    } catch {
+      return NextResponse.json({ error: '请求体不是合法 JSON' }, { status: 400 })
+    }
     const interactionType = body.interactionType as InteractionType
     if (!VALID_TYPES.includes(interactionType)) {
       return NextResponse.json({ error: '无效的互动类型' }, { status: 400 })

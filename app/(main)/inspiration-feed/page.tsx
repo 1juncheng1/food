@@ -76,6 +76,9 @@ export default function InspirationFeedPage() {
       if (noMoreRef.current && !isInitial) return
       loadingMoreRef.current = true
       setLoadingMore(true)
+      // P2-1：路由切换时 abort 旧请求，避免旧响应覆盖新页面数据
+      const controller = new AbortController()
+      abortRef.current = controller
       try {
         const params = new URLSearchParams({ limit: '10' })
         if (cur) params.set('cursor', cur)
@@ -83,10 +86,21 @@ export default function InspirationFeedPage() {
           headers: tokenRef.current
             ? { Authorization: `Bearer ${tokenRef.current}` }
             : {},
+          signal: controller.signal,
         })
         if (!res.ok) {
+          // 只有真 401（确实没登录 / 登录确实过期）才跳登录页。
+          //
+          // 503 = 服务端那次网络抖动没能验完身份（见 lib/apiAuth.ts）。此时用户的
+          // 登录态大概率仍然有效。若在这里把 503 也当成"没登录"处理，一次抖动就会
+          // 把人踢到 /login——而 /login 的登录请求走的也是同一条网络，照样打不通，
+          // 用户陷入「登不上、也回不去」的死结。抖动重试即可，不该由用户承担。
           if (res.status === 401) {
             router.push('/login')
+            return
+          }
+          if (res.status === 503) {
+            setError('网络不太稳定，下拉重试一次就好')
             return
           }
           throw new Error(`HTTP ${res.status}`)
@@ -104,6 +118,8 @@ export default function InspirationFeedPage() {
         setNoMore(nm)
         setFallbackSource(fs)
       } catch (e) {
+        // AbortError 静默：路由切换触发的取消是预期行为
+        if (e instanceof Error && e.name === 'AbortError') return
         setError(e instanceof Error ? e.message : '加载失败')
       } finally {
         loadingMoreRef.current = false
@@ -113,6 +129,14 @@ export default function InspirationFeedPage() {
     },
     [router]
   )
+
+  // P2-1：组件卸载时 abort 进行中的请求（防止旧响应覆盖新页面）
+  const abortRef = useRef<AbortController | null>(null)
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort()
+    }
+  }, [])
 
   // ── 初始化 ──
   useEffect(() => {

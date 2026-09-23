@@ -10,6 +10,7 @@
 // ============================================================
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { CATEGORIES } from '@/lib/constants'
 import type {
   CreativePlan,
@@ -18,11 +19,18 @@ import type {
   PlanLanguageStyle,
   StrategyMode,
 } from '@/lib/creative/plan'
+// 仅类型导入：编译后被擦除，不会把服务端注入模块打进浏览器包
+import type { InjectedUnitSummary } from '@/lib/creative/knowledgeInject'
 
 interface PlanPanelProps {
   plan: CreativePlan
   /** 本次方案的主题（卡片头部回显） */
   topic: string
+  /**
+   * Creator Knowledge System Phase 3：本次方案实际参考的知识单元。
+   * 为空数组时不渲染该卡片 —— 没有用到就是没有用到，不给假徽标。
+   */
+  knowledgeUnits: InjectedUnitSummary[]
   /** 阶段 B：方案已确认（阶段 C 接通真实生成前的锁定态） */
   confirmed: boolean
   onConfirm: (edits: PlanEdits) => void
@@ -180,6 +188,7 @@ function StrategyBlock({ plan }: { plan: CreativePlan }) {
 export function PlanPanel({
   plan,
   topic,
+  knowledgeUnits,
   confirmed,
   onConfirm,
   onReanalyze,
@@ -252,6 +261,40 @@ export function PlanPanel({
           </p>
         </div>
       </div>
+
+      {/* Creator Knowledge System Phase 3：本次方案用了创作者哪些已确认的知识。
+          放在最靠前的位置——用户第一眼就该知道 AI 这次是"拿着什么在帮他想"，
+          这是判断方案能不能信的第一道关，不该藏在折叠面板里。 */}
+      {knowledgeUnits.length > 0 && (
+        <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 p-5">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <p className="text-[11px] font-medium text-violet-300 tracking-wide uppercase">
+              本次参考了你的 {knowledgeUnits.length} 条知识
+            </p>
+            <Link
+              href="/knowledge"
+              className="shrink-0 text-[10px] text-zinc-500 hover:text-violet-300 transition"
+            >去管理 →</Link>
+          </div>
+
+          <ul className="mt-3 space-y-2.5">
+            {knowledgeUnits.map((u, i) => (
+              <li key={i} className="flex items-start gap-2">
+                <span className="shrink-0 mt-1.5 w-1 h-1 rounded-full bg-violet-400/70" />
+                <div className="min-w-0">
+                  <span className="text-xs text-violet-200/90">{u.concept}</span>
+                  {u.kind && <span className="ml-1.5 text-[10px] text-zinc-500">{u.kind}</span>}
+                  <p className="text-xs text-zinc-300 leading-relaxed mt-0.5">{u.claim}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+
+          <p className="mt-3 text-[10px] text-zinc-600 leading-relaxed">
+            命题来自你多条素材的交叉印证且经你逐条确认，AI 已作为可信论据；名单之外的主张不会代你编写。
+          </p>
+        </div>
+      )}
 
       {/* ⓪ 问题理解：AI 先理解"你想解决什么问题"（问题分析层核心产物） */}
       {plan.problem && (

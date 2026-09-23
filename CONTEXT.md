@@ -13,3 +13,9 @@
 | `supabase.auth.resend` | 重发 OTP API,签名 `resend({ email, type: 'signup' })` | 受 60s 发送冷却限制 |
 | Supabase Dashboard | Supabase 项目控制台,配置 email_confirm / OTP 模式 / SMTP / 限流 | 配置项不进 git,需在 runbook 记录 |
 | Custom SMTP | 生产环境必须配置的第三方 SMTP(Resend/SendGrid/腾讯云/阿里云) | 开发环境可用 Supabase 默认邮件(3 封/小时配额) |
+| 灵感卡 / Suggestion | 「AI 发现的创作机会」中的一条可创作选题推荐,落库于 interest_suggestions | 一条卡 = title/description/topic + slot + source + 五因子 score + AI 推荐理由;status: active/superseded |
+| 画像 build / runBuild | 消费 creator_events 全量事件 → 聚类 → 评分 → 生成灵感卡队列的一次性重建过程 | interest_builds 记录 running/done/failed;每轮 build 开始会 supersede 旧卡 |
+| 槽位 / slot | 卡的多样性分桶:core_gap / evidence_followup / exploration / continuation | selectSlots 按槽配额选卡;exploration=相邻兴趣探索 |
+| 降级卡 / fallback | 无画像/队列空/游客/异常时展示的非个性化卡 | 必须诚实标注状态(WF10),不得伪装个性化 |
+| 全局热点 / ci_items | 跨用户共享的市场情报表,CI 适配层(Tavily 等)抓取后写入 | 用户个性化读取走 S2 getMarketCandidates;冷启动全局流读 query_hash=global:v1:<date> |
+| Feed 游标 | /api/inspirations/feed 的无状态分页标记(last_score+last_id+日种子) | 不落库;曝光/dismiss 去重以 creator_events 服务端记录为准 |

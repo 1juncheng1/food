@@ -23,13 +23,16 @@ import {
   type CreativeDiagnosis,
   type DimensionKey,
   type NextActionKey,
-} from '@/lib/creative/diagnosis'
+} from '@/lib/creative/diagnosisMeta'
 import { DiagnosisCard } from '@/components/creative/diagnosis-card'
-import { WorkFeedbackPanel } from '@/components/creative/work-feedback-panel'
+import type { AlignmentReport } from '@/lib/creative/feedbackAlignment'
+// Work Agent：用对话式共创替换原「自由反馈输入框」（保留其内部快捷方向入口）
+import { WorkAgentChat } from '@/components/creative/work-agent-chat'
 import { PerformanceCard } from '@/components/creative/performance-card'
-import type { FeedbackAnalysis } from '@/lib/creative/workAgent'
+import type { FeedbackAnalysis, RevisionPlan } from '@/lib/creative/workAgent'
 import { formatFeedbackForPrompt } from '@/lib/creative/workAgent'
 import type { ModificationPatch } from '@/lib/creative/patchEngine'
+import type { InjectedUnitSummary } from '@/lib/creative/knowledgeInject'
 import type { WorkTags } from '@/lib/creative/workAnalysis'
 import ShareToPlazaModal from '@/components/share/share-to-plaza-modal'
 import { CATEGORIES } from '@/lib/constants'
@@ -52,6 +55,18 @@ interface ProjectVersion {
   analysis: CreativeDiagnosis | null
   feedbackStatus: string | null
   createdAt: string
+  // ── Work Agent：本版本「改了什么 / 为什么改」的证据链 ──
+  /** 服务端融合落地的段落补丁（原文摘录 + 修订文 + 理由） */
+  editPatches: ModificationPatch[]
+  /** 用户当时确认的修改方案快照（null=该版本不是 Work Agent 共创产出） */
+  revisePlan: RevisionPlan | null
+  /** 产出该版本的共创会话 id（可回放完整对话，本期前端暂不跳转） */
+  sessionId: string | null
+  /**
+   * Creator Knowledge System Phase 3：本版本生成时依据的创作者知识单元。
+   * 空数组 = 当时没参考任何知识（灵感模式/游客/无匹配单元），据此不渲染该区块。
+   */
+  usedKnowledge: InjectedUnitSummary[]
 }
 
 export default function ArticlePage() {
@@ -69,6 +84,15 @@ export default function ArticlePage() {
   const feedbackInFlightRef = useRef(false) // 供轮询闭包判断，避免 GET 对账覆盖乐观状态
   const [feedbackError, setFeedbackError] = useState<string | null>(null) // 反馈失败提示（失败时回退 UI 状态）
   const [editMode, setEditMode] = useState(false)
+  // 方向验收：定向迭代（改进/重写）落盘后，核对新版本是否真的落在用户要的方向上
+  const [alignment, setAlignment] = useState<AlignmentReport | null>(null)
+  const [aligning, setAligning] = useState(false)
+  // 待验收基准（改动前的版本 + 用户的原话），新版本落盘后消费一次即清空
+  const pendingAlignRef = useRef<{
+    baseVersionId: string
+    freeText: string
+    intentLabel?: string
+  } | null>(null)
   const [editedText, setEditedText] = useState('')
   const [savingEdit, setSavingEdit] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
@@ -124,6 +148,10 @@ export default function ArticlePage() {
   // ── 数据加载：轮询任务状态，直到作品落盘（数据就绪才展示页面内容）──
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | undefined
+    // 轮询兜底：任务卡在 running 永不收敛时（请求挂死、或链路被中断后状态没回写），
+    // 前端会 300ms 一次无限转下去，且 improvingDirection 永不复位，
+    // 表现就是"点了改进之后一直转圈"。超过这个上限按失败处理，把控制权还给用户。
+    const staleDeadline = Date.now() + 180_000
     // 本次 effect 生命周期内已与后端对过账的版本行 id（pid::vN 或本地 id）
     let feedbackLoadedFor: string | null = null
     // 阶段 5：work-tags 标签分析同样按版本行 id 去重
@@ -163,6 +191,13 @@ export default function ArticlePage() {
       //    关键：「再来一版 / 换个方向」复用同一 id，旧作品一直存在，
       //    若先判作品会立刻停轮询导致 thinking 卡死、新结果永远刷不出来。
       if (running) {
+        // 转圈上限：任务迟迟不收敛时不能无限等下去
+        if (Date.now() > staleDeadline) {
+          setImprovingDirection(null) // 先复位，否则共创面板与方向卡会永久禁用
+          setError('生成时间过长已中断，请重新发起')
+          setPending(false)
+          return true
+        }
         setPending(true)
         setError(null)
         if (task.blueprint) setBlueprint(task.blueprint)
@@ -180,6 +215,13 @@ export default function ArticlePage() {
           return true
         }
         setImprovingDirection(null) // 定向迭代任务已完成，恢复方向卡
+        // 定向迭代刚落盘 → 触发一次方向验收。
+        // 立即清空标记：轮询每 300ms 都会走到这里，不清会无限重复发起校验请求。
+        if (pendingAlignRef.current && w.versionId) {
+          const base = pendingAlignRef.current
+          pendingAlignRef.current = null
+          void verifyImproveAlignment(w.versionId, base)
+        }
         setWork(w)
         if (w.blueprint) {
           setBlueprint(w.blueprint)
@@ -252,6 +294,9 @@ export default function ArticlePage() {
       }
 
       // 4) 既无作品也无任务：链接错误，或生成途中刷新页面导致内存任务丢失
+      //    必须复位 improvingDirection：任务已随刷新丢失，没有任何东西会再把它清掉，
+      //    不清的话方向卡与 AI 共创面板会永久停留在"进行中"。
+      setImprovingDirection(null)
       setError('文章不存在，或生成任务已中断（生成途中刷新页面会丢失任务）')
       setPending(false)
       return true
@@ -502,6 +547,10 @@ export default function ArticlePage() {
             analysis: unknown
             feedbackStatus: string | null
             createdAt: string
+            editPatches?: ModificationPatch[]
+            revisePlan?: RevisionPlan | null
+            sessionId?: string | null
+            usedKnowledge?: InjectedUnitSummary[]
           }>
         } | null) => {
           if (cancelled || !data?.versions) return
@@ -520,6 +569,10 @@ export default function ArticlePage() {
               analysis: parseDiagnosis(v.analysis),
               feedbackStatus: v.feedbackStatus,
               createdAt: v.createdAt,
+              editPatches: Array.isArray(v.editPatches) ? v.editPatches : [],
+              revisePlan: v.revisePlan ?? null,
+              sessionId: v.sessionId ?? null,
+              usedKnowledge: Array.isArray(v.usedKnowledge) ? v.usedKnowledge : [],
             }))
           )
         })
@@ -658,6 +711,16 @@ export default function ArticlePage() {
     if (!fromVersionId) return
     if (direction === 'custom' && !instruction?.trim()) return
     setImprovingDirection(direction)
+    // 记下验收基准：新版本落盘后要用「改动前的版本 + 用户原话」核对方向。
+    // custom 且填了指令 → 用用户原话；否则用方向卡的中文文案，保证验收始终有据可依。
+    const dirMeta = NEXT_ACTION_META.find((m) => m.key === direction)
+    pendingAlignRef.current = {
+      baseVersionId: fromVersionId,
+      freeText:
+        (direction === 'custom' ? instruction?.trim() : '') ||
+        `${dirMeta?.label ?? direction}：${dirMeta?.blurb ?? ''}`,
+      intentLabel: dirMeta?.label,
+    }
     setFeedback(null)
     setActiveVersion(null) // 离开历史版本视图，进入生成中状态
     startGenerationTask(
@@ -706,7 +769,10 @@ export default function ArticlePage() {
     patches: ModificationPatch[],
     summary: string,
     analysis: FeedbackAnalysis,
-    freeText: string
+    freeText: string,
+    // Work Agent：本次落版属于哪次共创讨论、用户当初选的哪个方案。
+    // 缺了它，版本表里就只剩"改完了"，没有"为什么这么改"。
+    extra?: { sessionId?: string | null; plan?: RevisionPlan | null }
   ) {
     if (!work?.versionId) throw new Error('缺少版本信息')
     const { data: { session } } = await supabase.auth.getSession()
@@ -724,6 +790,8 @@ export default function ArticlePage() {
         freeText,
         analysis,
         summary,
+        sessionId: extra?.sessionId ?? null,
+        plan: extra?.plan ?? null,
       }),
     })
     const data = (await res.json().catch(() => null)) as
@@ -756,6 +824,52 @@ export default function ArticlePage() {
     setDiagnosisError(null)
     setDiagnosisStatus('loading')
     if (data.versionId) void runDiagnosis(data.versionId, false)
+    // 回传给共创面板：它要拿新版本 id 做方向验收（这次改动是否落在用户说的方向上）
+    return data.versionId ?? ''
+  }
+
+  /**
+   * 方向验收：定向迭代的新版本落盘后，核对它是否真的按用户反馈的方向改了。
+   *
+   * 之前这条链路是单向的——生成出来就默认"改好了"，用户只能自己通读全文
+   * 才能发现"AI 根本没按我说的改"。这里补上闭环，结论交给共创面板展示。
+   *
+   * 失败一律静默：新版本已经落库，验收结论只是锦上添花，不能反过来打扰用户。
+   */
+  async function verifyImproveAlignment(
+    versionId: string,
+    base: { baseVersionId: string; freeText: string; intentLabel?: string }
+  ) {
+    if (!versionId || !base.freeText) return
+    setAligning(true)
+    setAlignment(null)
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+      if (!session?.access_token) return
+      const res = await fetch('/api/creative/alignment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          generationId: versionId,
+          baseVersionId: base.baseVersionId,
+          freeText: base.freeText,
+          intentLabel: base.intentLabel,
+        }),
+      })
+      const data = (await res.json().catch(() => null)) as
+        | { report?: AlignmentReport | null }
+        | null
+      setAlignment(data?.report ?? null)
+    } catch {
+      // 验收失败不阻塞：新版本本身已经生成成功
+    } finally {
+      setAligning(false)
+    }
   }
 
   /**
@@ -1045,6 +1159,8 @@ export default function ArticlePage() {
     note: string | null
     userFeedback: string | null
     createdAt: string | null
+    editPatches: ModificationPatch[]
+    revisePlan: RevisionPlan | null
   } | null = viewingVersion
     ? {
         versionNumber: viewingVersion.versionNumber,
@@ -1052,6 +1168,8 @@ export default function ArticlePage() {
         note: viewingVersion.improveNote,
         userFeedback: viewingVersion.userFeedback,
         createdAt: viewingVersion.createdAt,
+        editPatches: viewingVersion.editPatches,
+        revisePlan: viewingVersion.revisePlan,
       }
     : work.projectId && work.versionNumber
       ? (() => {
@@ -1062,9 +1180,24 @@ export default function ArticlePage() {
             note: dbRow?.improveNote ?? work.improveNote ?? null,
             userFeedback: dbRow?.userFeedback ?? work.userFeedback ?? null,
             createdAt: dbRow?.createdAt ?? work.created_at ?? null,
+            editPatches: dbRow?.editPatches ?? [],
+            revisePlan: dbRow?.revisePlan ?? null,
           }
         })()
       : null
+  // Creator Knowledge System Phase 3：当前正在看的这一版，当时是拿着哪几条知识写的。
+  // 补的是完整性的一半——/generate 方案态的卡片只能看"这一次"，
+  // 这里让用户回看任意历史版本时也能核对"AI 到底有没有用我的知识"。
+  // 只认 versions 行的服务端数据：localStorage 镜像从不存知识依据，
+  // 拿它兜底等于制造一个可信度为 0 的假来源。
+  const displayKnowledge: InjectedUnitSummary[] =
+    viewingVersion?.usedKnowledge ??
+    (displayVersionMeta
+      ? versions.find((v) => v.versionNumber === displayVersionMeta.versionNumber)
+          ?.usedKnowledge
+      : undefined) ??
+    []
+
   // 分享弹窗里"灵感起点"的预填文案：优先用蓝图的主题定位/核心冲突
   const shareDefaultInspiration = (() => {
     const seed = blueprint?.positioning || blueprint?.core_conflict
@@ -1245,6 +1378,46 @@ export default function ArticlePage() {
                 {displayVersionMeta.note}
               </p>
             )}
+
+            {/* ── Work Agent 版本记录：这一版到底改了哪几段、用的哪个方案 ──
+                没有这段，版本列表只是"V1/V2/V3 三个按钮"，用户看不到局部修改的边界，
+                也就没法判断 AI 有没有越界改了他不想动的地方。 */}
+            {displayVersionMeta.editPatches.length > 0 && (
+              <details className="mt-2 group">
+                <summary className="text-[11px] text-zinc-500 cursor-pointer select-none hover:text-zinc-300">
+                  ✏️ 本版改动 {displayVersionMeta.editPatches.length} 处
+                  {displayVersionMeta.revisePlan && (
+                    <span className="ml-1.5 text-zinc-600">
+                      · 方案「{displayVersionMeta.revisePlan.title}」
+                    </span>
+                  )}
+                  <span className="ml-1.5 text-zinc-600">（点击查看明细）</span>
+                </summary>
+                {displayVersionMeta.revisePlan && (
+                  <p className="mt-1.5 text-[11px] text-zinc-500 leading-relaxed">
+                    承诺保持不变：{displayVersionMeta.revisePlan.preserveItems.join('、')}
+                  </p>
+                )}
+                <div className="mt-2 space-y-2">
+                  {displayVersionMeta.editPatches.map((p, i) => (
+                    <div
+                      key={`${p.segmentIndex}-${i}`}
+                      className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2"
+                    >
+                      <p className="text-[10px] text-zinc-500 mb-1.5">
+                        第 {p.segmentIndex} 段 · {p.reason}
+                      </p>
+                      <p className="text-[11px] text-zinc-600 leading-relaxed line-through decoration-zinc-700">
+                        {p.originalExcerpt.slice(0, 200)}
+                      </p>
+                      <p className="text-[11px] text-zinc-300 leading-relaxed mt-1">
+                        {p.revisedText.slice(0, 400)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
           </div>
         )}
 
@@ -1348,6 +1521,45 @@ export default function ArticlePage() {
               )}
             </div>
           )
+        )}
+
+        {/* ── Creator Knowledge System Phase 3：这一版当时依据了哪些已确认知识 ──
+            刻意紧跟"本次生成参考"：用户核对 AI 有没有用他的知识，
+            就该在"这次参考了什么"同一个位置看到，而不是散落在页面别处。
+            空数组不渲染 —— 没参考就是没参考，不画空壳卡片。 */}
+        {displayKnowledge.length > 0 && (
+          <div className="mt-3 rounded-xl border border-violet-500/25 bg-violet-500/5 px-5 py-4">
+            <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+              <span className="text-[10px] font-medium text-violet-300 tracking-wide uppercase">
+                {activeVersion !== null
+                  ? `V${activeVersion} 参考了你的 ${displayKnowledge.length} 条知识`
+                  : `本次参考了你的 ${displayKnowledge.length} 条知识`}
+              </span>
+              <Link
+                href="/knowledge"
+                className="text-[10px] text-zinc-500 hover:text-violet-300 transition"
+              >
+                去管理 →
+              </Link>
+            </div>
+            <ul className="space-y-2.5">
+              {displayKnowledge.map((u, i) => (
+                <li key={i} className="flex items-start gap-2">
+                  <span className="shrink-0 mt-1.5 w-1 h-1 rounded-full bg-violet-400/70" />
+                  <div className="min-w-0">
+                    <span className="text-xs text-violet-200/90">{u.concept}</span>
+                    {u.kind && <span className="ml-1.5 text-[10px] text-zinc-500">{u.kind}</span>}
+                    <p className="text-xs text-zinc-300 leading-relaxed mt-0.5">{u.claim}</p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {activeVersion !== null && (
+              <p className="mt-3 text-[10px] text-zinc-600 leading-relaxed">
+                这是该版本生成当时的记录，与你现在的知识库可能已有出入
+              </p>
+            )}
+          </div>
         )}
 
         <div className="bg-zinc-900 border border-zinc-800/80 rounded-xl mt-6 overflow-hidden">
@@ -1534,7 +1746,7 @@ export default function ArticlePage() {
         {/* ── 继续优化这一版（替换原"下一步可以这样做"方向卡）──
             自由反馈 → AI 分析 → 用户确认 → 生成下一版；快捷方向直接触发 */}
         {work.projectId && !viewingVersion && (
-          <WorkFeedbackPanel
+          <WorkAgentChat
             currentContent={work.content}
             topic={work.title}
             generationId={work.versionId}
@@ -1543,9 +1755,13 @@ export default function ArticlePage() {
             projectId={work.projectId}
             finalized={projectStatus === 'finalized'}
             improvingDirection={improvingDirection}
-            onQuickDirection={(d, instruction) => handleImprove(d, instruction)}
+            onQuickDirection={(d, instruction) =>
+              handleImprove(d as NextActionKey, instruction)
+            }
             onFeedbackConfirmed={handleFeedbackConfirmed}
             onPatchDecision={handlePatchDecision}
+            alignmentReport={alignment}
+            aligning={aligning}
           />
         )}
 

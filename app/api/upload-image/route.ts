@@ -1,5 +1,6 @@
-import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
+import { createServerClient } from '@/lib/supabaseServer'
+import { authFailureResponse } from '@/lib/apiAuth'
 import { toCategory } from '@/lib/constants'
 import { rateLimit } from '@/lib/rateLimit'
 
@@ -24,15 +25,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: '未登录' }, { status: 401 })
     }
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      },
-    })
+    // 走 createServerClient：服务端绝不参与 token 轮换，否则会作废浏览器端的
+    // refresh_token，把用户踢成 "Invalid Refresh Token"（详见 lib/apiAuth.ts 说明）
+    const supabase = createServerClient(token)
 
     // 验证用户
     const {
@@ -40,7 +35,7 @@ export async function POST(req: Request) {
       error: userError,
     } = await supabase.auth.getUser()
     if (userError || !user) {
-      return NextResponse.json({ error: '用户验证失败' }, { status: 401 })
+      return authFailureResponse(userError)
     }
 
     // 简单限流：每用户每分钟最多 5 次（涉及 OCR + 向量化，成本较高）
@@ -114,6 +109,8 @@ export async function POST(req: Request) {
         Authorization: `Bearer ${process.env.SILICONFLOW_API_KEY}`,
         'Content-Type': 'application/json',
       },
+      // 外部视觉模型必须设超时上限：挂起会占满 serverless 并发并留下孤儿文件
+      signal: AbortSignal.timeout(30_000),
       body: JSON.stringify({
         model: 'deepseek-ai/DeepSeek-OCR',
         messages: [
@@ -156,6 +153,8 @@ export async function POST(req: Request) {
         Authorization: `Bearer ${process.env.SILICONFLOW_API_KEY}`,
         'Content-Type': 'application/json',
       },
+      // 短输出接口，超时可以更激进
+      signal: AbortSignal.timeout(15_000),
       body: JSON.stringify({
         model: 'BAAI/bge-m3',
         input: description,

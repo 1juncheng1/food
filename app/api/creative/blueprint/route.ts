@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { authFailureResponse } from '@/lib/apiAuth'
 import { createServerClient } from '@/lib/supabaseServer'
 import { IDENTITY_TEMPLATES } from '@/lib/identityTemplates'
 import { generateBlueprint, type BlueprintInput } from '@/lib/creative/blueprint'
@@ -10,6 +11,11 @@ import {
   buildCreatorIdentity,
 } from '@/lib/creative/personalization'
 import { fetchCreatorStyleProfile } from '@/lib/creative/styleProfileRepo'
+import {
+  buildKnowledgeInjection,
+  summarizeInjectedUnits,
+} from '@/lib/creative/knowledgeInject'
+import type { CreatorKnowledgeUnit } from '@/lib/creative/knowledgeUnit'
 import {
   sanitizeCharacterInput,
   formatCharactersForPrompt,
@@ -60,7 +66,7 @@ export async function POST(req: Request) {
       error: authErr,
     } = await supabase.auth.getUser(token)
     if (authErr || !user) {
-      return NextResponse.json({ error: '登录已过期' }, { status: 401 })
+      return authFailureResponse(authErr)
     }
 
     const body = (await req.json()) as RequestBody
@@ -144,6 +150,19 @@ export async function POST(req: Request) {
       styleProfileText += `${characterBlock.text}\n请在蓝图的叙事结构、核心冲突与 Hook 设计中围绕上述角色展开：主角/叙述者决定叙事视角，配角的进入时机要在 structure 中明确安排。`
     }
 
+    // ── Creator Knowledge System Phase 3：知识注入 ──
+    // 与风格卡同口径：仅我的模式。灵感模式要求剥离全部隐性个人数据，
+    // 而知识单元是用户多条素材的交叉归纳，比风格卡更私人，这里更不能破例。
+    // 同样静默降级：读不到就当没有，蓝图照常生成。
+    let knowledgeUnits: CreatorKnowledgeUnit[] = []
+    if (plan.mode === 'creator') {
+      const knowledge = await buildKnowledgeInjection(supabase, user.id, topic)
+      knowledgeUnits = knowledge.units
+      if (knowledge.block) {
+        styleProfileText += `\n\n${knowledge.block}\n请在蓝图的主题定位与核心冲突上把上述命题作为可信的论述依据；不得提出与它们相反的主张。`
+      }
+    }
+
     // ── 调用 LLM 生成蓝图 ──
     const input: BlueprintInput = {
       topic,
@@ -174,7 +193,10 @@ export async function POST(req: Request) {
       )
     }
 
-    return NextResponse.json({ blueprint })
+    return NextResponse.json({
+      blueprint,
+      usedKnowledgeUnits: summarizeInjectedUnits(knowledgeUnits),
+    })
   } catch (error) {
     console.error('creative blueprint API 错误:', error)
     return NextResponse.json({ error: '服务器内部错误' }, { status: 500 })

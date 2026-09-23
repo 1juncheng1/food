@@ -7,6 +7,9 @@
 // 纯类型 + 纯函数 + 服务端 LLM 调用，前端只 import 类型与展示工具。
 // ============================================================
 
+import { callDeepSeekChat, stripJsonFence } from '@/lib/llm'
+import { normalizeProblem, formatProblemForPrompt } from './problemFormat'
+
 /** 创作蓝图：一次生成的"方向层"产物（8 维 + 结构 + 策略 + 叙述人格） */
 export interface CreativeBlueprint {
   title_direction: string // 标题方向
@@ -59,53 +62,10 @@ export interface ProblemUnderstanding {
   scenario?: string
 }
 
-/** 问题理解兜底清洗：类型/目标/拆解三要素缺失即视为无效，调用方静默降级 */
-export function normalizeProblem(raw: unknown): ProblemUnderstanding | null {
-  if (typeof raw !== 'object' || raw === null) return null
-  const o = raw as Record<string, unknown>
-  const s = (v: unknown, max: number): string =>
-    typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : ''
-
-  const tasks = Array.isArray(o.task_breakdown)
-    ? o.task_breakdown
-        .map((x) => (typeof x === 'string' ? x.trim() : ''))
-        .filter(Boolean)
-        .slice(0, 6)
-    : []
-
-  const p: ProblemUnderstanding = {
-    problem_type: s(o.problem_type, 60),
-    is_content_creation: o.is_content_creation === true,
-    user_goal: s(o.user_goal, 200),
-    task_breakdown: tasks,
-    user_identity: s(o.user_identity, 200),
-    recommended_role: s(o.recommended_role, 200),
-    role_reason: s(o.role_reason, 200),
-    success_criteria: s(o.success_criteria, 200),
-    professional_prompt: s(o.professional_prompt, 1500),
-    // 阶段 3：scenario 可选字段，有值才挂
-    ...(s(o.scenario, 100) ? { scenario: s(o.scenario, 100) } : {}),
-  }
-  if (!p.problem_type || !p.user_goal || p.task_breakdown.length === 0) return null
-  return p
-}
-
-/** 把问题理解格式化为注入 LLM 的文本块（随蓝图一起注入生成调用） */
-export function formatProblemForPrompt(pu: ProblemUnderstanding): string {
-  const lines: string[] = [
-    `问题类型：${pu.problem_type}`,
-    `用户真实目标：${pu.user_goal}`,
-  ]
-  if (pu.scenario) lines.push(`使用场景：${pu.scenario}（内容风格需适配此场景）`)
-  if (pu.task_breakdown.length > 0) {
-    lines.push('需要解决的核心任务：')
-    lines.push(...pu.task_breakdown.map((t, i) => `  ${i + 1}. ${t}`))
-  }
-  if (pu.user_identity) lines.push(`用户身份：${pu.user_identity}`)
-  if (pu.recommended_role) lines.push(`AI 应扮演的角色：${pu.recommended_role}`)
-  if (pu.success_criteria) lines.push(`成功标准：${pu.success_criteria}`)
-  return `【问题理解（用户的真实目标，优先于文案技巧）】\n${lines.join('\n')}`
-}
+// 问题理解的兜底清洗与格式化是纯函数，已抽到 ./problemFormat（零运行时依赖），
+// 以便 'use client' 组件引用时不会把本文件（含 DeepSeek 调用）拖进浏览器 bundle。
+// 此处再导出以保持既有调用方不变。
+export { normalizeProblem, formatProblemForPrompt } from './problemFormat'
 
 /** 字段兜底：LLM 偶发漏字段时保证前端展示不崩 */
 export function normalizeBlueprint(raw: unknown): CreativeBlueprint | null {
@@ -277,34 +237,23 @@ ${input.styleProfileText ?? ''}${mem
 - persona_hint：建议的叙述人格（如"冷静的真相揭露者""孤独叙事者"）`
 
   try {
-    const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'deepseek-chat',
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-        temperature: 0.5,
-        max_tokens: 1200,
-        response_format: { type: 'json_object' },
-      }),
+    const res = await callDeepSeekChat({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature: 0.5,
+      max_tokens: 1200,
+      jsonMode: true,
     })
 
     if (!res.ok) {
-      console.error('创作蓝图生成失败:', await res.text())
+      console.error('创作蓝图生成失败:', res.error)
       return null
     }
-    const data = await res.json()
-    const text: string = data?.choices?.[0]?.message?.content
-    if (typeof text !== 'string' || !text.trim()) return null
 
     // 防御：个别情况下模型仍可能包一层 ```json
-    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+    const cleaned = stripJsonFence(res.content)
     const parsed: unknown = JSON.parse(cleaned)
     return normalizeBlueprint(parsed)
   } catch (e) {

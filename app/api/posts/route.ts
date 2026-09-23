@@ -11,9 +11,81 @@ import {
   validateImageFile,
 } from '@/lib/storage'
 import { parseVector, updateUserStyleVector } from '@/lib/styleVector'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 export const maxDuration = 60
 export const dynamic = 'force-dynamic'
+
+// ────────────────────────────────────────────────────────────
+// P3-1: 公共帖子列表服务端缓存（无风格向量分支）
+// 用 Map + TTL 代替 unstable_cache（unstable_cache 不能接收
+// Supabase 客户端对象作为参数，会触发循环引用序列化错误）
+// 模式参考 lib/ci/globalTrending.ts 的 Map + TTL 实现
+// ────────────────────────────────────────────────────────────
+type PostBase = {
+  id: string
+  user_id: string
+  content: string
+  content_type: string
+  category: string
+  tags: string[] | null
+  like_count: number
+  comment_count: number
+  save_count: number
+  is_public: boolean
+  created_at: string
+  author_name: string
+  image_url: string | null
+  post_type: string | null
+  archive: unknown
+  source_project_id: string | null
+}
+
+type CacheEntry = {
+  value: PostBase[]
+  expiresAt: number
+}
+
+const postsBaseCache = new Map<string, CacheEntry>()
+const POSTS_BASE_TTL = 60 * 1000 // 60 秒 TTL
+
+async function fetchPostsBaseRaw(
+  supabase: SupabaseClient,
+  limit: number,
+  offset: number
+): Promise<PostBase[]> {
+  const { data, error } = await supabase.rpc('get_posts_base', {
+    p_limit: limit,
+    p_offset: offset,
+  })
+  if (error) {
+    console.error('get_posts_base 失败:', error)
+    return []
+  }
+  return (data ?? []) as PostBase[]
+}
+
+async function fetchPostsBaseCached(
+  supabase: SupabaseClient,
+  limit: number,
+  offset: number
+): Promise<PostBase[]> {
+  const key = `pb:${limit}:${offset}`
+  const now = Date.now()
+  const cached = postsBaseCache.get(key)
+  if (cached && cached.expiresAt > now) {
+    return cached.value
+  }
+  const value = await fetchPostsBaseRaw(supabase, limit, offset)
+  if (value.length > 0) {
+    postsBaseCache.set(key, { value, expiresAt: now + POSTS_BASE_TTL })
+  }
+  return value
+}
+
+export function invalidatePostsBaseCache() {
+  postsBaseCache.clear()
+}
 
 /** POST 请求体字段 */
 interface PostBody {
@@ -49,7 +121,10 @@ function validCategory(v: unknown): string {
 
 // ────────────────────────────────────────────────────────────
 // GET /api/posts：获取灵感广场帖子列表
-// 优先按用户风格向量相似度推荐，无风格向量时降级为时间倒序
+// P3-1 优化：
+//   - 无风格向量分支：get_posts_base（unstable_cache 60s）+ get_posts_user_state
+//     公共数据跨用户共享缓存，用户状态独立批量查
+//   - 有风格向量分支：保留原 get_recommended_posts（个性化排序，不可缓存）
 // ────────────────────────────────────────────────────────────
 export async function GET(req: Request) {
   try {
@@ -82,29 +157,59 @@ export async function GET(req: Request) {
 
     const userVector = parseVector(profile?.style_vector)
 
-    // ── 调用推荐 RPC ──
-    // 有风格向量：按相似度排序；无向量：RPC 内部降级为时间倒序
+    // ── 分支：无风格向量 → 走缓存路径 ──
+    if (!userVector) {
+      // P3-1: 公共数据走 unstable_cache（跨用户共享，TTL 60s）
+      const postsBase = await fetchPostsBaseCached(supabase, limit, offset)
+
+      // 批量查用户状态（一次 IN 查询代替 N 个 exists）
+      const postIds = postsBase.map((p) => p.id)
+      const { data: stateRows } = await supabase.rpc('get_posts_user_state', {
+        p_user_id: userId,
+        p_post_ids: postIds,
+      })
+      const stateMap = new Map<string, { liked: boolean; saved: boolean }>()
+      for (const row of stateRows ?? []) {
+        stateMap.set(row.post_id, {
+          liked: !!row.liked,
+          saved: !!row.saved,
+        })
+      }
+
+      // 合并公共数据 + 用户状态，保持响应结构与原 RPC 一致
+      const posts = postsBase.map((p) => ({
+        ...p,
+        current_user_liked: stateMap.get(p.id)?.liked ?? false,
+        current_user_saved: stateMap.get(p.id)?.saved ?? false,
+        similarity: null,
+      }))
+
+      return NextResponse.json({
+        posts,
+        hasStyleVector: false,
+      })
+    }
+
+    // ── 分支：有风格向量 → 走原推荐 RPC（个性化排序，不可缓存）──
+    // 注：P3-1b 拆分实测无收益反而略慢（多 1 次网络往返），已回滚到原 RPC
+    // 真正瓶颈在向量排序 + JOIN auth.users，需 DB 索引优化（见 0004_posts_indexes.sql）
     const rpcParams: Record<string, unknown> = {
       p_limit: limit,
       p_offset: offset,
-    }
-    // Supabase RPC 传 vector 类型需要字符串格式 "[0.1,0.2,...]"
-    if (userVector) {
-      rpcParams.p_user_vector = `[${userVector.join(',')}]`
-    } else {
-      rpcParams.p_user_vector = null
+      p_user_vector: `[${userVector.join(',')}]`,
     }
 
     const { data, error } = await supabase.rpc('get_recommended_posts', rpcParams)
 
     if (error) {
       console.error('获取推荐帖子失败:', error)
-      return NextResponse.json({ error: `获取失败: ${error.message}` }, { status: 500 })
+      // 服务端日志保留细节；数据库报错可能含表名/策略名，不能回显给客户端
+      return NextResponse.json({ error: '获取失败' }, { status: 500 })
     }
 
     return NextResponse.json({
       posts: data ?? [],
-      hasStyleVector: !!userVector,
+      hasStyleVector: true,
     })
   } catch (error) {
     console.error('posts GET 错误:', error)
@@ -247,6 +352,9 @@ export async function POST(req: Request) {
     // 公式：new = 0.8 * old + 0.2 * post_embedding
     // 使风格向量随用户新发布内容实时微调
     await updateUserStyleVector(supabase, userId, embedding)
+
+    // P3-1: 发布作品后失效公共列表缓存，让其他用户立即看到新帖
+    invalidatePostsBaseCache()
 
     return NextResponse.json({
       success: true,

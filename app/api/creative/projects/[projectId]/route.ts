@@ -1,8 +1,12 @@
 import { NextResponse } from 'next/server'
+import { authFailureResponse } from '@/lib/apiAuth'
 import { createServerClient } from '@/lib/supabaseServer'
 import { normalizeBlueprint, type CreativeBlueprint } from '@/lib/creative/blueprint'
 import { parseDiagnosis, type CreativeDiagnosis } from '@/lib/creative/diagnosis'
 import { recordVersionSignal } from '@/lib/creative/styleLearning'
+import { normalizeEditPatches } from '@/lib/creative/patchEngine'
+import { normalizeRevisionPlan } from '@/lib/creative/workAgent'
+import { normalizeInjectedUnits } from '@/lib/creative/knowledgeInject'
 import { trackEvent } from '@/lib/creative/interest/eventTracker'
 import { runBuild } from '@/lib/creative/interest/builder'
 
@@ -28,12 +32,15 @@ async function loadOwnedProject(
     error: authErr,
   } = await supabase.auth.getUser(token)
   if (authErr || !user) {
-    return { ok: false, response: NextResponse.json({ error: '登录已过期' }, { status: 401 }) }
+    return { ok: false, response: authFailureResponse(authErr) }
   }
+  // 显式归属校验：不依赖 RLS 兜底。RLS 一旦被误改/误删策略，
+  // 仅按 id 查询会让任意登录用户读写他人项目（IDOR）。
   const { data: own } = await supabase
     .from('creative_projects')
     .select('id')
     .eq('id', projectId)
+    .eq('user_id', user.id)
     .maybeSingle()
   if (!own) {
     return { ok: false, response: NextResponse.json({ error: '项目不存在' }, { status: 404 }) }
@@ -75,10 +82,12 @@ export async function GET(
     }
 
     // 版本列表：按版本号正序，旧版本只读保留
+    // edit_patches / session_id / revision_plan 是 Work Agent 的"为什么改"证据链，
+    // 缺了它们版本记录只剩一个结果正文，用户无从复盘（这也是新请求变 visit 的原因之一）
     const { data: versions, error: versionsErr } = await auth.supabase
       .from('generation_history')
       .select(
-        'id, version_number, improve_direction, improve_note, user_feedback, sample_text, system_prompt, blueprint, analysis, feedback_status, created_at'
+        'id, version_number, improve_direction, improve_note, user_feedback, sample_text, system_prompt, blueprint, analysis, feedback_status, edit_patches, session_id, revision_plan, used_knowledge, created_at'
       )
       .eq('project_id', projectId)
       .order('version_number', { ascending: true })
@@ -103,6 +112,13 @@ export async function GET(
         analysis: parseDiagnosis(v.analysis) as CreativeDiagnosis | null,
         feedbackStatus: (v.feedback_status as string | null) ?? null,
         createdAt: v.created_at as string,
+        // ── Work Agent：本次迭代到底改了哪些段落、用户当时选的什么方案 ──
+        editPatches: normalizeEditPatches(v.edit_patches).patches,
+        revisePlan: normalizeRevisionPlan(v.revision_plan),
+        sessionId: (v.session_id as string | null) ?? null,
+        // Creator Knowledge System Phase 3：该版本生成时依据了哪些已确认知识。
+        // 空数组 = 本次没参考任何知识（灵感模式/游客/无匹配单元），前端据此不渲染该区块。
+        usedKnowledge: normalizeInjectedUnits(v.used_knowledge),
       })),
     })
   } catch (error) {
@@ -146,6 +162,8 @@ export async function PATCH(
       .from('creative_projects')
       .update({ status, updated_at: new Date().toISOString() })
       .eq('id', projectId)
+      // 与 DELETE 一致，显式带上归属条件做纵深防御
+      .eq('user_id', auth.userId)
       .select('id, status, current_version')
       .single()
 

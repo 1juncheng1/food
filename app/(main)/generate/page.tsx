@@ -19,7 +19,7 @@ import { CATEGORIES } from '@/lib/constants'
 import { makeWorkId } from '@/lib/works'
 import { buildMemorySummaryForTopic } from '@/lib/styleMemory'
 import { startGenerationTask } from '@/lib/generationTask'
-import { supabase } from '@/lib/supabaseClient'
+import { supabase, getValidSession } from '@/lib/supabaseClient'
 import {
   CREATION_MODE_META,
   CREATION_MODES,
@@ -29,12 +29,10 @@ import {
   CREATOR_LEVEL_META,
   type CreatorUnderstanding,
 } from '@/lib/creative/creatorStatus'
-import {
-  freezePlan,
-  type CreativePlan,
-  type FrozenPlan,
-  type PlanEdits,
-} from '@/lib/creative/plan'
+import { freezePlan } from '@/lib/creative/planFreeze'
+import type { CreativePlan, FrozenPlan, PlanEdits } from '@/lib/creative/plan'
+// import type 在编译后被完全擦除，不会把服务端注入模块打进浏览器包
+import type { InjectedUnitSummary } from '@/lib/creative/knowledgeInject'
 import { PlanPanel } from '@/components/generate/plan-panel'
 import { ClarifyPanel } from '@/components/generate/clarify-panel'
 import {
@@ -50,8 +48,13 @@ import type { InspirationAnalysis } from '@/lib/creative/inspirationAnalyzer'
 import type { MarketReport } from '@/lib/creative/marketAnalyzer'
 import { InspirationAnalysisCard } from '@/components/generate/inspiration-analysis-card'
 import { LoginGate } from '@/components/login-gate'
+import {
+  MaterialSelector,
+  type MaterialSelectorMode,
+} from '@/components/generate/material-selector'
+import type { MaterialAnnotation } from '@/lib/creative/material'
 
-type Stage = 'input' | 'analyzing' | 'clarify' | 'plan' | 'insight'
+type Stage = 'input' | 'analyzing' | 'clarify' | 'plan' | 'insight' | 'materials'
 
 interface RecalledMaterialPreview {
   id: string
@@ -84,6 +87,8 @@ export default function PromptOptimizerPage() {
   // ── 两层状态机 ──
   const [stage, setStage] = useState<Stage>('input')
   const [plan, setPlan] = useState<CreativePlan | null>(null)
+  // Creator Knowledge System Phase 3：本次方案实际参考的知识单元（方案态展示）
+  const [planKnowledge, setPlanKnowledge] = useState<InjectedUnitSummary[]>([])
   const [confirmedPlan, setConfirmedPlan] = useState<FrozenPlan | null>(null)
   const [analyzeStep, setAnalyzeStep] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
@@ -113,6 +118,11 @@ export default function PromptOptimizerPage() {
   const [marketLoading, setMarketLoading] = useState(false)
   // ── 登录引导弹窗：游客点击生成入口时弹出（封堵游客生成）──
   const [loginGateOpen, setLoginGateOpen] = useState(false)
+
+  // ── Material Library 2.0 Phase 4：素材选择步骤状态 ──
+  // 含每条素材的本次创作注解（根基角色/临时标签/备注），仅透传给本次生成请求
+  const [materialAnnotations, setMaterialAnnotations] = useState<MaterialAnnotation[]>([])
+  const [materialMode, setMaterialMode] = useState<MaterialSelectorMode>('recommended')
 
   // ── 初始化：模式偏好 + URL/query/sessionStorage 恢复 ──
   // localStorage/sessionStorage 为外部数据源，读取放 async 初始化函数内（与项目约定一致）
@@ -252,9 +262,9 @@ export default function PromptOptimizerPage() {
     inspirationAbortRef.current = controller
 
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
+      // 用 getValidSession 而非 getSession：后者只读本地缓存、不做刷新，
+      // 而本页从填主题到真正生成往往跨越很久，极易在出发那一刻带上过期 token。
+      const session = await getValidSession()
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`
 
@@ -331,9 +341,9 @@ export default function PromptOptimizerPage() {
     setMarketLoading(true)
     setError('')
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
+      // 用 getValidSession 而非 getSession：后者只读本地缓存、不做刷新，
+      // 而本页从填主题到真正生成往往跨越很久，极易在出发那一刻带上过期 token。
+      const session = await getValidSession()
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`
 
@@ -404,9 +414,9 @@ export default function PromptOptimizerPage() {
     } catch { /* ignore */ }
 
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
+      // 用 getValidSession 而非 getSession：后者只读本地缓存、不做刷新，
+      // 而本页从填主题到真正生成往往跨越很久，极易在出发那一刻带上过期 token。
+      const session = await getValidSession()
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`
 
@@ -445,6 +455,10 @@ export default function PromptOptimizerPage() {
       // 阶段 A 无需澄清 → 直接返回 plan；阶段 B 用户回答后也返回 plan
       if (!data?.plan) throw new Error('AI 返回内容不完整，请重试')
       setPlan(data.plan as CreativePlan)
+      // Creator Knowledge System Phase 3：本次方案实际参考了哪些知识单元
+      setPlanKnowledge(
+        Array.isArray(data.usedKnowledgeUnits) ? data.usedKnowledgeUnits : []
+      )
       // 阶段 3：analyze 直接返回 plan 时无澄清回答
       setClarifyAnswers([])
       setAnalyzedTopic(t)
@@ -494,9 +508,9 @@ export default function PromptOptimizerPage() {
     abortRef.current = controller
 
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
+      // 用 getValidSession 而非 getSession：后者只读本地缓存、不做刷新，
+      // 而本页从填主题到真正生成往往跨越很久，极易在出发那一刻带上过期 token。
+      const session = await getValidSession()
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`
 
@@ -519,6 +533,10 @@ export default function PromptOptimizerPage() {
       if (!res.ok) throw new Error(data?.error || '方案生成失败，请重试')
       if (!data?.plan) throw new Error('AI 返回内容不完整，请重试')
       setPlan(data.plan as CreativePlan)
+      // Creator Knowledge System Phase 3：本次方案实际参考了哪些知识单元
+      setPlanKnowledge(
+        Array.isArray(data.usedKnowledgeUnits) ? data.usedKnowledgeUnits : []
+      )
       // 阶段 3：保存用户澄清回答原始值，供 freezePlan 落库
       setClarifyAnswers(answers)
       setStage('plan')
@@ -571,9 +589,9 @@ export default function PromptOptimizerPage() {
     abortRef.current = controller
 
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
+      // 用 getValidSession 而非 getSession：后者只读本地缓存、不做刷新，
+      // 而本页从填主题到真正生成往往跨越很久，极易在出发那一刻带上过期 token。
+      const session = await getValidSession()
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`
 
@@ -596,6 +614,10 @@ export default function PromptOptimizerPage() {
       if (!res.ok) throw new Error(data?.error || '创作方案生成失败，请重试')
       if (!data?.plan) throw new Error('AI 返回内容不完整，请重试')
       setPlan(data.plan as CreativePlan)
+      // Creator Knowledge System Phase 3：本次方案实际参考了哪些知识单元
+      setPlanKnowledge(
+        Array.isArray(data.usedKnowledgeUnits) ? data.usedKnowledgeUnits : []
+      )
       // 阶段 3：用户跳过澄清，无澄清回答
       setClarifyAnswers([])
       setAnalyzedTopic(t)
@@ -622,42 +644,37 @@ export default function PromptOptimizerPage() {
     setTimeout(() => topicInputRef.current?.focus(), 350)
   }
 
-  // ── 方案确认：冻结后直接启动生成，跳转文章页 ──
-  function handleConfirmPlan(edits: PlanEdits) {
-    if (!plan) return
+  // ── 内部：真正启动生成（抽出避免 handleConfirmPlan / handleConfirmMaterials 重复）──
+  // 显式接收 frozen 参数：避免依赖闭包中的 confirmedPlan state（React 异步更新时序陷阱）
+  function startGenWithParams(
+    frozen: FrozenPlan,
+    annotations: MaterialAnnotation[],
+    modeLabel: MaterialSelectorMode
+  ) {
     const t = topic.trim()
-    // 题目已改却沿用旧方案会导致"新题目 + 旧构思"错位，强制先重新分析
-    if (t !== analyzedTopic) {
-      setError('题目已修改，请先点击「重新分析」为新题目生成方案')
-      window.scrollTo({ top: 0, behavior: 'smooth' })
-      return
-    }
-    // 阶段 3：把用户澄清回答传给 freezePlan 落库
-    const frozen = freezePlan(plan, edits, clarifyAnswers)
-    setConfirmedPlan(frozen)
-
     const genId = makeWorkId()
-    // 按当前主题过滤偏爱范文：避免跨主题污染（如昨天僵尸先生 → 今天商业计划书）
     const memory = buildMemorySummaryForTopic(t)
-    const wordCount = frozen.word_count ?? plan.recommended_word_count
+    const wordCount = frozen.word_count ?? plan?.recommended_word_count
+
+    // 灵感模式跳过素材选择 → modeLabel 永远 'none'；不传素材注解
+    const annotationsToPass =
+      modeLabel === 'none' || effectiveMode === 'inspiration' ? [] : annotations
 
     startGenerationTask(
       genId,
       {
         topic: t,
-        // 方案驱动：身份/品类/文风/字数全部由 blueprint 派生，前端不再传递
-        // 后端 prompt-optimizer 会从 blueprint.persona_hint / content_type / language_style 自动获取
         identityLabel: '',
         style: '',
-        wordCount,
+        wordCount: wordCount ?? 800,
         category: '',
         customCategory: '',
         memory,
         mode: effectiveMode,
         plan: frozen,
-        // AI 灵感分析系统：透传 inspiration_context 落 generation_history.inspiration_context jsonb
-        // 一次 generation_id 串起灵感→分析→plan→作品→反馈全链路数据沉淀
         inspirationContext: inspirationAnalysis ?? undefined,
+        // Material Library 2.0 Phase 4：素材选择步骤确认的素材（含根基/标签/备注注解）
+        materialAnnotations: annotationsToPass,
       },
       {
         title: t,
@@ -667,6 +684,50 @@ export default function PromptOptimizerPage() {
       }
     )
     router.push(`/article/${genId}`)
+  }
+
+  // ── 方案确认：冻结后根据创作模式分流 ──
+  function handleConfirmPlan(edits: PlanEdits) {
+    if (!plan) return
+    const t = topic.trim()
+    if (t !== analyzedTopic) {
+      setError('题目已修改，请先点击「重新分析」为新题目生成方案')
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+      return
+    }
+    const frozen = freezePlan(plan, edits, clarifyAnswers)
+    setConfirmedPlan(frozen)
+
+    //灵感模式：跳过素材选择，直接生成（灵感模式 prompt-optimizer 整块跳过素材检索）
+    //关键：显式传 frozen，避免 startGenWithParams 读到旧的 confirmedPlan=null
+    if (effectiveMode === 'inspiration') {
+      startGenWithParams(frozen, [], 'none')
+      return
+    }
+
+    // 我的模式：先进入素材选择步骤
+    setMaterialMode('recommended')
+    setMaterialAnnotations([])
+    setStage('materials')
+  }
+
+  // ── 素材选择确认：用户在 MaterialSelector 里选完后回调 ──
+  function handleConfirmMaterials(
+    annotations: MaterialAnnotation[],
+    modeLabel: MaterialSelectorMode
+  ) {
+    setMaterialAnnotations(annotations)
+    setMaterialMode(modeLabel)
+    // 此时 confirmedPlan 在 handleConfirmPlan 中已 setConfirmedPlan 并经过一次完整渲染，
+    // 必为非空；保留判空以兜底异常路径（如用户绕过流程直接触发）
+    if (confirmedPlan) {
+      startGenWithParams(confirmedPlan, annotations, modeLabel)
+    }
+  }
+
+  // ── 素材选择返回：回到方案态，用户可调整方案后再来选 ──
+  function handleBackFromMaterials() {
+    setStage('plan')
   }
 
   // ── 2a：非创作类问题——携带问题理解跳转解决方案页 ──
@@ -984,12 +1045,33 @@ export default function PromptOptimizerPage() {
             <PlanPanel
               plan={plan}
               topic={analyzedTopic}
+              knowledgeUnits={planKnowledge}
               confirmed={!!confirmedPlan}
               onConfirm={handleConfirmPlan}
               onReanalyze={() => { void analyze() }}
               onSolve={handleSolve}
               onBack={backToTopic}
               onBackToEdit={() => setConfirmedPlan(null)}
+            />
+          </div>
+        )}
+
+        {/* ── Material Library 2.0 Phase 4：素材选择步骤（仅我的模式 / creator 模式出现）── */}
+        {stage === 'materials' && confirmedPlan && effectiveMode !== 'inspiration' && (
+          <div className="gen-plan anim-rise">
+            <MaterialSelector
+              topic={topic.trim()}
+              blueprintUsageTag={
+                (confirmedPlan as unknown as { usage_tag?: string | undefined })
+                  .usage_tag ?? null
+              }
+              blueprintContentType={
+                (confirmedPlan as unknown as { content_type?: string | undefined })
+                  .content_type ?? null
+              }
+              accessToken={accessToken ?? ''}
+              onConfirm={handleConfirmMaterials}
+              onBack={handleBackFromMaterials}
             />
           </div>
         )}

@@ -78,7 +78,15 @@ export async function POST(req: Request) {
       )
     }
 
-    const generationId = str(body.generationId, 100) || crypto.randomUUID()
+    // generationId 会作为 generation_history.id 直接 upsert。该列是 text，
+    // 且前端用 `${id}::v${n}` 这类复合 id 表示方案版本
+    // （见 app/(main)/solution/[id]/page.tsx），后续按同一 id 回查。
+    // 因此不能强制 UUID——服务端一旦替换成随机 id，前端就再也查不到该版本。
+    // 这里只做长度 + 字符安全校验（排除控制字符/换行/引号），归属仍由 RLS 兜底。
+    const rawGenerationId = str(body.generationId, 100)
+    const generationId = /^[\w.:@-]+$/.test(rawGenerationId)
+      ? rawGenerationId
+      : crypto.randomUUID()
 
     // ── 生成或补强：携带 previousSolution 时走补强迭代 ──
     let solution

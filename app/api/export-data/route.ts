@@ -7,6 +7,21 @@ import {
 export const maxDuration = 30
 export const dynamic = 'force-dynamic'
 
+/**
+ * 剔除内部实现字段后再写入导出文件：
+ * style_vector / embedding 是 1024 维模型向量，对"我的数据"导出毫无意义，
+ * 却会让 JSON 体积暴涨数倍。其余列一律保留——导出功能的价值在于完整性，
+ * 宁可多导也不错导。
+ */
+function stripInternalFields(rows: unknown[] | null): unknown[] {
+  if (!rows) return []
+  return rows.map((row) => {
+    if (typeof row !== 'object' || row === null) return row
+    const { style_vector: _sv, embedding: _emb, ...rest } = row as Record<string, unknown>
+    return rest
+  })
+}
+
 // ────────────────────────────────────────────────────────────
 // GET /api/export-data：导出用户所有个人数据为 JSON 文件
 // 包含：posts、scripts、generation_history、generation_feedback、
@@ -47,10 +62,27 @@ export async function GET(req: Request) {
     // 并行查询所有用户数据
     const [posts, scripts, genHistory, genFeedback, styleProfile, following, followers] =
       await Promise.all([
-        supabase.from('posts').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
-        supabase.from('scripts').select('id, content, type, file_url, category, created_at').eq('user_id', userId).order('created_at', { ascending: false }),
-        supabase.from('generation_history').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
-        supabase.from('generation_feedback').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+        // 这里用 select('*') 而不是手写列白名单：这三张表的列分散在 setup.sql 的
+        // 多处 alter table 里（posts 有 post_type/archive/source_project_id，
+        // generation_history 有 blueprint/analysis/generation_mode/...），
+        // 手写列名一旦对不上，PostgREST 会直接返回 42703 undefined_column 让导出整体失败。
+        // 内部大字段改用下面的 stripInternalFields 在返回前剔除。
+        supabase
+          .from('posts')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase.from('scripts').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+        supabase
+          .from('generation_history')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('generation_feedback')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
         fetchStyleProfile(),
         supabase.from('follows').select('following_id, created_at').eq('follower_id', userId).order('created_at', { ascending: false }),
         supabase.from('follows').select('follower_id, created_at').eq('following_id', userId).order('created_at', { ascending: false }),
@@ -73,10 +105,10 @@ export async function GET(req: Request) {
         version: '1.0',
       },
       styleProfile: styleProfile.data ?? null,
-      posts: posts.data ?? [],
-      scripts: scripts.data ?? [],
-      generationHistory: genHistory.data ?? [],
-      generationFeedback: genFeedback.data ?? [],
+      posts: stripInternalFields(posts.data),
+      scripts: stripInternalFields(scripts.data),
+      generationHistory: stripInternalFields(genHistory.data),
+      generationFeedback: stripInternalFields(genFeedback.data),
       social: {
         following: following.data ?? [],
         followers: followers.data ?? [],
@@ -91,6 +123,8 @@ export async function GET(req: Request) {
       headers: {
         'Content-Type': 'application/json; charset=utf-8',
         'Content-Disposition': `attachment; filename="${filename}"`,
+        // 导出文件含全量个人数据，禁止任何中间层/浏览器缓存
+        'Cache-Control': 'no-store, private',
       },
     })
   } catch (error) {

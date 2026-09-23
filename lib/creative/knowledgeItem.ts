@@ -118,6 +118,49 @@ export type AudienceTag =
   | '深度阅读用户'
   | '其他'
 
+// ── 1.5 知识主张（Claims）—— 素材里的「事实 / 数据 / 观点 / 经历」 ──
+//
+// 存在意义：6 维标签回答的是「这条素材是什么类型」，而 claims 回答的是
+// 「这条素材到底说了什么」。后者才是 Creator Knowledge System 的上游燃料：
+// 知识单元由 claims 跨素材聚合而来，而不是由标签统计而来。
+//
+// 设计原则（严格区别于标签）：
+//   1. 每条 claim 是一个命题（完整句子），不是枚举值
+//   2. 必须记录来源与可信度 —— 无来源的主观断言与带出处的数据不能同等对待
+//   3. 必须记录适用场景 —— 这是后续「相关性判断」能否做对的依据
+//   4. 没有可提取主张的素材（如纯情绪素材）允许为空数组，不强制编造
+//
+// ⚠ 全项目只有这一个 claim 类型。历史上 material.ts 里另有一个 MaterialClaim
+// （kind/text/source/note，为 scripts.claims 列預留但从未被使用），已合并进来。
+// 保留两套结构会让 Phase 2 的跨素材聚合不得不同时兼容两种形状，代价远大于现在统一。
+// 字段名沿用 MaterialClaim 的 kind/text/source 以承接既有设计，
+// 并按 Creator Knowledge System 的需要补上 confidence 与适用场景。
+
+/** 主张种类 */
+export type ClaimKind = '事实' | '数据' | '观点' | '经历'
+
+export const CLAIM_KINDS: readonly ClaimKind[] = ['事实', '数据', '观点', '经历']
+
+export const CLAIM_KIND_LABELS: Record<ClaimKind, string> = {
+  事实: '事实',
+  数据: '数据',
+  观点: '观点',
+  经历: '经历',
+}
+
+export interface KnowledgeClaim {
+  /** 命题本体（完整句子，如"AI 不会取代老师，而是把老师从重复劳动中解放出来"） */
+  text: string
+  /** 主张种类 */
+  kind: ClaimKind
+  /** 可信度 0-1：有明确出处/可验证的高，纯主观断言的低 */
+  confidence: number
+  /** 来源出处（URL/书名/人名等，素材未提及则省略） */
+  source?: string
+  /** 适用场景：决定这条主张在什么选题下才该被引用（不超过 3 个） */
+  applicableScopes?: string[]
+}
+
 // ── 2. 维度元数据（供 UI 展示和 prompt 注入）──────────────
 
 export interface DimensionMeta<T extends string> {
@@ -211,6 +254,13 @@ export interface KnowledgeItem {
   // 创作用途详述
   creation_usage?: string // 创作用途详述（如"适合做悬疑类视频的开场钩子"）
 
+  /**
+   * 素材中的知识主张（事实/数据/观点/经历）。
+   * 真源存在 knowledge jsonb 内部，随 knowledge 一起被读写，避免与
+   * scripts.claims 列形成两份打架的数据。
+   */
+  claims?: KnowledgeClaim[]
+
   // 元数据
   confidence: number // AI 判断置信度 0-1（< 0.6 不参与检索）
   analyzed_at: string // AI 分析时间（ISO）
@@ -250,6 +300,58 @@ function num(v: unknown, min: number, max: number, fallback: number): number {
  * 兜底清洗 LLM/DB 输出。
  * 无效返回 null：调用方降级为"不写 knowledge 字段，素材照常保存但无 AI 理解"。
  */
+/**
+ * 兜底清洗 claims 数组。
+ *
+ * 四条硬规则：
+ *   1. 命题为空的主张直接丢弃（宁缺毋滥，避免脏数据污染知识聚合）
+ *   2. kind 非法时兜底为"观点"，而不是丢弃 —— 抽出来但没分类比没抽出来强
+ *   3. 最多 5 条：单条素材的主张承载能力有限，超量通常是 LLM 把同一意思拆了多次
+ *   4. 同素材内按 text 去重
+ * confidence 缺省 0.4：既不信 LLM 的默认乐观值，也不直接判死。
+ */
+export function normalizeClaims(raw: unknown, maxLen = 5): KnowledgeClaim[] {
+  if (!Array.isArray(raw)) return []
+  const seen = new Set<string>()
+  const out: KnowledgeClaim[] = []
+
+  for (const item of raw as unknown[]) {
+    if (typeof item !== 'object' || item === null) continue
+    const c = item as Record<string, unknown>
+
+    // 兼容 statement/type 旧字段别名
+    const text = s(c.text ?? c.statement, 300)
+    // 命题是 claim 的全部价值所在，缺了就没有意义
+    if (!text) continue
+    if (seen.has(text)) continue
+
+    const kindRaw = c.kind ?? c.type
+    const kind: ClaimKind =
+      typeof kindRaw === 'string' && (CLAIM_KINDS as readonly string[]).includes(kindRaw)
+        ? (kindRaw as ClaimKind)
+        : '观点'
+
+    const scopes = Array.isArray(c.applicableScopes)
+      ? (c.applicableScopes as unknown[])
+          .map((v) => s(v, 40))
+          .filter((v): v is string => Boolean(v))
+          .slice(0, 3)
+      : []
+
+    seen.add(text)
+    out.push({
+      text,
+      kind,
+      confidence: num(c.confidence, 0, 1, 0.4),
+      source: s(c.source, 200) || undefined,
+      applicableScopes: scopes.length > 0 ? scopes : undefined,
+    })
+
+    if (out.length >= maxLen) break
+  }
+  return out
+}
+
 export function normalizeKnowledgeItem(raw: unknown): KnowledgeItem | null {
   if (typeof raw !== 'object' || raw === null) return null
   const o = raw as Record<string, unknown>
@@ -273,6 +375,8 @@ export function normalizeKnowledgeItem(raw: unknown): KnowledgeItem | null {
 
   const confidence = num(o.confidence, 0, 1, 0.5)
 
+  const claims = normalizeClaims(o.claims)
+
   return {
     meaning,
     context,
@@ -286,6 +390,7 @@ export function normalizeKnowledgeItem(raw: unknown): KnowledgeItem | null {
     emotion_profile: s(o.emotion_profile ?? o.emotionProfile, 200) || undefined,
     thought_profile: s(o.thought_profile ?? o.thoughtProfile, 200) || undefined,
     creation_usage: s(o.creation_usage ?? o.creationUsage, 300) || undefined,
+    claims: claims.length > 0 ? claims : undefined,
     confidence,
     analyzed_at: s(o.analyzed_at ?? o.analyzedAt, 40) || new Date().toISOString(),
     ai_model: s(o.ai_model ?? o.aiModel, 50) || undefined,

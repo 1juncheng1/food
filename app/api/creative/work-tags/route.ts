@@ -13,6 +13,7 @@
 
 import { NextResponse } from 'next/server'
 import { authenticateWithToken } from '@/lib/storage'
+import { rateLimit, getClientIp } from '@/lib/rateLimit'
 import {
   analyzeWorkTags,
   normalizeWorkTags,
@@ -43,14 +44,15 @@ export async function POST(req: Request) {
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
     const auth = token ? await authenticateWithToken(token) : null
 
-    // ── 限流 ──
-    const clientIp =
-      req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-      req.headers.get('x-real-ip')?.trim() ||
-      'unknown'
-    // 复用 rateLimit —— 但这里没 import，简化处理：标签分析限流与 plan API 一致
-    // 为避免循环依赖，用简单内存限流（同进程内足够）
-    const _rateKey = auth ? `tags:${auth.userId}` : `tags:guest:${clientIp}`
+    // ── 限流：登录按 userId，游客按 IP（每次调用都是一次真实 LLM 请求）──
+    const rateKey = auth ? `tags:${auth.userId}` : `tags:guest:${getClientIp(req)}`
+    const rl = rateLimit(rateKey, RATE_LIMIT, RATE_WINDOW_MS)
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: `操作太频繁，请 ${rl.retryAfterSec} 秒后再试` },
+        { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec) } }
+      )
+    }
 
     const body = (await req.json().catch(() => ({}))) as RequestBody
     const sampleText = str(body.sampleText, 10000)

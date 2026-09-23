@@ -16,6 +16,7 @@ import type { CIItem, CIQuery } from './types'
 import { getEnabledAdapters } from './registry'
 import { enrichItems } from './enrich'
 import { findFreshItems, logSearch, upsertItems } from './store'
+import { generateEmbedding } from '../storage'
 
 /** 查询指纹：归一化主题 + 领域，决定缓存命中 */
 export function queryHashOf(topic: string, contentDomain?: string): string {
@@ -55,6 +56,38 @@ export interface CISearchResult {
 const MIN_FRESH_FOR_CACHE = 6 // 缓存里至少有这么多新鲜条目才免搜索
 const SEARCH_LIMIT = 8 // 每个 Adapter 请求条数（Top N 语义）
 
+/**
+ * 单轮搜索最多补算语义向量的条目数（成本闸门）。
+ * bge-m3 单次调用便宜，但用户窄搜落在生成主路径上，必须设上限；
+ * 超出部分留 null，按"无向量"参与检索降级，绝不无限调用。
+ */
+const CI_EMBED_MAX_ITEMS = 12
+
+/**
+ * 给落库条目补算语义向量（title + excerpt 拼接）。
+ *
+ * 存在意义：ci_items.embedding 自 WF0 建列以来从未写入，消费侧
+ * （S2 市场候选 / Feed 热点补位）的相关性排序因此全部落空。
+ *
+ * 红线：失败静默——向量是检索增强而非数据本体，缺向量只降低排序质量，
+ * 不能让整轮搜索结果被判定为"无市场数据"。
+ */
+async function attachEmbeddings(items: CIItem[]): Promise<void> {
+  const targets = items
+    .filter((it) => !Array.isArray(it.embedding) || it.embedding.length !== 1024)
+    .slice(0, CI_EMBED_MAX_ITEMS)
+  for (const it of targets) {
+    const text = [it.title, it.excerpt].filter(Boolean).join('\n').trim()
+    if (!text) continue
+    try {
+      const vec = await generateEmbedding(text)
+      if (vec && vec.length === 1024) it.embedding = vec
+    } catch (e) {
+      console.warn('[ci] 条目向量补算失败:', e instanceof Error ? e.message : String(e))
+    }
+  }
+}
+
 export async function ciSearch(query: CIQuery): Promise<CISearchResult> {
   // P1：全局热点摄取传 hashOverride（global:v1:<date>），让各大类共享日分区；
   // 普通用户窄搜缺省走 topic+content_domain 计算 hash，语义不变。
@@ -93,7 +126,12 @@ export async function ciSearch(query: CIQuery): Promise<CISearchResult> {
   const enriched = await enrichItems(items)
 
   // 6. 落库 + 日志（best effort，失败不阻塞）
-  void upsertItems(enriched, hash)
+  // 向量补算与落库打包进同一个 fire-and-forget：embedding 只影响后续检索排序，
+  // 绝不能让用户在生成路径上为它多等 3-4 秒（12 条 × bge-m3 串行）。
+  void (async () => {
+    await attachEmbeddings(enriched)
+    await upsertItems(enriched, hash)
+  })()
   void logSearch({ query_hash: hash, query_text: query.topic, adapters: adapterIds, item_count: enriched.length })
 
   return { items: enriched, cacheHit: false, noAdapters: false }

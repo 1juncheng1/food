@@ -75,6 +75,10 @@ async function tavilySearch(
   const apiKey = process.env.TAVILY_API_KEY
   if (!apiKey) return { items: [], error: 'missing_api_key' }
 
+  // 超时保护：Tavily 挂起时 abort，避免 ciSearch 扇出长时间等待
+  // 硬指标 §五：外部数据单接口 timeout ≤ 2500ms
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 2500)
   try {
     const res = await fetch('https://api.tavily.com/search', {
       method: 'POST',
@@ -90,6 +94,7 @@ async function tavilySearch(
         include_answer: false,
         include_raw_content: false,
       }),
+      signal: controller.signal,
     })
     if (!res.ok) {
       return { items: [], error: `tavily_http_${res.status}` }
@@ -108,6 +113,8 @@ async function tavilySearch(
   } catch (e) {
     console.error(`CI Tavily(${platform}) 搜索异常:`, e)
     return { items: [], error: 'tavily_exception' }
+  } finally {
+    clearTimeout(timeout)
   }
 }
 

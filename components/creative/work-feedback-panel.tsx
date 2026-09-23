@@ -18,7 +18,7 @@ import { useState } from 'react'
 import {
   NEXT_ACTION_META,
   type NextActionKey,
-} from '@/lib/creative/diagnosis'
+} from '@/lib/creative/diagnosisMeta'
 import type { FeedbackAnalysis } from '@/lib/creative/workAgent'
 import type { ModificationPatch } from '@/lib/creative/patchEngine'
 

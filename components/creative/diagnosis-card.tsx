@@ -8,7 +8,7 @@ import {
   LEVEL_LABELS,
   type CreativeDiagnosis,
   type DimensionKey,
-} from '@/lib/creative/diagnosis'
+} from '@/lib/creative/diagnosisMeta'
 
 interface DiagnosisCardProps {
   diagnosis?: CreativeDiagnosis | null
