@@ -106,3 +106,10 @@ comment on column public.creator_knowledge.source_item_ids is
 --   select tablename from pg_tables where tablename = 'creator_knowledge';
 --   select policyname, cmd from pg_policies where tablename = 'creator_knowledge';
 --   select indexname from pg_indexes where tablename = 'creator_knowledge';
+
+-- ── 表级 GRANT ─────────────────────────────────────────────
+-- RLS 策略只能"收紧"已有权限，前提是角色本身有表级 GRANT。
+-- 通过 SQL 编辑器（postgres 角色）建表不会自动把权限授给 authenticated，
+-- 缺了这一步，任何查询都会报 `permission denied for table creator_knowledge`
+-- —— 策略写得再对也轮不到它出场。
+grant select, insert, update, delete on public.creator_knowledge to authenticated;

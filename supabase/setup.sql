@@ -2,6 +2,8 @@
 -- 视界 · 数据库一键整理脚本（幂等，可重复执行，不删除业务数据）
 -- 用法：Supabase Dashboard -> SQL Editor -> 新建查询 -> 全部粘贴 -> Run
 -- 内容：表结构 / 索引 / RLS 策略 / match_scripts 函数 / Storage 桶 / submit_feedback 反馈事务函数
+-- ⚠️ 本脚本**不含**积分系统：积分涉及钱，只认 migrations/0012~0015 一个真相来源。
+--    第 19 节会自动检查并提醒缺失，请按提示执行迁移，不要在本脚本里手写建表。
 -- ============================================================
 
 -- ──────────────── 1. 表结构 ────────────────
@@ -1506,7 +1508,9 @@ end $$;
 --   input_type            text      LLM 自动判断：title/sentence/news/material/random_thought/video_summary/other
 --   value_assessment      jsonb     6 维价值评估 + overall_score(1-10) + issues[]
 --   optimization_suggestions jsonb  优化建议：main_problem/missing_info[]/missing_viewpoints[]/improvement_direction
+--                                     + optimized_topic（本阶段最优解：改写后可直接创作的具体题目，旧数据可能缺失）
 --   recalled_material_ids text[]   从 scripts 表向量召回的相关素材 ID（仅登录用户有值）
+--   market_report         jsonb     可选的市场深挖结论，其中 recommended_topic 为市场阶段最优解
 --   analyzed_at            text     ISO timestamp
 --
 -- 旧数据兼容：新列 nullable，老作品 inspiration_context=null 不影响现有功能
@@ -1735,7 +1739,7 @@ create table if not exists public.creator_events (
 alter table public.creator_events drop constraint if exists creator_events_event_type_check;
 alter table public.creator_events add constraint creator_events_event_type_check check (
   event_type in (
-    'work_generate','work_finalize','work_unfinalize','work_delete',
+    'work_generate','work_finalize','work_unfinalize','work_delete','work_publish',
     'feedback_like','feedback_dislike','work_edit','work_regenerate',
     'material_save','material_delete',
     'post_like','post_unlike','post_save','post_unsave','post_style_resonate',
@@ -1801,9 +1805,11 @@ alter table public.interest_suggestions drop constraint if exists interest_sugge
 alter table public.interest_suggestions add constraint interest_suggestions_slot_check
   check (slot in ('core_gap','evidence_followup','exploration','continuation'));
 
+-- source 枚举随候选源增加而扩展（creator_knowledge = S6，用户已确认的跨素材知识单元）。
+-- 只放宽不收紧：老行全部仍合法，未执行本段的库也只会拒绝新源，不影响既有四源。
 alter table public.interest_suggestions drop constraint if exists interest_suggestions_source_check;
 alter table public.interest_suggestions add constraint interest_suggestions_source_check
-  check (source in ('own_inspiration','ci_market','saved_material','exploration','active_project'));
+  check (source in ('own_inspiration','ci_market','saved_material','exploration','active_project','creator_knowledge'));
 
 alter table public.interest_suggestions drop constraint if exists interest_suggestions_status_check;
 alter table public.interest_suggestions add constraint interest_suggestions_status_check
@@ -2344,4 +2350,81 @@ create index if not exists generation_history_session_idx
 --    where table_name='generation_history' and column_name in ('session_id','revision_plan');
 --   select column_name from information_schema.columns
 --    where table_name='work_agent_messages' and column_name='selected_index';
+
+
+-- ──────────────── 19. 积分系统完整性自检（只读，不建表）────────────────
+--
+-- 为什么这一节只「检查」而不「创建」：
+--   积分涉及钱，表结构、RLS、SECURITY DEFINER、幂等键的每一处细节
+--   都必须与 migrations/0012~0015 **逐字一致**。在这里复制一份建表语句，
+--   等于制造第二个真相来源——两边迟早漂移，而漂移的代价是账目错乱。
+--   所以这里只负责在缺失时大声提醒，真正的建表仍按序执行迁移文件：
+--     0012_point_ledger.sql → 0013_recharge_orders.sql
+--     → 0014_admin_recharge.sql → 0015_ai_cost.sql
+--
+-- ⚠️ 本脚本不会替你建这些表。若下面的 WARNING 出现，请去执行迁移，
+--    不要在这里手写建表语句。
+
+do $$
+declare
+  missing text[] := '{}';
+  t text;
+begin
+  foreach t in array array[
+    'user_balances','point_config','point_ledger',
+    'recharge_orders','payment_settings','admin_users'
+  ]
+  loop
+    if not exists (
+      select 1 from information_schema.tables
+      where table_schema = 'public' and table_name = t
+    ) then
+      missing := missing || t;
+    end if;
+  end loop;
+
+  if array_length(missing, 1) > 0 then
+    raise warning
+      '积分系统缺失表：%。请按序执行 supabase/migrations/0012_point_ledger.sql → 0013_recharge_orders.sql → 0014_admin_recharge.sql → 0015_ai_cost.sql',
+      array_to_string(missing, ', ');
+  else
+    raise notice '积分系统 6 张表齐全';
+  end if;
+end $$;
+
+-- 关键 RPC 自检：缺任何一个都无法完成记账/充值
+do $$
+declare
+  missing text[] := '{}';
+  f text;
+begin
+  foreach f in array array[
+    'consume_points','refund_points','adjust_points_manual',
+    'create_recharge_order','confirm_recharge','reject_recharge'
+  ]
+  loop
+    if not exists (
+      select 1 from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname = f
+    ) then
+      missing := missing || f;
+    end if;
+  end loop;
+
+  if array_length(missing, 1) > 0 then
+    raise warning '积分系统缺失 RPC：%（同样来自 migrations/0012~0015）',
+      array_to_string(missing, ', ');
+  else
+    raise notice '积分系统 6 个关键 RPC 齐全';
+  end if;
+end $$;
+
+-- 账目自检：余额必须等于流水代数和（有输出即为账目错乱，请立即排查）
+--   select b.user_id, b.balance, coalesce(sum(l.amount), 0) as ledger_sum
+--   from public.user_balances b
+--   left join public.point_ledger l on l.user_id = b.user_id
+--   group by b.user_id, b.balance
+--   having b.balance <> coalesce(sum(l.amount), 0);
+-- 完整验收清单见 supabase/verify_points.sql
 
