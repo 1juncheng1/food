@@ -16,6 +16,7 @@
 //   3. 重试 3 次：JSON 解析失败时重试，提高稳定性
 // ============================================================
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { normalizeFeedbackAnalysis, type FeedbackAnalysis } from './workAgent'
 import { callDeepSeekChat, llmTimeoutMs, stripJsonFence } from '@/lib/llm'
 import { languageDirective, resolveTargetLanguage, type LanguageCode } from '@/lib/languageConsistency'
@@ -121,7 +122,13 @@ function buildUserPrompt(input: AnalyzeFeedbackInput): string {
  * max_tokens 800：输出远短于正文生成，节省成本。
  */
 export async function analyzeFeedback(
-  input: AnalyzeFeedbackInput
+  input: AnalyzeFeedbackInput,
+  /**
+   * Phase 4 计费上下文：传了才计费。
+   * 上游是"可选鉴权"端点，游客请求拿不到 userId —— 此时不传，
+   * 保持"游客也能用"的既有行为（是否强制登录是产品决策，不在本次改造范围）。
+   */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 ): Promise<FeedbackAnalysis | null> {
   const freeText = input.freeText.trim()
   if (freeText.length < 2) return null // 反馈过短无法分析
@@ -151,6 +158,18 @@ export async function analyzeFeedback(
         language: target,
         // 3 次循环本身就是重试；只在首次尝试做语言自纠偏，避免堆叠耗时
         languageRetry: attempt === 0,
+        // 计费：3 次尝试各用各的 refId（复用会让第 2 次起被判重复预扣 → 账目错乱）
+        ...(billing
+          ? {
+              billing: {
+                supabase: billing.supabase,
+                userId: billing.userId,
+                ability: 'diagnosis' as const,
+                refId: `${billing.refId ?? crypto.randomUUID()}:feedback:${attempt}`,
+                description: '反馈分析',
+              },
+            }
+          : {}),
       })
 
       if (!res.ok) {

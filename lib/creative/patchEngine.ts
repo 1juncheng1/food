@@ -12,6 +12,7 @@
 //   - 失败降级：全文重写链路（prompt-optimizer improve 模式）始终可用
 // ============================================================
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import type { FeedbackAnalysis, RevisionPlan } from './workAgent'
 import { callDeepSeekChat, llmTimeoutMs, stripJsonFence } from '@/lib/llm'
 import { languageDirective, resolveTargetLanguage, type LanguageCode } from '@/lib/languageConsistency'
@@ -308,7 +309,12 @@ function buildUserPrompt(input: PatchGenerationInput, segments: string[]): strin
  * 返回 null 表示两轮尝试均未产出任何有效补丁（调用方降级全文重写）。
  */
 export async function generateEditPatches(
-  input: PatchGenerationInput
+  input: PatchGenerationInput,
+  /**
+   * Phase 4 计费上下文：传了才对这次补丁生成计费
+   * （调用前预扣 → 按真实 token 结算 → 失败全额退）。不传则行为与改造前一致。
+   */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 ): Promise<{ patches: ModificationPatch[]; summary: string } | null> {
   const content = input.content
   const freeText = input.freeText.trim()
@@ -344,6 +350,18 @@ export async function generateEditPatches(
         // 第二次尝试是兜底重来，不再叠加语言自纠偏，避免把总耗时拖到网关超时
         languageRetry: attempt === 0,
         timeoutMs: attempt === 0 ? 45_000 : llmTimeoutMs(3000),
+        // 计费：两次尝试各用各的 refId（理由同 intentClarifier）
+        ...(billing
+          ? {
+              billing: {
+                supabase: billing.supabase,
+                userId: billing.userId,
+                ability: 'chat' as const,
+                refId: `${billing.refId ?? crypto.randomUUID()}:patch:${attempt}`,
+                description: '段落补丁生成',
+              },
+            }
+          : {}),
       })
 
       if (!res.ok) {

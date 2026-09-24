@@ -9,6 +9,7 @@
 //   5. 与 FeedbackAnalyzer/IntentClarity 同模式：LLM 调用 + normalize 兜底
 // ============================================================
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { callDeepSeekChat } from '@/lib/llm'
 import {
   KNOWLEDGE_DIMENSIONS,
@@ -190,7 +191,12 @@ ${input.category}`
  * 失败时返回 degraded=true，调用方应走 fallback（直接保存无 knowledge 的素材）。
  */
 export async function analyzeKnowledge(
-  input: AnalyzeKnowledgeInput
+  input: AnalyzeKnowledgeInput,
+  /**
+   * Phase 4 计费上下文：传了才对这次分析计费
+   * （调用前预扣 → 按真实 token 结算 → 失败全额退）。不传则行为与改造前一致。
+   */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 ): Promise<AnalyzeKnowledgeResult> {
   // callDeepSeekChat 内置超时/错误处理/key 检查，失败统一返回 { ok:false }
   const res = await callDeepSeekChat({
@@ -203,6 +209,17 @@ export async function analyzeKnowledge(
     max_tokens: 1400,
     jsonMode: true,
     timeoutMs: LLM_TIMEOUT_MS,
+    ...(billing
+      ? {
+          billing: {
+            supabase: billing.supabase,
+            userId: billing.userId,
+            ability: 'diagnosis' as const,
+            refId: `${billing.refId ?? crypto.randomUUID()}:analyze`,
+            description: '素材知识分析',
+          },
+        }
+      : {}),
   })
 
   if (!res.ok) {
@@ -377,7 +394,9 @@ export interface ReAnalyzeKnowledgeInput {
  *   3. 系统 prompt 明确告知"你之前的分析有误，请修正"
  */
 export async function reAnalyzeKnowledge(
-  input: ReAnalyzeKnowledgeInput
+  input: ReAnalyzeKnowledgeInput,
+  /** Phase 4 计费上下文：传了才计费，语义同 analyzeKnowledge */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 ): Promise<{ knowledge: KnowledgeItem | null; degraded: boolean }> {
   const res = await callDeepSeekChat({
     messages: [
@@ -389,6 +408,17 @@ export async function reAnalyzeKnowledge(
     max_tokens: 1400,
     jsonMode: true,
     timeoutMs: LLM_TIMEOUT_MS,
+    ...(billing
+      ? {
+          billing: {
+            supabase: billing.supabase,
+            userId: billing.userId,
+            ability: 'diagnosis' as const,
+            refId: `${billing.refId ?? crypto.randomUUID()}:reanalyze`,
+            description: '素材知识重新分析',
+          },
+        }
+      : {}),
   })
 
   if (!res.ok) {

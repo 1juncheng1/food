@@ -14,8 +14,6 @@ import { languageDirective, resolveTargetLanguage, type LanguageCode } from '@/l
 import {
   normalizeDiagnosis,
   type CreativeDiagnosis,
-  type DimensionKey,
-  type NextActionKey,
 } from './diagnosisMeta'
 
 // ── 诊断的类型、展示元数据与归一化函数 ──
@@ -25,6 +23,7 @@ import {
 // 此处再导出以保持既有调用方不变。
 export {
   DIMENSION_META,
+  DIAGNOSIS_LENS_META,
   LEVEL_LABELS,
   NEXT_ACTION_META,
   normalizeDiagnosis,
@@ -34,6 +33,8 @@ export type {
   DimensionKey,
   NextActionKey,
   DiagnosisDimension,
+  DiagnosisLensKey,
+  DiagnosisLens,
   CreativeDiagnosis,
 } from './diagnosisMeta'
 
@@ -48,13 +49,19 @@ export interface DiagnosisInput {
   language?: LanguageCode
 }
 
+/** 诊断结果：失败时带错误码，供上层翻译成准确文案（如「AI 服务额度不足」） */
+export type DiagnosisLlmResult =
+  | { ok: true; data: Omit<CreativeDiagnosis, 'diagnosedAt'> }
+  | { ok: false; error: string }
+
 /**
  * 调用 DeepSeek 对成稿做五维诊断（强制 JSON 输出）。
- * 仅服务端使用；失败返回 null，调用方决定降级（前端静默/允许重试）。
+ * 仅服务端使用；失败返回 { ok:false, error }（早期返回裸 null，调用方只能给出
+ * 「诊断失败，请稍后重试」，余额耗尽这类只有人能修的原因被完全吞掉）。
  */
 export async function generateDiagnosis(
   input: DiagnosisInput
-): Promise<Omit<CreativeDiagnosis, 'diagnosedAt'> | null> {
+): Promise<DiagnosisLlmResult> {
   // 诊断的是 input.sampleText 这篇稿件 → 以它的语言为准；topic 仅作次要依据
   const target =
     input.language ??
@@ -64,20 +71,23 @@ export async function generateDiagnosis(
       { text: input.style, weight: 10, label: 'style' },
     ]).language
 
+  // 输出刻意只保留用户真正会读的两段（表现良好 / 需要改进）：
+  // 五维点评、问题与建议分列、六类下一步方向已全部移除——它们与被保留的两段
+  // 内容高度重复，却占掉诊断输出绝大部分 token。
   const system = [
     '你是资深短视频内容总编，每年审稿数千条，诊断以犀利、具体、可执行著称，从不给客套话。',
-    '任务：对给定的解说成稿做一次完整体检，输出结构化 JSON 诊断报告。',
+    '任务：对给定的解说成稿做一次体检，只输出"表现良好"和"需要改进"两部分。',
     '硬性要求：',
     '1. 只输出一个 JSON 对象，不要 markdown 代码块、不要任何解释或前后缀文字；',
     // 诊断对象（成稿）决定诊断语言：点评一篇英文稿却给中文结论，读者无法对照使用
     languageDirective(target),
-    '3. 点评必须引用/对应稿件中的具体写法，禁止"引人入胜""节奏不错"这类空话；',
-    '3. level 为严格的 1-5 整数：5=突出 4=良好 3=中规中矩 2=偏弱 1=待提升。评分要真实、敢给低分，五个维度允许相同；',
-    '4. 不要输出百分制分数；',
-    '5. JSON 必须严格包含以下 key：',
-    'dimensions{opening{level,comment}, structure{level,comment}, emotion{level,comment}, style_fit{level,comment}, virality{level,comment}},',
-    'strengths[string], problems[string], suggestions[string],',
-    'next_actions{hit,style,emotion,depth,video,script}（每个值一句话，说明"选择该方向后下一步具体怎么改"，必须与本篇稿件的实际问题挂钩）。',
+    '3. JSON 含两个必填 key：strengths（表现良好）与 improvements（需要改进），各 2-3 条；',
+    '4. 每条必须引用/对应稿件中的具体写法，禁止"引人入胜""节奏不错"这类空话；',
+    '5. improvements 每条写成"问题 → 怎么改"的一句话，改法要具体到能直接照做；',
+    '6. 每条不超过 40 字；',
+    '7. 另附可选 key：lenses —— 从「观点 / 证据 / 表达」三个镜头各给一条 good（做得好）与 fix（怎么改），',
+    '   格式为 {"viewpoint":{"good":"","fix":""},"evidence":{...},"expression":{...}}，每个值不超过 40 字；',
+    '   观点=主张是否立得住，证据=论据是否具体可验证，表达=语言与节奏是否到位。禁止输出其他字段。',
   ].join('\n')
 
   const user = `请诊断以下成稿：
@@ -90,13 +100,9 @@ ${input.blueprint ? `${formatBlueprintForPrompt(input.blueprint)}\n` : ''}
 【待诊断成稿】
 ${input.sampleText.slice(0, 6000)}
 
-请逐维度点评：
-- opening：开头 3 秒 Hook 是否具体、有悬念/反差，第一句话值不值得停下来；
-- structure：段落递进、信息密度、是否有冗余或断裂；
-- emotion：情绪曲线是否成立、共鸣点是否落地；
-- style_fit：叙述人格、句式、节奏与上方身份/文风要求的贴合程度；
-- virality：记忆点、互动引导、被转发的理由（不要给百分比，只给等级和理由）。
-strengths/problems/suggestions 各给 2-4 条，问题与建议要一一可落地。`
+从开头吸引力、结构递进、情感共鸣、风格贴合、传播潜力五个方面权衡取舍，
+输出 strengths（表现良好，保持即可）与 improvements（需要改进：问题 → 怎么改）两部分，各 2-3 条；
+再附 lenses：从观点、证据、表达三个镜头各给一条 good 与一条 fix。`
 
   try {
     const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
@@ -113,25 +119,39 @@ strengths/problems/suggestions 各给 2-4 条，问题与建议要一一可落�
           { role: 'user', content: user },
         ],
         temperature: 0.3,
-        max_tokens: 1600,
+        // 两段短句 + 三镜头各两条，上限适度放宽（原 600）
+        max_tokens: 900,
         response_format: { type: 'json_object' },
       }),
     })
 
     if (!res.ok) {
-      console.error('作品诊断失败:', await res.text())
-      return null
+      const body = await res.text().catch(() => '')
+      // 402 = 余额耗尽（Insufficient Balance）。这类必须单独识别：
+      // 它与网络抖动、超时不同，重试一万次也不会好，只有充值才能解决。
+      console.error(`作品诊断失败: HTTP ${res.status}`, body.slice(0, 200))
+      return { ok: false, error: `http_${res.status}` }
     }
     const data = await res.json()
     const text: string = data?.choices?.[0]?.message?.content
-    if (typeof text !== 'string' || !text.trim()) return null
+    if (typeof text !== 'string' || !text.trim()) {
+      return { ok: false, error: 'empty_content' }
+    }
 
     const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
     const parsed: unknown = JSON.parse(cleaned)
-    return normalizeDiagnosis(parsed)
+    const normalized = normalizeDiagnosis(parsed)
+    if (!normalized) return { ok: false, error: 'parse_failed' }
+    return { ok: true, data: normalized }
   } catch (e) {
+    const isAbort = e instanceof Error && e.name === 'AbortError'
+    const code = isAbort
+      ? 'timeout'
+      : e instanceof Error && /fetch failed|network|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(e.message)
+        ? 'network_error'
+        : 'parse_failed'
     console.error('作品诊断异常:', e)
-    return null
+    return { ok: false, error: code }
   }
 }
 

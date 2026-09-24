@@ -13,7 +13,14 @@
 // 禁止编造具体标题/数据/创作者名（详见 buildSystemPrompt）。
 // ============================================================
 
-import { llmTimeoutSignal } from '@/lib/llm'
+import { callDeepSeekChat, llmTimeoutMs, stripJsonFence } from '@/lib/llm'
+import type { SupabaseClient } from '@supabase/supabase-js'
+
+/**
+ * 计费上下文：传了才计费（「预扣 → 按真实用量结算 → 失败全退」）。
+ * 市场分析按 diagnosis 档预扣。
+ */
+export type MarketBilling = { supabase: SupabaseClient; userId: string; refId?: string }
 
 // ── 类型 ────────────────────────────────────────────────────
 
@@ -47,6 +54,12 @@ export interface MarketReport {
   content_gaps: string[] // 内容缺口 2-4 条（核心价值）
   competition_risks: string[] // 竞争风险 1-3 条
   strategy: MarketStrategy // 推荐策略
+  /**
+   * 本阶段最优解：从 content_gaps 里挑最有机会的一条，落成一个"可以直接拿去创作"
+   * 的具体题目/角度（一句话）。用户点「基于市场缺口开始创作」时直接作为创作主题。
+   * 旧数据无此字段时为 '' —— 调用方回退到原始主题，不阻断流程。
+   */
+  recommended_topic: string
   generated_at: string // ISO
 }
 
@@ -65,7 +78,7 @@ export interface MarketAnalysisInput {
  */
 export interface MarketDataProvider {
   readonly mode: MarketDataSourceMode
-  analyze(input: MarketAnalysisInput): Promise<MarketReport | null>
+  analyze(input: MarketAnalysisInput, billing?: MarketBilling): Promise<MarketReport | null>
 }
 
 // ── 兜底清洗 ────────────────────────────────────────────────
@@ -145,6 +158,8 @@ export function normalizeMarketReport(raw: unknown): MarketReport | null {
     content_gaps,
     competition_risks,
     strategy: { action, reason },
+    // 最优解允许缺省（历史数据兼容）；缺失时前端回退到原始灵感
+    recommended_topic: s(o.recommended_topic, 120),
     generated_at: new Date().toISOString(),
   }
 }
@@ -152,7 +167,7 @@ export function normalizeMarketReport(raw: unknown): MarketReport | null {
 // ── Prompt（反幻觉硬约束）───────────────────────────────────
 
 const MARKET_JSON_KEYS =
-  '{ data_source_mode, heat_level, market_heat, hot_directions: [{pattern, why}], audience_motivation, mainstream_expression, homogenization_points, content_gaps, competition_risks, strategy: {action, reason} }'
+  '{ heat_level, market_heat, hot_directions: [{pattern, why}], audience_motivation, mainstream_expression, homogenization_points, content_gaps, competition_risks, strategy: {action, reason}, recommended_topic }'
 
 function buildSystemPrompt(): string {
   return [
@@ -183,6 +198,9 @@ function buildSystemPrompt(): string {
     '    upgrade = 已有角度可升级（更深/更具体/反常识）',
     '    avoid = 当前角度已是红海，建议换角度',
     '- strategy.reason：推荐原因（一句话，与 content_gaps 呼应）',
+    '- recommended_topic：本阶段最优解——从 content_gaps 中挑最有机会的一条，落成一个可以直接拿去创作的具体题目/角度',
+    '    （一句话 15-40 字，必须含"对象 + 切入角度 + 冲突/悬念"，如"把相亲对象做成 SWOT 分析后，我放弃了这门管理学"）；',
+    '    禁止空话（"一个值得探讨的话题"），禁止解释性文字；用户点「基于市场缺口开始创作」时会直接用它当创作主题。',
     '',
     '硬性输出要求：',
     '1. 只输出一个 JSON 对象，不要 markdown 代码块、不要任何解释或前后缀文字；',
@@ -221,46 +239,52 @@ function buildUserPrompt(input: MarketAnalysisInput): string {
 /** DeepSeek 估算 Provider：基于训练知识做模式级市场分析 */
 const llmEstimateProvider: MarketDataProvider = {
   mode: 'llm_estimate',
-  async analyze(input: MarketAnalysisInput): Promise<MarketReport | null> {
+  async analyze(input: MarketAnalysisInput, billing?: MarketBilling): Promise<MarketReport | null> {
+    // 缺 recommended_topic 的报告先暂存：优先重试让 LLM 补齐本阶段最优解
+    let withoutOptimalTopic: MarketReport | null = null
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          signal: llmTimeoutSignal(1800),
-          body: JSON.stringify({
-            model: 'deepseek-chat',
-            messages: [
-              { role: 'system', content: buildSystemPrompt() },
-              { role: 'user', content: buildUserPrompt(input) },
-            ],
-            temperature: 0.5,
-            max_tokens: 1800,
-            response_format: { type: 'json_object' },
-          }),
+        const res = await callDeepSeekChat({
+          messages: [
+            { role: 'system', content: buildSystemPrompt() },
+            { role: 'user', content: buildUserPrompt(input) },
+          ],
+          temperature: 0.5,
+          max_tokens: 1800,
+          jsonMode: true,
+          timeoutMs: llmTimeoutMs(1800),
+          // 计费：3 次尝试各用各的 refId——复用会让第 2 次起被判重复预扣（reserved=0）
+          ...(billing
+            ? {
+                billing: {
+                  supabase: billing.supabase,
+                  userId: billing.userId,
+                  ability: 'diagnosis' as const,
+                  refId: `${billing.refId ?? crypto.randomUUID()}:market:${attempt}`,
+                  description: '市场分析',
+                },
+              }
+            : {}),
         })
 
         if (!res.ok) {
-          console.error('市场分析失败:', await res.text())
+          // 余额不足不会走到这里：预扣失败在发起 HTTP 前就返回了，一个 token 都没花
+          console.error('市场分析失败:', res.error)
           return null
         }
-        const data = await res.json()
-        const text: string = data?.choices?.[0]?.message?.content
-        if (typeof text !== 'string' || !text.trim()) return null
-
-        const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-        const parsed = JSON.parse(cleaned)
+        const parsed = JSON.parse(stripJsonFence(res.content))
         const report = normalizeMarketReport(parsed)
-        if (report) return report
+        if (report) {
+          if (report.recommended_topic) return report
+          // 报告有效但缺最优解：暂存后重试，全部失败再降级返回它
+          withoutOptimalTopic = report
+        }
         // 清洗失败（LLM 漏字段），重试
       } catch (e) {
         console.error(`市场分析异常（第 ${attempt + 1} 次）:`, e)
       }
     }
-    return null
+    return withoutOptimalTopic
   },
 }
 
@@ -279,7 +303,7 @@ const llmEstimateProvider: MarketDataProvider = {
  */
 const webSearchProvider: MarketDataProvider = {
   mode: 'web_search',
-  async analyze(input: MarketAnalysisInput): Promise<MarketReport | null> {
+  async analyze(input: MarketAnalysisInput, billing?: MarketBilling): Promise<MarketReport | null> {
     const { ciSearch } = await import('../ci/service')
     const result = await ciSearch({
       topic: input.raw_input,
@@ -288,13 +312,14 @@ const webSearchProvider: MarketDataProvider = {
     })
 
     // 数据层不可用或无条目：回退估算（报告模式自动诚实标注）
+    // 降级照样要计费：走的是同一条 LLM 链路，成本一分没少。
     if (result.noAdapters) {
       console.warn('CI 数据层未配置（缺 TAVILY_API_KEY），市场分析回退估算模式')
-      return llmEstimateProvider.analyze(input)
+      return llmEstimateProvider.analyze(input, billing)
     }
     if (result.items.length === 0) {
       console.warn('CI 搜索无结果，市场分析回退估算模式')
-      return llmEstimateProvider.analyze(input)
+      return llmEstimateProvider.analyze(input, billing)
     }
 
     // 组装真实条目摘要（只给 LLM 必要字段，控制 token）
@@ -314,84 +339,89 @@ const webSearchProvider: MarketDataProvider = {
     if (input.competition_reason) seeds.push(`竞争度判断依据：${input.competition_reason}`)
     if (input.content_domain) seeds.push(`内容领域：${input.content_domain}`)
 
+    let withoutOptimalTopic: MarketReport | null = null
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          signal: llmTimeoutSignal(1800),
-          body: JSON.stringify({
-            model: 'deepseek-chat',
-            messages: [
-              {
-                role: 'system',
-                content: [
-                  '你是资深内容市场分析师。下方是围绕用户创作主题搜索到的真实网页/新闻条目，你基于这些真实结果分析市场格局，帮助创作者发现创作机会（不是复制热门内容）。',
-                  '',
-                  '【核心红线（违反任何一条即为无效输出）】',
-                  '1. 所有结论必须源自下方条目清单，禁止编造清单之外的具体作品、标题、数据、创作者名；',
-                  '2. 条目没有提供互动数据（播放/点赞等）时，禁止编造任何数字——结论用模式级表述（"多数""普遍"）；',
-                  '3. 禁止精确统计口径（如"80%的内容"），用保守表述。',
-                  '',
-                  '字段要求（与估算模式一致）：',
-                  '- heat_level：市场热度 1-10 整数（基于真实结果的数量、时效性、话题覆盖面综合判断）',
-                  '- market_heat：热度一句话（需点出依据来自搜索结果）',
-                  '- hot_directions：热门内容方向 2-4 条，pattern 写标题/内容结构模式（从条目标题中归纳），why 写心理机制',
-                  '- audience_motivation：用户为什么关注/评论/讨论（一句话）',
-                  '- mainstream_expression：当前主流表达方式（一句话，从条目摘要归纳）',
-                  '- homogenization_points：条目间重复的内容角度，2-4 条',
-                  '- content_gaps：条目清单没覆盖、但目标受众关心的角度，2-4 条（核心价值）',
-                  '- competition_risks：竞争风险 1-3 条',
-                  '- strategy.action：reference（市场有成熟结构可借鉴）/ upgrade（已有角度可升级）/ avoid（当前角度是红海，建议换角度）',
-                  '- strategy.reason：推荐原因一句话（与 content_gaps 呼应）',
-                  '',
-                  '硬性输出要求：只输出一个 JSON 对象，不要 markdown 代码块；',
-                  `JSON 必须严格包含以下 key：${MARKET_JSON_KEYS}`,
-                  '不输出 data_source_mode（由服务端补回）、不输出 generated_at（由服务端补回）。',
-                ].join('\n'),
-              },
-              {
-                role: 'user',
-                content: [
-                  `创作主题：${input.raw_input.slice(0, 500)}`,
-                  seeds.length ? `参考种子（保持一致，不要矛盾）：\n${seeds.map((x) => `- ${x}`).join('\n')}` : '',
-                  '真实搜索条目：',
-                  ...itemLines,
-                  '',
-                  '按规则输出 JSON。',
-                ]
-                  .filter(Boolean)
-                  .join('\n'),
-              },
-            ],
-            temperature: 0.4,
-            max_tokens: 1800,
-            response_format: { type: 'json_object' },
-          }),
+        const res = await callDeepSeekChat({
+          messages: [
+            {
+              role: 'system',
+              content: [
+                '你是资深内容市场分析师。下方是围绕用户创作主题搜索到的真实网页/新闻条目，你基于这些真实结果分析市场格局，帮助创作者发现创作机会（不是复制热门内容）。',
+                '',
+                '【核心红线（违反任何一条即为无效输出）】',
+                '1. 所有结论必须源自下方条目清单，禁止编造清单之外的具体作品、标题、数据、创作者名；',
+                '2. 条目没有提供互动数据（播放/点赞等）时，禁止编造任何数字——结论用模式级表述（"多数""普遍"）；',
+                '3. 禁止精确统计口径（如"80%的内容"），用保守表述。',
+                '',
+                '字段要求（与估算模式一致）：',
+                '- heat_level：市场热度 1-10 整数（基于真实结果的数量、时效性、话题覆盖面综合判断）',
+                '- market_heat：热度一句话（需点出依据来自搜索结果）',
+                '- hot_directions：热门内容方向 2-4 条，pattern 写标题/内容结构模式（从条目标题中归纳），why 写心理机制',
+                '- audience_motivation：用户为什么关注/评论/讨论（一句话）',
+                '- mainstream_expression：当前主流表达方式（一句话，从条目摘要归纳）',
+                '- homogenization_points：条目间重复的内容角度，2-4 条',
+                '- content_gaps：条目清单没覆盖、但目标受众关心的角度，2-4 条（核心价值）',
+                '- competition_risks：竞争风险 1-3 条',
+                '- strategy.action：reference（市场有成熟结构可借鉴）/ upgrade（已有角度可升级）/ avoid（当前角度是红海，建议换角度）',
+                '- strategy.reason：推荐原因一句话（与 content_gaps 呼应）',
+                '- recommended_topic：本阶段最优解——从 content_gaps 中挑最有机会的一条，落成一个可以直接拿去创作的具体题目/角度',
+                '  （一句话 15-40 字，必须含"对象 + 切入角度 + 冲突/悬念"，禁止空话与解释性文字）；',
+                '  用户点「基于市场缺口开始创作」时会直接用它当创作主题。',
+                '',
+                '硬性输出要求：只输出一个 JSON 对象，不要 markdown 代码块；',
+                `JSON 必须严格包含以下 key：${MARKET_JSON_KEYS}`,
+                '不输出 data_source_mode（由服务端补回）、不输出 generated_at（由服务端补回）。',
+              ].join('\n'),
+            },
+            {
+              role: 'user',
+              content: [
+                `创作主题：${input.raw_input.slice(0, 500)}`,
+                seeds.length ? `参考种子（保持一致，不要矛盾）：\n${seeds.map((x) => `- ${x}`).join('\n')}` : '',
+                '真实搜索条目：',
+                ...itemLines,
+                '',
+                '按规则输出 JSON。',
+              ]
+                .filter(Boolean)
+                .join('\n'),
+            },
+          ],
+          temperature: 0.4,
+          max_tokens: 1800,
+          jsonMode: true,
+          timeoutMs: llmTimeoutMs(1800),
+          // 计费：3 次尝试各用各的 refId——复用会让第 2 次起被判重复预扣（reserved=0）
+          ...(billing
+            ? {
+                billing: {
+                  supabase: billing.supabase,
+                  userId: billing.userId,
+                  ability: 'diagnosis' as const,
+                  refId: `${billing.refId ?? crypto.randomUUID()}:market:${attempt}`,
+                  description: '市场分析',
+                },
+              }
+            : {}),
         })
         if (!res.ok) {
-          console.error('市场分析（web_search 模式）失败:', await res.text())
+          // 余额不足不会走到这里：预扣失败在发起 HTTP 前就返回了，一个 token 都没花
+          console.error('市场分析（web_search 模式）失败:', res.error)
           return null
         }
-        const data = await res.json()
-        const text: string = data?.choices?.[0]?.message?.content
-        if (typeof text !== 'string' || !text.trim()) return null
-
-        const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-        const parsed = JSON.parse(cleaned)
+        const parsed = JSON.parse(stripJsonFence(res.content))
         const report = normalizeMarketReport(parsed)
         if (report) {
           report.data_source_mode = 'web_search' // 覆盖 normalize 的默认值，UI 徽章据此升级
-          return report
+          if (report.recommended_topic) return report
+          withoutOptimalTopic = report
         }
       } catch (e) {
         console.error(`市场分析异常（web_search 模式，第 ${attempt + 1} 次）:`, e)
       }
     }
-    return null
+    return withoutOptimalTopic
   },
 }
 
@@ -426,5 +456,8 @@ export function formatMarketForPrompt(r: MarketReport): string {
     ...r.competition_risks.map((x) => `- ${x}`),
     `推荐策略：${r.strategy.action}（${r.strategy.reason}）`,
   ]
+  if (r.recommended_topic) {
+    lines.push(`本阶段最优解：${r.recommended_topic}`)
+  }
   return lines.join('\n')
 }

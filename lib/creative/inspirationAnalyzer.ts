@@ -17,7 +17,8 @@
 //   前端在 insight 态用户确认后，把 analysis 文本注入 plan prompt。
 // ============================================================
 
-import { llmTimeoutSignal } from '@/lib/llm'
+import { callDeepSeekChat, llmTimeoutMs, stripJsonFence } from '@/lib/llm'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import type { MarketReport } from './marketAnalyzer'
 import { formatMarketForPrompt, normalizeMarketReport } from './marketAnalyzer'
 
@@ -77,6 +78,12 @@ export interface OptimizationSuggestions {
   missing_info: string[] // 缺少什么信息
   missing_viewpoints: string[] // 缺少什么观点
   improvement_direction: string // 如何提升吸引力
+  /**
+   * 本阶段最优解：按 improvement_direction 改写出的、可以直接拿去创作的
+   * 具体题目/角度（一句话）。用户点「基于这个灵感开始创作」时作为创作主题。
+   * 旧数据无此字段时为 '' —— 调用方回退到原始灵感，不阻断流程。
+   */
+  optimized_topic: string
 }
 
 /** 一次灵感分析的完整结果（落 inspiration_context jsonb） */
@@ -187,6 +194,8 @@ function normalizeOptimization(raw: unknown): OptimizationSuggestions | null {
     missing_info: strArr(o.missing_info, 5, 200),
     missing_viewpoints: strArr(o.missing_viewpoints, 5, 200),
     improvement_direction,
+    // 最优解允许缺省（历史数据兼容）；缺失时前端回退到原始灵感
+    optimized_topic: s(o.optimized_topic, 120),
   }
 }
 
@@ -329,11 +338,14 @@ function buildSystemPrompt(): string {
     '- overall_score 低 + competition_level 高 = 不建议做',
     '- competition_level 看的是"这个切入角度已有多少人在做"，不是看内容质量',
     '',
-    'optimization_suggestions 4 字段：',
+    'optimization_suggestions 5 字段：',
     '- main_problem：当前最大的问题（一句话，如"切入点过于常见，无差异化"）',
     '- missing_info：缺什么信息（数组，2-4 条，如"缺少具体数据""缺少反例"）',
     '- missing_viewpoints：缺什么观点（数组，2-4 条，如"缺少用户视角""缺少反对意见"）',
     '- improvement_direction：如何提升吸引力（一句话，具体可执行）',
+    '- optimized_topic：本阶段最优解——按 improvement_direction 的改法，把原灵感改写成一句可以直接拿去创作的具体题目/角度',
+    '    （15-40 字，必须含"对象 + 切入角度 + 冲突/悬念"，如"我给相亲对象做了份 SWOT 分析，结果自己出局了"）；',
+    '    禁止空话（"一个更值得写的角度"），禁止写成建议；用户点「基于这个灵感开始创作」时会直接用它当创作主题。',
     '',
     '【few-shot 校准样本】（覆盖科技/职场/情感/商业领域，参考这些标注来给分）：',
     '示例1：',
@@ -378,7 +390,7 @@ function buildSystemPrompt(): string {
     '2. JSON 必须严格包含以下 key：',
     `   ${ANALYSIS_JSON_KEYS}`,
     '   value_assessment 必须包含：what_it_is, core_theme, content_domain, creation_value, freshness, discussability, differentiation, competition_level, competition_reason, overall_score, issues；',
-    '   optimization_suggestions 必须包含：main_problem, missing_info, missing_viewpoints, improvement_direction；',
+    '   optimization_suggestions 必须包含：main_problem, missing_info, missing_viewpoints, improvement_direction, optimized_topic；',
     '3. 不输出 raw_input（由服务端补回）、不输出 recalled_material_ids（由服务端补回）。',
   ].join('\n')
 }
@@ -395,58 +407,75 @@ function buildUserPrompt(rawInput: string): string {
   ].join('\n')
 }
 
-/** 调用 DeepSeek 生成灵感分析。失败返回 null，调用方降级。 */
-export async function analyzeInspiration(rawInput: string): Promise<{
+/**
+ * 调用 DeepSeek 生成灵感分析。失败返回 null，调用方降级。
+ *
+ * billing 传了才计费（「预扣 → 按真实用量结算 → 失败全退」）；
+ * 不传则行为与改造前一致（仅供内部/离线调用）。
+ */
+export async function analyzeInspiration(
+  rawInput: string,
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
+): Promise<{
   input_type: InspirationInputType
   value_assessment: ValueAssessment
   optimization_suggestions: OptimizationSuggestions
 } | null> {
+  // 缺 optimized_topic 的分析先暂存：优先重试让 LLM 补齐本阶段最优解
+  let withoutOptimalTopic: {
+    input_type: InspirationInputType
+    value_assessment: ValueAssessment
+    optimization_suggestions: OptimizationSuggestions
+  } | null = null
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        signal: llmTimeoutSignal(1500),
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: [
-            { role: 'system', content: buildSystemPrompt() },
-            { role: 'user', content: buildUserPrompt(rawInput) },
-          ],
-          temperature: 0.4,
-          max_tokens: 1500,
-          response_format: { type: 'json_object' },
-        }),
+      const res = await callDeepSeekChat({
+        messages: [
+          { role: 'system', content: buildSystemPrompt() },
+          { role: 'user', content: buildUserPrompt(rawInput) },
+        ],
+        temperature: 0.4,
+        max_tokens: 1500,
+        jsonMode: true,
+        timeoutMs: llmTimeoutMs(1500),
+        // 计费：3 次尝试各用各的 refId——复用会让第 2 次起被判重复预扣（reserved=0）
+        ...(billing
+          ? {
+              billing: {
+                supabase: billing.supabase,
+                userId: billing.userId,
+                ability: 'diagnosis' as const,
+                refId: `${billing.refId ?? crypto.randomUUID()}:inspiration:${attempt}`,
+                description: '灵感分析',
+              },
+            }
+          : {}),
       })
 
       if (!res.ok) {
-        console.error('灵感分析失败:', await res.text())
+        // 余额不足不会走到这里：预扣失败在发起 HTTP 前就返回了，一个 token 都没花
+        console.error('灵感分析失败:', res.error)
         return null
       }
-      const data = await res.json()
-      const text: string = data?.choices?.[0]?.message?.content
-      if (typeof text !== 'string' || !text.trim()) return null
-
-      const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-      const parsed = JSON.parse(cleaned)
+      const parsed = JSON.parse(stripJsonFence(res.content))
 
       const value = normalizeValueAssessment(parsed?.value_assessment)
       const optimization = normalizeOptimization(parsed?.optimization_suggestions)
       if (!value || !optimization) continue
 
-      return {
+      const result = {
         input_type: normalizeInputType(parsed?.input_type),
         value_assessment: value,
         optimization_suggestions: optimization,
       }
+      if (optimization.optimized_topic) return result
+      // 分析有效但缺最优解：暂存后重试，全部失败再降级返回它
+      withoutOptimalTopic = result
     } catch (e) {
       console.error(`灵感分析异常（第 ${attempt + 1} 次）:`, e)
     }
   }
-  return null
+  return withoutOptimalTopic
 }
 
 // ── 把 analysis 格式化为注入 plan prompt 的文本块 ────────
@@ -483,6 +512,13 @@ export function formatInspirationForPrompt(a: InspirationAnalysis): string {
   if (o.missing_info.length) lines.push(`- 缺少信息：${o.missing_info.join('；')}`)
   if (o.missing_viewpoints.length) lines.push(`- 缺少观点：${o.missing_viewpoints.join('；')}`)
   lines.push(`- 提升方向：${o.improvement_direction}`)
+  if (o.optimized_topic) {
+    lines.push(
+      '',
+      `【本次采用的创作主题（灵感阶段最优解）】${o.optimized_topic}`,
+      '上面的 topic 就是这个最优解；三个方向必须围绕它展开，不要退回原始灵感。'
+    )
+  }
 
   // 市场格局分析（可选二级深挖产出）
   if (a.market_report) {
@@ -490,6 +526,12 @@ export function formatInspirationForPrompt(a: InspirationAnalysis): string {
     lines.push('')
     lines.push(formatMarketForPrompt(m))
     lines.push('请在 3 个方向中至少 1 个方向瞄准"内容缺口"；所有方向避开"同质化重复点"。')
+    if (m.recommended_topic) {
+      lines.push(
+        `本次采用的创作主题是该市场的"本阶段最优解"：${m.recommended_topic}`,
+        '三个方向必须围绕它展开，不要退回原始灵感。'
+      )
+    }
   } else {
     lines.push('')
     lines.push('请在 3 个方向的差异化设计、content_type_reason、opening_hook 中体现上述分析与建议；禁止与已识别问题重复的方向切入。')

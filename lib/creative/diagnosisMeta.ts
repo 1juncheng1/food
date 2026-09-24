@@ -29,13 +29,59 @@ export type NextActionKey =
   | 'script' // 脚本转换
   | 'custom' // 用户自定义修改（携带一句话指令；不由诊断 LLM 生成建议）
 
+/**
+ * 一次作品诊断。
+ *
+ * 精简后的诊断只保留用户真正会读的两段：
+ *   - strengths：表现良好（做得好的地方，保持）
+ *   - improvements：需要改进（问题 + 怎么改，一句话可执行）
+ * 五维等级（dimensions）、问题/建议分列（problems/suggestions）、
+ * 六类下一步（nextActions）已从 LLM 输出中移除——它们占掉的 token 远超
+ * 用户从中获得的信息量，且大部分内容与上述两段重复。
+ *
+ * 旧字段保留为可选：库内历史 jsonb 仍可能带着它们，读取时照旧解析，
+ * 只是不再展示、不再要求 AI 产出。
+ */
+/** 三镜头诊断的镜头键：观点 / 证据 / 表达 */
+export type DiagnosisLensKey = 'viewpoint' | 'evidence' | 'expression'
+
+export interface DiagnosisLens {
+  /** 这个镜头下做得好的地方（一句话） */
+  good: string
+  /** 这个镜头下最该改的一处（问题 → 怎么改，一句话） */
+  fix: string
+}
+
+/** 三镜头展示元数据（前端共用，顺序即展示顺序） */
+export const DIAGNOSIS_LENS_META: Array<{
+  key: DiagnosisLensKey
+  label: string
+  hint: string
+}> = [
+  { key: 'viewpoint', label: '观点', hint: '主张是否立得住、有没有自己的判断' },
+  { key: 'evidence', label: '证据', hint: '论据是否具体、能否真正支撑观点' },
+  { key: 'expression', label: '表达', hint: '语言是否到位、节奏是否适合读下去' },
+]
+
 export interface CreativeDiagnosis {
-  dimensions: Record<DimensionKey, DiagnosisDimension>
-  strengths: string[] // 明确优势
-  problems: string[] // 现存问题
-  suggestions: string[] // 可执行的优化建议
-  nextActions: Record<NextActionKey, string> // 每个方向一句"下一步具体怎么做"
+  /** 表现良好：明确做得好的地方（引用稿件具体写法） */
+  strengths: string[]
+  /** 需要改进：问题 → 怎么改（每条一句话，可照做） */
+  improvements: string[]
   diagnosedAt: string // 诊断时间（ISO，服务端写入）
+  /**
+   * 三镜头诊断（可选）：从 观点 / 证据 / 表达 三个角度各给一条 good 与 fix。
+   * 旧诊断与历史 jsonb 没有此字段 → 前端回退到 strengths / improvements 两段展示。
+   */
+  lenses?: Partial<Record<DiagnosisLensKey, DiagnosisLens>>
+  /** @deprecated 旧版遗留：五维定性等级 + 逐维点评，新诊断不再产出 */
+  dimensions?: Record<DimensionKey, DiagnosisDimension>
+  /** @deprecated 旧版遗留：问题清单，新诊断已并入 improvements */
+  problems?: string[]
+  /** @deprecated 旧版遗留：建议清单，新诊断已并入 improvements */
+  suggestions?: string[]
+  /** @deprecated 旧版遗留：六类下一步方向，新诊断不再产出 */
+  nextActions?: Record<NextActionKey, string>
 }
 
 /** 维度展示元数据（前端共用） */
@@ -95,44 +141,70 @@ function strList(v: unknown, max: number, maxLen: number): string[] {
 export function normalizeDiagnosis(raw: unknown): Omit<CreativeDiagnosis, 'diagnosedAt'> | null {
   if (typeof raw !== 'object' || raw === null) return null
   const o = raw as Record<string, unknown>
-  const rawDims =
-    typeof o.dimensions === 'object' && o.dimensions !== null
-      ? (o.dimensions as Record<string, unknown>)
-      : {}
 
-  const dimEntry = (key: DimensionKey): DiagnosisDimension => {
-    const d =
-      typeof rawDims[key] === 'object' && rawDims[key] !== null
-        ? (rawDims[key] as Record<string, unknown>)
-        : {}
-    const comment =
-      typeof d.comment === 'string' && d.comment.trim()
-        ? d.comment.trim().slice(0, 300)
-        : ''
-    return { level: clampLevel(d.level), comment }
+  const strengths = strList(o.strengths, 3, 200)
+  let improvements = strList(o.improvements, 3, 240)
+  // 旧数据没有 improvements：用当时的 问题 + 建议 兜底，保证历史作品仍有内容可看
+  if (improvements.length === 0) {
+    improvements = [...strList(o.problems, 3, 240), ...strList(o.suggestions, 3, 240)].slice(0, 3)
   }
+  // 两段都空 = 无效输出（等于什么都没诊断出来）
+  if (strengths.length === 0 && improvements.length === 0) return null
 
-  const rawActions =
-    typeof o.next_actions === 'object' && o.next_actions !== null
-      ? (o.next_actions as Record<string, unknown>)
-      : {}
-  const action = (key: NextActionKey): string =>
-    typeof rawActions[key] === 'string'
-      ? (rawActions[key] as string).trim().slice(0, 300)
-      : ''
+  const diagnosis: Omit<CreativeDiagnosis, 'diagnosedAt'> = { strengths, improvements }
 
-  const diagnosis: Omit<CreativeDiagnosis, 'diagnosedAt'> = {
-    dimensions: {
+  // ── 以下为旧版遗留字段：仅当库内 jsonb 真的带着时才透出，不再主动补齐 ──
+  if (typeof o.dimensions === 'object' && o.dimensions !== null) {
+    const rawDims = o.dimensions as Record<string, unknown>
+    const dimEntry = (key: DimensionKey): DiagnosisDimension => {
+      const d =
+        typeof rawDims[key] === 'object' && rawDims[key] !== null
+          ? (rawDims[key] as Record<string, unknown>)
+          : {}
+      const comment =
+        typeof d.comment === 'string' && d.comment.trim() ? d.comment.trim().slice(0, 300) : ''
+      return { level: clampLevel(d.level), comment }
+    }
+    diagnosis.dimensions = {
       opening: dimEntry('opening'),
       structure: dimEntry('structure'),
       emotion: dimEntry('emotion'),
       style_fit: dimEntry('style_fit'),
       virality: dimEntry('virality'),
-    },
-    strengths: strList(o.strengths, 4, 300),
-    problems: strList(o.problems, 4, 300),
-    suggestions: strList(o.suggestions, 4, 300),
-    nextActions: {
+    }
+  }
+  // ── 三镜头诊断（可选）：LLM 漏字段或旧数据时为 undefined，前端回退两段展示 ──
+  if (typeof o.lenses === 'object' && o.lenses !== null) {
+    const rawLenses = o.lenses as Record<string, unknown>
+    const lensEntry = (key: DiagnosisLensKey): DiagnosisLens | null => {
+      const l = rawLenses[key]
+      if (typeof l !== 'object' || l === null) return null
+      const lo = l as Record<string, unknown>
+      const one = (v: unknown): string =>
+        typeof v === 'string' && v.trim() ? v.trim().slice(0, 200) : ''
+      const good = one(lo.good)
+      const fix = one(lo.fix)
+      if (!good && !fix) return null
+      return { good, fix }
+    }
+    const lenses: Partial<Record<DiagnosisLensKey, DiagnosisLens>> = {}
+    for (const m of DIAGNOSIS_LENS_META) {
+      const entry = lensEntry(m.key)
+      if (entry) lenses[m.key] = entry
+    }
+    if (Object.keys(lenses).length > 0) diagnosis.lenses = lenses
+  }
+
+  const problems = strList(o.problems, 4, 300)
+  const suggestions = strList(o.suggestions, 4, 300)
+  if (problems.length) diagnosis.problems = problems
+  if (suggestions.length) diagnosis.suggestions = suggestions
+
+  if (typeof o.next_actions === 'object' && o.next_actions !== null) {
+    const rawActions = o.next_actions as Record<string, unknown>
+    const action = (key: NextActionKey): string =>
+      typeof rawActions[key] === 'string' ? (rawActions[key] as string).trim().slice(0, 300) : ''
+    const nextActions: Record<NextActionKey, string> = {
       hit: action('hit'),
       style: action('style'),
       emotion: action('emotion'),
@@ -141,14 +213,10 @@ export function normalizeDiagnosis(raw: unknown): Omit<CreativeDiagnosis, 'diagn
       script: action('script'),
       // custom 不由诊断 LLM 输出，恒为空串（前端渲染自定义输入卡，不读该值）
       custom: '',
-    },
+    }
+    if (Object.values(nextActions).some(Boolean)) diagnosis.nextActions = nextActions
   }
 
-  // 至少要有一条问题或建议，且五个维度点评不能全空，否则视为无效输出
-  const hasComment = Object.values(diagnosis.dimensions).some((d) => d.comment)
-  if (!hasComment && diagnosis.problems.length === 0 && diagnosis.suggestions.length === 0) {
-    return null
-  }
   return diagnosis
 }
 

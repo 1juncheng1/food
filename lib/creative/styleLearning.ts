@@ -148,8 +148,12 @@ function dimTargetsFromAnalysis(
   analysis: CreativeDiagnosis,
   reverse: boolean
 ): Array<{ dim: DimensionKey; target: number; weight: number }> {
+  // 精简后的诊断不再产出五维等级（旧数据仍可能带着）。
+  // 没有真实等级就不写画像：用默认 3 分会给每个维度灌入 0.6 的假目标，
+  // 长期画像会被这些"什么都没说"的信号稀释。
+  if (!analysis.dimensions) return []
   return DIMENSION_META.map((meta) => {
-    const level = analysis.dimensions[meta.key]?.level ?? 3
+    const level = analysis.dimensions?.[meta.key]?.level ?? 3
     const target = reverse ? 1 - level / 5 : level / 5
     return { dim: meta.key, target, weight: 0 } // weight 由调用方按信号类型给
   })

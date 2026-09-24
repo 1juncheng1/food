@@ -10,6 +10,7 @@
 //      调用方对每条整体回退模板（meta.degraded='llm_reason'）。
 // ============================================================
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import type { MaterialType } from '@/lib/creative/material'
 import { callDeepSeekChat, stripJsonFence } from '@/lib/llm'
 
@@ -62,8 +63,11 @@ export interface LlmReasonItemInput {
  */
 export async function generateLlmReasons(
   topic: string,
-  items: LlmReasonItemInput[]
+  items: LlmReasonItemInput[],
+  /** Phase 4 计费上下文：传了才计费。空列表短路在前，不会白扣 */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 ): Promise<Record<string, string> | null> {
+  // 空列表直接返回，**在计费之前**：没有候选就不该产生任何账单
   if (items.length === 0) return {}
 
   const candidateList = items
@@ -89,6 +93,17 @@ export async function generateLlmReasons(
     max_tokens: 600,
     jsonMode: true,
     timeoutMs: LLM_TIMEOUT_MS,
+    ...(billing
+      ? {
+          billing: {
+            supabase: billing.supabase,
+            userId: billing.userId,
+            ability: 'diagnosis' as const,
+            refId: `${billing.refId ?? crypto.randomUUID()}:reasons`,
+            description: '素材理由生成',
+          },
+        }
+      : {}),
   })
 
   if (!res.ok) {

@@ -243,6 +243,11 @@ export interface RetrieveOptions {
   topicEmbedding?: number[]
   /** 自动召回条数上限，默认 5 */
   autoLimit?: number
+  /**
+   * Phase 4 计费上下文：**只有 reasonMode='llm' 时才会真的产生调用**，
+   * 因此也只有那条分支会扣费。不传则行为与改造前完全一致。
+   */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 }
 
 /**
@@ -351,7 +356,8 @@ export async function retrieveMaterials(
         id: c.id,
         content: typeof c.row.content === 'string' ? c.row.content : '',
         materialType: c.materialType,
-      }))
+      })),
+      opts.billing
     )
     if (!llmReasonMap) meta.degraded = 'llm_reason'
   }

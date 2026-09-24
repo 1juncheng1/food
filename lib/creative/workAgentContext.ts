@@ -232,16 +232,14 @@ export function formatContextForPrompt(
 
   if (ctx.diagnosis) {
     const d = ctx.diagnosis
-    const dimLines = Object.entries(d.dimensions)
-      .map(([k, v]) => `  - ${k}：${v.level}/5 ${v.comment}`.slice(0, 200))
-      .join('\n')
     blocks.push(
       [
-        '【AI 作品诊断（本次修改必须优先回应这里指出的问题）】',
-        dimLines,
-        d.strengths.length ? `优势：${d.strengths.join('；')}` : '',
-        d.problems.length ? `问题：${d.problems.join('；')}` : '',
-        d.suggestions.length ? `建议：${d.suggestions.join('；')}` : '',
+        '【AI 作品诊断（本次修改必须优先回应"需要改进"，并保住"表现良好"）】',
+        d.strengths.length ? `表现良好（不要改掉）：${d.strengths.join('；')}` : '',
+        d.improvements.length ? `需要改进：${d.improvements.join('；')}` : '',
+        // 旧版诊断遗留字段：有则一并带上，避免历史版本迭代时丢失当时的判断
+        d.problems?.length ? `历史问题记录：${d.problems.join('；')}` : '',
+        d.suggestions?.length ? `历史建议记录：${d.suggestions.join('；')}` : '',
       ]
         .filter(Boolean)
         .join('\n')

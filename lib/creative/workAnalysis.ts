@@ -24,7 +24,8 @@ import {
   type AudienceTag,
   KNOWLEDGE_DIMENSIONS,
 } from './knowledgeItem'
-import { llmTimeoutSignal } from '@/lib/llm'
+import { callDeepSeekChat, llmTimeoutMs, stripJsonFence } from '@/lib/llm'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 /** 作品标签分析结果（7 自由文本 + 6 枚举维度 = 13 字段） */
 export interface WorkTags {
@@ -209,44 +210,50 @@ function buildTagUserPrompt(input: AnalyzeWorkTagsInput): string {
  * max_tokens 1000：13 字段标签 + 6 个数组枚举，比 9 维多约 50% 输出量。
  */
 export async function analyzeWorkTags(
-  input: AnalyzeWorkTagsInput
+  input: AnalyzeWorkTagsInput,
+  /**
+   * 计费上下文：传了才计费（「预扣 → 按真实用量结算 → 失败全退」）。
+   * 由 route 传入已鉴权用户的 supabase / userId；内部或离线调用不传，
+   * 行为与改造前完全一致。
+   */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 ): Promise<WorkTags | null> {
   const text = input.sampleText.trim()
   if (text.length < 20) return null // 正文过短无法分析
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        signal: llmTimeoutSignal(1000),
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: [
-            { role: 'system', content: buildTagSystemPrompt() },
-            { role: 'user', content: buildTagUserPrompt(input) },
-          ],
-          temperature: 0.3,
-          max_tokens: 1000,
-          response_format: { type: 'json_object' },
-        }),
+      const res = await callDeepSeekChat({
+        messages: [
+          { role: 'system', content: buildTagSystemPrompt() },
+          { role: 'user', content: buildTagUserPrompt(input) },
+        ],
+        temperature: 0.3,
+        max_tokens: 1000,
+        jsonMode: true,
+        timeoutMs: llmTimeoutMs(1000),
+        // 计费：3 次尝试各用各的 refId——复用会让第 2 次起被判重复预扣（reserved=0），
+        // 账目就对不上了。
+        ...(billing
+          ? {
+              billing: {
+                supabase: billing.supabase,
+                userId: billing.userId,
+                ability: 'diagnosis' as const,
+                refId: `${billing.refId ?? crypto.randomUUID()}:worktags:${attempt}`,
+                description: '作品标签分析',
+              },
+            }
+          : {}),
       })
 
       if (!res.ok) {
-        console.error('作品标签分析失败:', await res.text())
+        // 余额不足不会走到这里：预扣失败在发起 HTTP 前就返回了，
+        // 一个 token 都没花。这里只记录真实的上游故障。
+        console.error('作品标签分析失败:', res.error)
         return null
       }
-      const data = await res.json()
-      const raw: string = data?.choices?.[0]?.message?.content ?? ''
-      if (!raw.trim()) return null
-
-      const cleaned = raw
-        .replace(/^```(?:json)?\s*/i, '')
-        .replace(/\s*```$/, '')
-      const parsed = normalizeWorkTags(JSON.parse(cleaned))
+      const parsed = normalizeWorkTags(JSON.parse(stripJsonFence(res.content)))
       if (parsed) return parsed
     } catch (e) {
       console.error(`作品标签分析异常（第 ${attempt + 1} 次）:`, e)

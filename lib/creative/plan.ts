@@ -448,6 +448,21 @@ export interface GeneratePlanInput {
    * 文笔再贴合也是替他说了不认同的话。
    */
   knowledgeText?: string
+  /**
+   * Creator Interest Profile：创作者长期关注领域（由行为统计得出）。
+   * 由 /api/creative/plan 调用 buildInterestBlock 产出，
+   * 灵感模式与未建模（空画像）时为空（undefined/空串均无行为变化）。
+   *
+   * 与 knowledgeText 完全同口径，理由也完全相同：
+   * 方案阶段决定「写什么、从哪个角度写」，如果这一步只看主题，
+   * 产出的就是「该主题的通用范文」——那正是产品定位明令禁止的东西。
+   * 兴趣画像此前只注入了正文链路，导致「方向由主题定、文笔才由人定」，
+   * 本字段把「人」补回方案阶段。
+   *
+   * 边界：这是行为统计得出的软参考，不是硬性命题，
+   * 与本次主题无关时应被忽略（该约束已写在 buildInterestBlock 生成的文本里）。
+   */
+  interestText?: string
   /** 目标输出语言；不传时从用户主题推断 */
   language?: LanguageCode
 }
@@ -563,6 +578,14 @@ function buildUserPrompt(input: GeneratePlanInput): string {
   if (input.knowledgeText) {
     lines.push(`\n${input.knowledgeText}`)
     lines.push('请让推荐方向优先采纳其中与本次主题直接相关的命题作为论述支点（在 viewpoint、core_conflict 或 structure 中体现）；三个方向均不得与这些命题相矛盾——创作者已确认过的结论，不要在这个方案里提出相反主张。')
+  }
+  // 兴趣画像：软参考，不是硬约束。
+  // 与知识单元的措辞刻意不同——知识是「用户亲手确认过的结论」，可以说「不得矛盾」；
+  // 兴趣只是行为统计的观察，说「不得」会把统计噪声变成创作枷锁。
+  // 这里只要求「优先落在交叉处」，且明确允许本次主题无关时忽略。
+  if (input.interestText) {
+    lines.push(`\n${input.interestText}`)
+    lines.push('请优先把推荐方向落在该创作者长期关注领域与本次主题的交叉处（在 viewpoint 或切入角度上体现）；这是行为统计得出的参考倾向，不是硬性命题——若本次主题与上述领域无关，忽略即可，不要为了贴合而强行改写主题。')
   }
 
   if (input.mode === 'creator') {

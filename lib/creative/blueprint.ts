@@ -7,6 +7,7 @@
 // 纯类型 + 纯函数 + 服务端 LLM 调用，前端只 import 类型与展示工具。
 // ============================================================
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { callDeepSeekChat, stripJsonFence } from '@/lib/llm'
 import { normalizeProblem, formatProblemForPrompt } from './problemFormat'
 
@@ -187,7 +188,13 @@ export function normalizeBlueprint(raw: unknown): CreativeBlueprint | null {
  * 失败返回 null，调用方降级为"无蓝图直接生成"，不阻断主流程。
  */
 export async function generateBlueprint(
-  input: BlueprintInput
+  input: BlueprintInput,
+  /**
+   * Phase 4 计费上下文：传了就对这次蓝图调用计费
+   * （调用前预扣 → 调用后按真实 token 结算 → 失败全额退）。
+   * 不传则行为与改造前完全一致——老调用点不必一次性全改。
+   */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 ): Promise<CreativeBlueprint | null> {
   const mem = input.memory
   const structureRequirement =
@@ -245,6 +252,18 @@ ${input.styleProfileText ?? ''}${mem
       temperature: 0.5,
       max_tokens: 1200,
       jsonMode: true,
+      // 计费钩子：不传 billing 时不产生任何计费副作用
+      ...(billing
+        ? {
+            billing: {
+              supabase: billing.supabase,
+              userId: billing.userId,
+              ability: 'blueprint' as const,
+              refId: `${billing.refId ?? crypto.randomUUID()}:blueprint`,
+              description: '创作蓝图',
+            },
+          }
+        : {}),
     })
 
     if (!res.ok) {

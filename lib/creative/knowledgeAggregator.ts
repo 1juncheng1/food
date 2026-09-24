@@ -14,6 +14,7 @@
 // 单素材的 claim 不参与 —— 那是素材层的事，进知识层只会制造重复。
 // ============================================================
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { callDeepSeekChat } from '@/lib/llm'
 import type { ClaimKind, KnowledgeClaim } from '@/lib/creative/knowledgeItem'
 import {
@@ -209,9 +210,12 @@ function extractJson(raw: string): unknown | null {
  */
 export async function aggregateUnits(
   groups: UnitGroup[],
-  opts?: { timeoutMs?: number }
+  opts?: { timeoutMs?: number },
+  /** Phase 4 计费上下文：传了才计费。空分组短路在前，因此不会白扣 */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 ): Promise<AggregateResult> {
   // 没有合格分组时不要浪费一次 LLM 调用
+  // （这个短路在计费之前：没调 LLM 就绝不会预扣，也就不会留下退款流水噪音）
   if (groups.length === 0) return { units: [], degraded: false }
 
   const res = await callDeepSeekChat({
@@ -223,6 +227,17 @@ export async function aggregateUnits(
     max_tokens: 2000,
     jsonMode: true,
     timeoutMs: opts?.timeoutMs ?? LLM_TIMEOUT_MS,
+    ...(billing
+      ? {
+          billing: {
+            supabase: billing.supabase,
+            userId: billing.userId,
+            ability: 'diagnosis' as const,
+            refId: `${billing.refId ?? crypto.randomUUID()}:aggregate`,
+            description: '知识单元归纳',
+          },
+        }
+      : {}),
   })
 
   if (!res.ok) {
@@ -290,9 +305,11 @@ export interface BuildCandidatesResult extends AggregateResult {
 
 export async function buildCandidateUnits(
   refs: ClaimRef[],
-  opts?: AggregateOptions
+  opts?: AggregateOptions,
+  /** Phase 4 计费上下文：透传给 aggregateUnits */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 ): Promise<BuildCandidatesResult> {
   const groups = groupClaims(refs, opts)
-  const { units, degraded } = await aggregateUnits(groups)
+  const { units, degraded } = await aggregateUnits(groups, undefined, billing)
   return { units, degraded, groupCount: groups.length }
 }

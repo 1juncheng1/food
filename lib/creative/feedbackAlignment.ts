@@ -15,6 +15,7 @@
 //   3. 校验失败返回 null，调用方静默跳过——校验是增强，绝不能阻塞主流程
 // ============================================================
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { callDeepSeekChat, llmTimeoutMs } from '@/lib/llm'
 import { languageDirective, resolveTargetLanguage, type LanguageCode } from '@/lib/languageConsistency'
 
@@ -259,7 +260,12 @@ function buildUserPrompt(input: AlignmentInput): string {
  * max_tokens 800：6 条修改点 × (target+evidence) + 4 条保持项 + summary。
  */
 export async function verifyFeedbackAlignment(
-  input: AlignmentInput
+  input: AlignmentInput,
+  /**
+   * Phase 4 计费上下文：传了就对这次一致性校验计费
+   * （调用前预扣 → 按真实 token 结算 → 失败全额退）。不传则行为与改造前一致。
+   */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 ): Promise<AlignmentReport | null> {
   const freeText = input.freeText.trim()
   const before = (input.before ?? '').trim()
@@ -285,6 +291,18 @@ export async function verifyFeedbackAlignment(
     jsonMode: true,
     timeoutMs: llmTimeoutMs(maxTokens),
     language: target,
+    // 计费钩子：不传 billing 时不产生任何计费副作用
+    ...(billing
+      ? {
+          billing: {
+            supabase: billing.supabase,
+            userId: billing.userId,
+            ability: 'diagnosis' as const,
+            refId: `${billing.refId ?? crypto.randomUUID()}:alignment`,
+            description: '反馈方向校验',
+          },
+        }
+      : {}),
   })
   if (!res.ok) return null
   try {

@@ -18,6 +18,42 @@ import type { CreationMode } from './personalization'
 
 export type { AppliedTrait }
 
+/**
+ * 结构化偏好字段。
+ *
+ * 存在理由：formatCreatorModel 产出的是面向"生成正文"的完整人格块（含定位、
+ * 母题、元素、禁忌，带"禁止在正文中提及这些设定本身"等措辞）。推荐链路要的
+ * 只是"往哪些方向靠 / 避开哪些"，且 S4 探索 prompt 有严格的 token 预算——
+ * 整块注入既超预算，又会把"怎么写"的约束塞进"写什么"的生成里。
+ * 因此把原始字段拆分出来，让各调用方按需裁剪。
+ */
+export interface StylePrefs {
+  /** 持续关注的母题（topic_preferences） */
+  topics: string[]
+  /** 偏好的表达元素（favorite_elements） */
+  favorites: string[]
+  /** 绝对回避元素（avoid_elements，硬约束） */
+  avoid: string[]
+  /** 创作者定位一句话（creator_personality） */
+  personality: string
+}
+
+/**
+ * 拆分出结构化偏好字段（纯函数）。
+ * 与 formatCreatorModel 同源同口径，只是不做文本拼装。
+ */
+export function extractStylePrefs(raw: CreatorModelRaw | null | undefined): StylePrefs {
+  if (!raw || typeof raw !== 'object') {
+    return { topics: [], favorites: [], avoid: [], personality: '' }
+  }
+  return {
+    topics: strArr(raw.topic_preferences).slice(0, 15),
+    favorites: strArr(raw.favorite_elements).slice(0, 15),
+    avoid: strArr(raw.avoid_elements).slice(0, 15),
+    personality: typeof raw.creator_personality === 'string' ? raw.creator_personality.trim() : '',
+  }
+}
+
 /** 人格原始字段（对应 style_profiles 9.5/9.6 节列） */
 export interface CreatorModelRaw {
   creator_personality?: unknown

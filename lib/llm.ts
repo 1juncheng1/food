@@ -19,6 +19,18 @@ import {
   type ConsistencyCheck,
   type LanguageCode,
 } from '@/lib/languageConsistency'
+// 只引入类型与纯函数（无服务端依赖），用于把 token 用量带回调用方按量扣积分
+import { ZERO_USAGE, addUsage, type TokenUsage } from '@/lib/balance'
+// Phase 4：AI 计费钩子（调用前预扣 + 调用后按量结算）。
+// 传了 billing 的调用自动计费；没传的行为与改造前完全一致——
+// 存量调用点不必一次性全改，接一个算一个。
+import type { SupabaseClient } from '@supabase/supabase-js'
+import {
+  refundAiCost,
+  reserveAiCost,
+  settleAiCost,
+  type AiAbility,
+} from '@/lib/aiCost'
 
 /** DeepSeek chat 消息（OpenAI 兼容格式） */
 export interface ChatMessage {
@@ -57,15 +69,148 @@ export interface DeepSeekChatOptions {
    * 避免被"请用中文输出"带偏导致下游解析失败。
    */
   languageExemptFields?: string[]
+
+  // ── 积分计费（可选，不传则完全不计费，行为与改造前一致）──────────
+  /**
+   * 传了就会自动完成「调用前预扣 → 调用后按真实 token 结算 → 失败全额退」。
+   *
+   * 关键顺序：**预扣成功后才发起 HTTP 请求**。预扣失败（余额不足）时
+   * 直接返回 insufficient_points，一个 token 都不花——这比"先生成再发现没钱"
+   * 省钱得多，也是需求 §18 的硬性要求。
+   */
+  billing?: {
+    supabase: SupabaseClient
+    userId: string
+    /** 能力档位，决定预扣多少（读 point_config，不在代码里写死） */
+    ability: AiAbility
+    /** 业务号：同一次生成/诊断内多次调用可共用一个号，也是幂等键 */
+    refId: string
+    description?: string
+  }
 }
 
 /** 统一返回结构：成功带 content，失败带 error */
 export type DeepSeekChatResult =
-  | { ok: true; content: string; raw: unknown; languageCheck?: ConsistencyCheck }
+  | {
+      ok: true
+      content: string
+      raw: unknown
+      languageCheck?: ConsistencyCheck
+      /** 本次调用的 token 用量（用于按量扣积分）；缺失时按零用量处理 */
+      usage?: TokenUsage
+    }
   | { ok: false; error: string }
+
+/**
+ * 从 OpenAI 兼容响应里抽 token 用量。
+ *
+ * DeepSeek 的 usage 除标准的 prompt/completion 外，还会给出
+ * prompt_cache_hit_tokens / prompt_cache_miss_tokens。两档价格差 50 倍，
+ * 必须分开计。没给细分字段时，全部输入按「未命中」计——
+ * 这是已知信息下唯一不会低估成本的算法（宁可高估，不可漏算）。
+ */
+function parseUsage(data: unknown): TokenUsage {
+  const u = (data as { usage?: Record<string, unknown> } | null)?.usage
+  if (!u) return ZERO_USAGE
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  const prompt = n(u.prompt_tokens)
+  const cached = n(u.prompt_cache_hit_tokens)
+  const miss = n(u.prompt_cache_miss_tokens)
+  return {
+    cachedTokens: cached,
+    missTokens: miss > 0 ? miss : Math.max(0, prompt - cached),
+    outputTokens: n(u.completion_tokens),
+  }
+}
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/v1/chat/completions'
+
+/**
+ * LLM 失败原因 → 用户可读文案。
+ *
+ * 为什么要有这张表：DeepSeek 余额耗尽时返回 HTTP 402（body 为
+ * {"error":{"message":"Insufficient Balance"}}），早期代码把所有非 2xx 统一降级成
+ * 「诊断失败，请稍后重试」。用户反复重试、反复失败，却完全不知道是**没充钱**——
+ * 运营侧也收不到任何信号。失败原因必须区分对待，尤其是「钱不够」这种只有人能修的。
+ */
+const LLM_USER_MESSAGES: Record<string, string> = {
+  http_402: 'AI 服务额度不足，请充值后重试',
+  http_401: 'AI 服务凭证无效，请联系管理员',
+  http_403: 'AI 服务凭证无效，请联系管理员',
+  http_429: 'AI 服务繁忙，请稍后再试',
+  http_500: 'AI 服务暂时不可用，请稍后重试',
+  http_502: 'AI 服务暂时不可用，请稍后重试',
+  http_503: 'AI 服务暂时不可用，请稍后重试',
+  http_504: 'AI 服务响应超时，请稍后重试',
+  timeout: 'AI 服务响应超时，请稍后重试',
+  network_error: '网络异常，AI 服务未能响应，请稍后重试',
+  missing_api_key: 'AI 服务未配置，请联系管理员',
+  empty_content: 'AI 返回内容为空，请稍后重试',
+  external_signal_aborted: '请求已取消',
+  // Phase 4：不是 LLM 的错，是用户积分不够——必须在文案里指向"充值"，
+  // 否则用户只会反复重试，永远不知道卡在哪一步。
+  insufficient_points: '当前积分不足，请充值后继续创作。',
+}
+
+/**
+ * 把 LLM 错误码翻译成面向用户的中文文案。
+ * 未知码（如 http_418）按服务端故障处理，但文案里保留原因便于求助定位。
+ */
+export function llmUserMessage(error: string | null | undefined): string {
+  if (!error) return 'AI 服务暂时不可用，请稍后重试'
+  if (LLM_USER_MESSAGES[error]) return LLM_USER_MESSAGES[error]
+  if (error.startsWith('http_')) {
+    const status = error.slice(5)
+    // 5xx = 服务端故障（可重试）；4xx = 请求被拒（多为配额/参数问题）
+    return /^5/.test(status)
+      ? 'AI 服务暂时不可用，请稍后重试'
+      : `AI 服务请求被拒绝（${status}），请稍后重试`
+  }
+  return 'AI 服务暂时不可用，请稍后重试'
+}
+
+/** 判定错误码是否属于「网络/传输」类（连不上，而不是被拒绝） */
+export function isLlmNetworkError(error: string | null | undefined): boolean {
+  return error === 'network_error' || error === 'timeout'
+}
+
+// ── 最近一次 LLM 失败原因（best-effort 传播）──────────────────────
+//
+// 老链路的 lib 函数（generatePlan / generateBlueprint / marketAnalyzer …）
+// 签名是 `T | null`：失败只返回 null，原因被吞掉，路由只能给"请稍后重试"。
+// 逐个改签名要动几十个文件，代价大。这里用进程级最近失败码做**兜底传播**：
+// 路由在 AI 调用返回 null 后读取它，把「额度不足」这类只有人能修的原因说出来。
+//
+// 局限：并发下可能读到别的请求的失败码。实践中无害——402（余额耗尽）是全局性
+// 故障，同进程内几乎所有请求都会拿到同一个码；且它只影响文案，不影响控制流。
+let lastFailure: { code: string; at: number } | null = null
+
+/** 记录一次 LLM 失败码（供 lib/apiAuth 的 aiFailureResponse 读取） */
+export function recordLlmFailure(code: string): void {
+  lastFailure = { code, at: Date.now() }
+}
+
+/**
+ * 取最近一次 LLM 失败码。超过时间窗就当作没有——避免把很久以前的
+ * 402 当成当前失败的原因，误导用户以为刚刚还在欠费。
+ */
+export function recentLlmFailure(maxAgeMs = 10_000): string | null {
+  if (!lastFailure) return null
+  if (Date.now() - lastFailure.at > maxAgeMs) return null
+  return lastFailure.code
+}
+
+/** 归一化网络类异常名：各环境 message 不同（fetch failed / ETIMEDOUT …），统一成一个码 */
+function normalizeCatchError(e: unknown): string {
+  const isAbort = e instanceof Error && e.name === 'AbortError'
+  if (isAbort) return 'timeout'
+  const msg = e instanceof Error ? e.message : String(e)
+  if (/fetch failed|network|ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED/i.test(msg)) {
+    return 'network_error'
+  }
+  return msg || 'unknown_error'
+}
 
 /**
  * 语言重试的最低剩余预算。
@@ -167,8 +312,12 @@ async function requestOnce(
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '')
+      // 402 = Insufficient Balance：余额耗尽。它和超时/网络抖动不同——
+      // 重试永远不会好，必须让人来充值，所以要在日志里一眼可辨。
       console.error(`[llm] DeepSeek HTTP ${res.status}:`, errText.slice(0, 200))
-      return { ok: false, error: `http_${res.status}` }
+      const code = `http_${res.status}`
+      recordLlmFailure(code)
+      return { ok: false, error: code }
     }
 
     const data = await res.json()
@@ -178,13 +327,14 @@ async function requestOnce(
       return { ok: false, error: 'empty_content' }
     }
 
-    return { ok: true, content: content.trim(), raw: data }
+    return { ok: true, content: content.trim(), raw: data, usage: parseUsage(data) }
   } catch (e) {
-    // AbortError（超时或外部 signal）/ 网络异常 / JSON 解析异常
-    const isAbort = e instanceof Error && e.name === 'AbortError'
-    const msg = isAbort ? 'timeout' : e instanceof Error ? e.message : String(e)
-    console.warn(`[llm] DeepSeek 调用异常 (${msg}):`, e instanceof Error ? e.message : e)
-    return { ok: false, error: msg }
+    // AbortError（超时或外部 signal）/ 网络异常 / JSON 解析异常。
+    // 归一成固定错误码，便于上层给出准确文案（而不是把 "fetch failed" 直接甩给用户）
+    const code = normalizeCatchError(e)
+    console.warn(`[llm] DeepSeek 调用异常 (${code}):`, e instanceof Error ? e.message : e)
+    recordLlmFailure(code)
+    return { ok: false, error: code }
   } finally {
     clearTimeout(timer)
   }
@@ -209,6 +359,65 @@ async function requestOnce(
  * if (!res.ok) return null // 降级
  */
 export async function callDeepSeekChat(
+  opts: DeepSeekChatOptions
+): Promise<DeepSeekChatResult> {
+  const billing = opts.billing
+
+  // ── 阶段一：调用前预扣 ──────────────────────────────────────
+  // 余额不足时直接返回，**不发起任何 HTTP 请求**：先生成再发现没钱，
+  // 那笔 token 成本就是平台自己吞了（需求 §18 明确禁止）。
+  let reserved = 0
+  if (billing) {
+    const reservedResult = await reserveAiCost({
+      supabase: billing.supabase,
+      userId: billing.userId,
+      ability: billing.ability,
+      refId: billing.refId,
+      description: billing.description,
+    })
+    if (!reservedResult.ok) {
+      // 刻意不调 recordLlmFailure：这不是 LLM 故障，
+      // 写进"最近一次 LLM 失败码"会让并发中的其它链路误报成 402。
+      return { ok: false, error: 'insufficient_points' }
+    }
+    // duplicated（同一 refId 已经预扣过）时 reserved 会是 0：
+    // 本次调用不再记账也不退款——否则会把前一次扣的钱"退"掉，凭空造积分。
+    // 因此调用方要保证**每次调用用不同的 refId**（循环里带 attempt 后缀）。
+    reserved = reservedResult.reserved
+  }
+
+  const result = await callDeepSeekChatInner(opts)
+
+  // ── 阶段二：按真实用量结算 / 失败全额退 ──────────────────────
+  if (billing && reserved > 0) {
+    if (result.ok) {
+      await settleAiCost({
+        supabase: billing.supabase,
+        userId: billing.userId,
+        refId: billing.refId,
+        reserved,
+        usage: result.usage ?? ZERO_USAGE,
+        description: billing.description,
+      })
+    } else {
+      await refundAiCost({
+        supabase: billing.supabase,
+        userId: billing.userId,
+        refId: billing.refId,
+        amount: reserved,
+        reason: `AI 调用失败（${result.error}），预扣全额退还`,
+      })
+    }
+  }
+
+  return result
+}
+
+/**
+ * 真正的 LLM 调用逻辑（不含计费）。
+ * 外部一律用 callDeepSeekChat —— 只有它保证"预扣成功才花钱"。
+ */
+async function callDeepSeekChatInner(
   opts: DeepSeekChatOptions
 ): Promise<DeepSeekChatResult> {
   const target = opts.language
@@ -275,7 +484,12 @@ export async function callDeepSeekChat(
   if (!finalCheck.consistent) {
     console.warn(`[llm] language mismatch persisted after retry: ${finalCheck.note}`)
   }
-  return { ...second, languageCheck: finalCheck }
+  // 两次请求都真实花钱：用量必须累加，否则自纠偏那次等于平台白送
+  return {
+    ...second,
+    languageCheck: finalCheck,
+    usage: addUsage(first.usage ?? ZERO_USAGE, second.usage ?? ZERO_USAGE),
+  }
 }
 
 /**

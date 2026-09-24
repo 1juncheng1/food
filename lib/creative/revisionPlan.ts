@@ -16,6 +16,7 @@
 //   3. modification_area 只能取 6 个段落位枚举，便于前端展示"改哪块"
 // ============================================================
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { callDeepSeekChat, llmTimeoutMs } from '@/lib/llm'
 import { languageDirective, resolveTargetLanguage, type LanguageCode } from '@/lib/languageConsistency'
 import {
@@ -94,7 +95,12 @@ function buildUserPrompt(input: ProposeRevisionsInput): string {
  * max_tokens 1500：3 个方案 × (title+description+impact+risk+preserve)。
  */
 export async function proposeRevisions(
-  input: ProposeRevisionsInput
+  input: ProposeRevisionsInput,
+  /**
+   * Phase 4 计费上下文：传了才对这次方案生成计费
+   * （调用前预扣 → 按真实 token 结算 → 失败全额退）。不传则行为与改造前一致。
+   */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 ): Promise<RevisionProposal | null> {
   const freeText = input.freeText.trim()
   if (freeText.length < 2) return null
@@ -121,6 +127,18 @@ export async function proposeRevisions(
       timeoutMs: llmTimeoutMs(maxTokens),
       language: target,
       languageRetry: attempt === 0,
+      // 计费：两次尝试各用各的 refId（理由同 intentClarifier）
+      ...(billing
+        ? {
+            billing: {
+              supabase: billing.supabase,
+              userId: billing.userId,
+              ability: 'chat' as const,
+              refId: `${billing.refId ?? crypto.randomUUID()}:propose:${attempt}`,
+              description: '修改方案生成',
+            },
+          }
+        : {}),
     })
     if (!res.ok) continue
     try {

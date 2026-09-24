@@ -15,6 +15,7 @@
 //   3. 失败返回 null，调用方降级为「直接把用户原话当 custom 意图」
 // ============================================================
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { callDeepSeekChat, llmTimeoutMs } from '@/lib/llm'
 import { languageDirective, resolveTargetLanguage, type LanguageCode } from '@/lib/languageConsistency'
 import {
@@ -93,7 +94,12 @@ function buildUserPrompt(input: ClarifyIntentInput): string {
  * 重试 2 次：结构化输出的偶发 JSON 破损靠重试兜住，重试第 2 次后仍失败才降级。
  */
 export async function clarifyIntent(
-  input: ClarifyIntentInput
+  input: ClarifyIntentInput,
+  /**
+   * Phase 4 计费上下文：传了才对这次澄清计费
+   * （调用前预扣 → 按真实 token 结算 → 失败全额退）。不传则行为与改造前一致。
+   */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 ): Promise<IntentClarification | null> {
   const freeText = input.freeText.trim()
   if (freeText.length < 2) return null
@@ -121,6 +127,20 @@ export async function clarifyIntent(
       language: target,
       // 第 2 次尝试已是兜底重来，不再叠加语言自纠偏以免拖长响应
       languageRetry: attempt === 0,
+      // 计费：两次尝试是两次真实的 token 消耗，必须各用一个 refId。
+      // 复用同一个号会让第二次预扣被判"重复"（实际没扣到钱），
+      // 结算时却按"扣过"处理 → 凭空退钱。
+      ...(billing
+        ? {
+            billing: {
+              supabase: billing.supabase,
+              userId: billing.userId,
+              ability: 'chat' as const,
+              refId: `${billing.refId ?? crypto.randomUUID()}:clarify:${attempt}`,
+              description: '意图澄清',
+            },
+          }
+        : {}),
     })
     if (!res.ok) continue
     try {

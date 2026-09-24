@@ -11,8 +11,15 @@
 // ============================================================
 
 import type { ProblemUnderstanding } from './blueprint'
-import { llmTimeoutSignal } from '@/lib/llm'
+import { callDeepSeekChat, llmTimeoutMs, stripJsonFence } from '@/lib/llm'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { normalizeSolution } from './solutionFormat'
+
+/**
+ * 计费上下文：传了才计费（「预扣 → 按真实用量结算 → 失败全退」）。
+ * 方案生成是重量级输出（1500-3000 字），按 generation 档预扣。
+ */
+export type SolutionBilling = { supabase: SupabaseClient; userId: string; refId?: string }
 
 /** 解决方案的一个章节（一个章节至少覆盖一项核心任务） */
 export interface SolutionSection {
@@ -59,10 +66,13 @@ export { normalizeSolution, formatSolutionFullText } from './solutionFormat'
  * 仅服务端使用；失败返回 null，调用方返回 502，前端可重试。
  * LLM 偶发返回非合法 JSON（长输出截断时），最多尝试 3 次。
  */
-export async function generateSolution(input: {
-  topic: string
-  problem: ProblemUnderstanding
-}): Promise<SolutionResult | null> {
+export async function generateSolution(
+  input: {
+    topic: string
+    problem: ProblemUnderstanding
+  },
+  billing?: SolutionBilling
+): Promise<SolutionResult | null> {
   const { topic, problem } = input
 
   const system = [
@@ -91,35 +101,35 @@ ${problem.task_breakdown.map((t, i) => `${i + 1}. ${t}`).join('\n')}
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        signal: llmTimeoutSignal(7000),
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
-          temperature: 0.5,
-          max_tokens: 7000,
-          response_format: { type: 'json_object' },
-        }),
+      const res = await callDeepSeekChat({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: 0.5,
+        max_tokens: 7000,
+        jsonMode: true,
+        timeoutMs: llmTimeoutMs(7000),
+        // 计费：3 次尝试各用各的 refId——复用会让第 2 次起被判重复预扣（reserved=0）
+        ...(billing
+          ? {
+              billing: {
+                supabase: billing.supabase,
+                userId: billing.userId,
+                ability: 'generation' as const,
+                refId: `${billing.refId ?? crypto.randomUUID()}:solution:${attempt}`,
+                description: '解决方案生成',
+              },
+            }
+          : {}),
       })
 
       if (!res.ok) {
-        console.error('解决方案生成失败:', await res.text())
+        // 余额不足不会走到这里：预扣失败在发起 HTTP 前就返回了，一个 token 都没花
+        console.error('解决方案生成失败:', res.error)
         return null
       }
-      const data = await res.json()
-      const text: string = data?.choices?.[0]?.message?.content
-      if (typeof text !== 'string' || !text.trim()) return null
-
-      const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-      const parsed = normalizeSolution(JSON.parse(cleaned))
+      const parsed = normalizeSolution(JSON.parse(stripJsonFence(res.content)))
       if (parsed) return parsed
       // normalizeSolution 返回 null 说明字段不全，重试
     } catch (e) {
@@ -169,11 +179,14 @@ export function normalizeStrengthen(raw: unknown): StrengthenOutcome | null {
  * 补强迭代：以评审视角对照成功标准审视当前版，产出具名不足 + 补强新版。
  * 仅服务端使用；失败返回 null，调用方返回 502，前端可重试。
  */
-export async function strengthenSolution(input: {
-  topic: string
-  problem: ProblemUnderstanding
-  previous: SolutionResult
-}): Promise<StrengthenOutcome | null> {
+export async function strengthenSolution(
+  input: {
+    topic: string
+    problem: ProblemUnderstanding
+    previous: SolutionResult
+  },
+  billing?: SolutionBilling
+): Promise<StrengthenOutcome | null> {
   const { topic, problem, previous } = input
 
   const system = [
@@ -200,35 +213,35 @@ ${JSON.stringify(previous, null, 2)}`
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        signal: llmTimeoutSignal(7000),
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
-          temperature: 0.5,
-          max_tokens: 7000,
-          response_format: { type: 'json_object' },
-        }),
+      const res = await callDeepSeekChat({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: 0.5,
+        max_tokens: 7000,
+        jsonMode: true,
+        timeoutMs: llmTimeoutMs(7000),
+        // 计费：3 次尝试各用各的 refId——复用会让第 2 次起被判重复预扣（reserved=0）
+        ...(billing
+          ? {
+              billing: {
+                supabase: billing.supabase,
+                userId: billing.userId,
+                ability: 'generation' as const,
+                refId: `${billing.refId ?? crypto.randomUUID()}:strengthen:${attempt}`,
+                description: '方案补强',
+              },
+            }
+          : {}),
       })
 
       if (!res.ok) {
-        console.error('方案补强失败:', await res.text())
+        // 余额不足不会走到这里：预扣失败在发起 HTTP 前就返回了，一个 token 都没花
+        console.error('方案补强失败:', res.error)
         return null
       }
-      const data = await res.json()
-      const text: string = data?.choices?.[0]?.message?.content
-      if (typeof text !== 'string' || !text.trim()) return null
-
-      const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-      const parsed = normalizeStrengthen(JSON.parse(cleaned))
+      const parsed = normalizeStrengthen(JSON.parse(stripJsonFence(res.content)))
       if (parsed) return parsed
       // normalizeStrengthen 返回 null 说明结构不全，重试
     } catch (e) {
