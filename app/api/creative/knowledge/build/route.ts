@@ -89,7 +89,13 @@ export async function POST(req: Request) {
   }
 
   // ── 归纳 ──
-  const { units, degraded, groupCount } = await buildCandidateUnits(refs)
+  const { units, degraded, groupCount } = await buildCandidateUnits(
+    refs,
+    undefined,
+    // 计费上下文。这里同样**不做余额预检拦截**：本端点 LLM 失败会降级为
+    // "本次没有归纳出候选"，阻断它没有任何好处，反而让用户以为功能坏了。
+    { supabase, userId, refId: `knowledge-build:${crypto.randomUUID()}` }
+  )
   if (units.length === 0) {
     return NextResponse.json({
       group_count: groupCount,
@@ -102,9 +108,20 @@ export async function POST(req: Request) {
   }
 
   // ── 读既有单元（用于增量合并而非重复插入）──
-  const { data: existingRows } = await supabase
+  const { data: existingRows, error: existingErr } = await supabase
     .from('creator_knowledge')
     .select('id, concept, kind, status, source_item_ids')
+
+  // 表还没建（0005 未跑）时立刻停：往下算只会白烧一次 LLM，最后照样写不进去。
+  if (existingErr && (existingErr as { code?: string }).code === '42P01') {
+    return NextResponse.json(
+      {
+        error: '知识单元表尚未初始化，请先执行 supabase/migrations/0005_creator_knowledge.sql',
+        needsMigration: true,
+      },
+      { status: 503 }
+    )
+  }
 
   // 只需区分状态与来源，不必构造完整单元对象
   const existingByKey = new Map<

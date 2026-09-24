@@ -105,7 +105,10 @@ export async function PATCH(
   if (error) {
     if ((error as { code?: string }).code === '42P01') {
       return NextResponse.json(
-        { error: '知识单元表尚未初始化，请先执行 supabase/migrations/0005_creator_knowledge.sql' },
+        {
+          error: '知识单元表尚未初始化，请先执行 supabase/migrations/0005_creator_knowledge.sql',
+          needsMigration: true,
+        },
         { status: 503 }
       )
     }

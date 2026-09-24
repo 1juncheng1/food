@@ -4,12 +4,25 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { getValidSession } from '@/lib/supabaseClient'
+import { RefreshCw } from 'lucide-react'
 import {
   KNOWLEDGE_STATUSES,
   isUnitInjectable,
   type CreatorKnowledgeUnit,
   type KnowledgeStatus,
 } from '@/lib/creative/knowledgeUnit'
+import type { LinkedWork } from '@/lib/creative/knowledgeLink'
+import {
+  AiStatus,
+  EmptyState,
+  ErrorState,
+  PageHeader,
+  PageShell,
+  Section,
+  SkeletonList,
+  SurfaceCard,
+  TagChip,
+} from '@/components/vision'
 
 // ────────────────────────────────────────────────────────────
 // 我的知识库：跨素材归纳出的知识单元的确认入口
@@ -20,37 +33,12 @@ import {
 
 type Filter = KnowledgeStatus | 'all'
 
-const STATUS_STYLE: Record<KnowledgeStatus, { bg: string; color: string }> = {
-  候选: { bg: 'rgba(251, 191, 36, 0.15)', color: '#fbbf24' },
-  已确认: { bg: 'rgba(16, 185, 129, 0.15)', color: '#34d399' },
-  已拒绝: { bg: 'rgba(244, 63, 94, 0.15)', color: '#fb7185' },
-  已过期: { bg: 'rgba(113, 113, 122, 0.2)', color: '#a1a1aa' },
-}
-
-const KIND_STYLE: Record<string, { bg: string; color: string }> = {
-  事实: { bg: 'rgba(56, 189, 248, 0.15)', color: '#7dd3fc' },
-  数据: { bg: 'rgba(167, 139, 250, 0.15)', color: '#c4b5fd' },
-  观点: { bg: 'rgba(129, 140, 248, 0.15)', color: '#a5b4fc' },
-  经历: { bg: 'rgba(52, 211, 153, 0.15)', color: '#6ee7b7' },
-}
-
-function Tag({
-  text,
-  bg,
-  color,
-}: {
-  text: string
-  bg: string
-  color: string
-}) {
-  return (
-    <span
-      className="inner-item-tag"
-      style={{ background: bg, color, borderColor: 'transparent' }}
-    >
-      {text}
-    </span>
-  )
+/** 状态 → 标签色调（统一 TagChip，不再各自拼 rgba） */
+const STATUS_TONE: Record<KnowledgeStatus, 'warm' | 'accent' | 'neutral' | 'muted'> = {
+  候选: 'warm',
+  已确认: 'accent',
+  已拒绝: 'neutral',
+  已过期: 'muted',
 }
 
 function confidenceColor(c: number): string {
@@ -66,6 +54,23 @@ interface BuildSummary {
   updated: number
   skipped: number
   degraded: boolean
+}
+
+/** /api/creative/projects 返回形状的最小投影：只声明本页真正读取的字段 */
+interface ProjectApiRow {
+  id?: string
+  title?: string
+  updatedAt?: string
+  versions?: { id?: string }[]
+}
+
+/** 关联作品选择器用的候选：只带跳到最新版本所需的字段 */
+interface WorkOption {
+  id: string
+  title: string
+  updatedAt: string
+  /** 最新版本 id：还没有版本时退化到 /works 列表 */
+  latestVersionId: string | null
 }
 
 export default function KnowledgePage() {
@@ -85,6 +90,17 @@ export default function KnowledgePage() {
   const [building, setBuilding] = useState(false)
   const [buildSummary, setBuildSummary] = useState<BuildSummary | null>(null)
   const [buildError, setBuildError] = useState('')
+
+  // ── 知识 ↔ 作品 关联（0011 起）──
+  const [linksMap, setLinksMap] = useState<Record<string, LinkedWork[]>>({})
+  /** 关联表没迁移时为 false：整块 UI 收起，而不是报错刷屏 */
+  const [linksAvailable, setLinksAvailable] = useState(true)
+  const [workOptions, setWorkOptions] = useState<WorkOption[]>([])
+  const [pickerId, setPickerId] = useState<string | null>(null)
+  const [linkBusy, setLinkBusy] = useState<string | null>(null)
+  const [linkError, setLinkError] = useState('')
+  const [backfilling, setBackfilling] = useState(false)
+  const [backfillNote, setBackfillNote] = useState<string | null>(null)
 
   useEffect(() => {
     void fetchUnits(filter)
@@ -107,23 +123,33 @@ export default function KnowledgePage() {
     try {
       const headers = await authHeaders()
       if (!headers) return
-      const url =
+      const query =
         nextFilter === 'all'
-          ? '/api/creative/knowledge'
-          : `/api/creative/knowledge?status=${encodeURIComponent(nextFilter)}`
-      const res = await fetch(url, { headers })
+          ? '?withLinks=1'
+          : `?status=${encodeURIComponent(nextFilter)}&withLinks=1`
+      const res = await fetch(`/api/creative/knowledge${query}`, { headers })
       const data = await res.json()
       if (!res.ok) {
-        if (res.status === 503) {
+        // 迁移没跑 vs 网络故障，只能靠服务端显式标记区分：
+        // 两者都可能落在 503 上（鉴权层网络失败同样返回 503），只看状态码
+        // 会把一次断网谎报成"表没初始化"，让用户跑去重跑迁移。
+        if (data.needsMigration === true) {
           setNeedMigration(true)
           setLoadError(data.error || '知识单元表尚未初始化')
         } else {
-          setLoadError(data.error || '加载失败')
+          setLoadError(data.error || (res.status === 503 ? '服务暂时不可用，请稍后重试' : '加载失败'))
         }
         setUnits([])
         return
       }
       setUnits(data.units ?? [])
+      setLinksMap(data.links ?? {})
+      // undefined 不该出现；服务端取不到会显式给 false
+      if (typeof data.linksAvailable === 'boolean') {
+        setLinksAvailable(data.linksAvailable)
+      }
+      // 候选作品一次性备好：点开选择器不再等请求，关联后也能直接跳转最新版本
+      if (data.linksAvailable !== false) void ensureWorkOptions(headers)
     } catch {
       setLoadError('网络错误，加载失败')
       setUnits([])
@@ -147,11 +173,13 @@ export default function KnowledgePage() {
       })
       const data = await res.json()
       if (!res.ok) {
-        if (res.status === 503) {
+        if (data.needsMigration === true) {
           setNeedMigration(true)
           setBuildError(data.error || '知识单元表尚未初始化')
         } else {
-          setBuildError(data.error || '构建失败')
+          setBuildError(
+            data.error || (res.status === 503 ? '服务暂时不可用，请稍后重试' : '构建失败')
+          )
         }
         return
       }
@@ -210,234 +238,456 @@ export default function KnowledgePage() {
     setEditClaim(u.claim)
   }
 
+  // ─────────────── 知识 ↔ 作品 关联 ───────────────
+
+  /**
+   * 关联选择器候选。
+   * 刻意复用 /works 的同一份接口 —— 不为一处 UI 新建一条读取口径，
+   * 否则"这里能选的作品"和"那边展示的作品"迟早会各自漂移。
+   */
+  async function ensureWorkOptions(
+    headers?: Record<string, string>
+  ): Promise<WorkOption[]> {
+    if (workOptions.length > 0) return workOptions
+    const h = headers ?? (await authHeaders())
+    if (!h) return []
+    try {
+      const res = await fetch('/api/creative/projects', { headers: h })
+      const data = (await res.json().catch(() => null)) as {
+        projects?: ProjectApiRow[]
+      } | null
+      if (!res.ok || !Array.isArray(data?.projects)) return []
+
+      const options: WorkOption[] = []
+      for (const p of data.projects ?? []) {
+        if (typeof p?.id !== 'string' || !p.id) continue
+        const versions = Array.isArray(p.versions) ? p.versions : []
+        const latest = versions.length > 0 ? versions[versions.length - 1] : undefined
+        options.push({
+          id: p.id,
+          title: typeof p.title === 'string' && p.title ? p.title : '未命名作品',
+          updatedAt: typeof p.updatedAt === 'string' ? p.updatedAt : '',
+          latestVersionId:
+            latest && typeof latest.id === 'string' ? latest.id : null,
+        })
+      }
+      setWorkOptions(options)
+      return options
+    } catch {
+      return []
+    }
+  }
+
+  /** 手动关联：服务端会双侧校验归属，这里只负责搬运与回写 */
+  async function linkWork(unitId: string, projectId: string) {
+    if (linkBusy) return
+    setLinkBusy(`${unitId}:${projectId}`)
+    setLinkError('')
+    try {
+      const headers = await authHeaders()
+      if (!headers) return
+      const res = await fetch(`/api/creative/knowledge/${unitId}/links`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setLinkError(data.error ?? '关联失败')
+        return
+      }
+      setLinksMap((prev) => ({
+        ...prev,
+        [unitId]: Array.isArray(data.links) ? data.links : [],
+      }))
+      setPickerId(null)
+    } catch {
+      setLinkError('网络错误，关联失败')
+    } finally {
+      setLinkBusy(null)
+    }
+  }
+
+  async function unlinkWork(unitId: string, projectId: string) {
+    if (linkBusy) return
+    setLinkBusy(`${unitId}:${projectId}`)
+    setLinkError('')
+    try {
+      const headers = await authHeaders()
+      if (!headers) return
+      const res = await fetch(
+        `/api/creative/knowledge/${unitId}/links?projectId=${encodeURIComponent(projectId)}`,
+        { method: 'DELETE', headers }
+      )
+      if (!res.ok) {
+        const data = await res.json().catch(() => null)
+        setLinkError(data?.error ?? '取消关联失败')
+        return
+      }
+      setLinksMap((prev) => ({
+        ...prev,
+        [unitId]: (prev[unitId] ?? []).filter((w) => w.projectId !== projectId),
+      }))
+    } catch {
+      setLinkError('网络错误，取消关联失败')
+    } finally {
+      setLinkBusy(null)
+    }
+  }
+
+  /** 从 0006 的历史快照回填：让老作品一次性接上新结构 */
+  async function handleBackfill() {
+    if (backfilling) return
+    setBackfilling(true)
+    setBackfillNote(null)
+    setLinkError('')
+    try {
+      const headers = await authHeaders()
+      if (!headers) return
+      const res = await fetch('/api/creative/knowledge/links-backfill', {
+        method: 'POST',
+        headers,
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setBackfillNote(data.error ?? '回填失败')
+        return
+      }
+      const linked = Number(data.linked) || 0
+      setBackfillNote(
+        linked > 0
+          ? `已从历史版本回填 ${linked} 条引用`
+          : '历史版本里没有可回填的新引用'
+      )
+      await fetchUnits(filter)
+    } catch {
+      setBackfillNote('网络错误，回填失败')
+    } finally {
+      setBackfilling(false)
+    }
+  }
+
+  /** 作品 id → 候选：让「被哪些作品用过」的 chip 能直接跳到那个作品的最新版本 */
+  const workOptionById = new Map(workOptions.map((o) => [o.id, o]))
+
   return (
-    <div className="inner-page">
-      <div className="inner-container">
-        {/* ── 头部 ── */}
-        <header className="inner-header">
-          <div>
-            <Link href="/dashboard" className="inner-back">
-              ← 返回我的素材库
-            </Link>
-            <h1 className="inner-header-title">我的知识库</h1>
-            <p className="inner-header-sub">
-              从多条素材中归纳出的跨素材知识单元。只有你手动「确认」过的单元，才会被注入内容生成。
-            </p>
-          </div>
+    <PageShell>
+      <Link
+        href="/dashboard"
+        className="mb-5 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
+      >
+        ← 返回创作机会
+      </Link>
+
+      <PageHeader
+        eyebrow="我的创作资产"
+        title="知识库"
+        description="AI 从你的多条素材里归纳出可复用的判断。它只负责提出候选，最后由你确认——被你确认过的知识，才会进入之后的每一次创作。"
+        actions={
           <button
             onClick={handleBuild}
             disabled={building || needMigration}
-            className="inner-filter-chip active shrink-0 disabled:opacity-50"
-            style={{ whiteSpace: 'nowrap' }}
+            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
           >
+            <RefreshCw size={14} className={building ? 'animate-spin' : ''} />
             {building ? '归纳中…' : '重新归纳'}
           </button>
-        </header>
+        }
+        ai={
+          <AiStatus
+            task="knowledge"
+            active={loading || building}
+            variant="bar"
+          />
+        }
+      />
 
-        {/* ── 表未初始化：给出可执行指令，而不是白屏 ── */}
-        {needMigration && (
-          <div
-            className="inner-item"
-            style={{ borderColor: 'rgba(251, 191, 36, 0.35)', marginBottom: 20 }}
-          >
-            <p className="inner-item-title">知识单元表尚未初始化</p>
-            <p className="inner-item-desc">
-              请在 Supabase 控制台执行{' '}
-              <code
-                style={{
-                  background: 'rgba(255,255,255,0.08)',
-                  padding: '1px 6px',
-                  borderRadius: 4,
-                }}
+      {/* ── 表未初始化：给出可执行指令，而不是白屏 ── */}
+      {needMigration && (
+        <ErrorState
+          className="mb-6"
+          title="知识单元表尚未初始化"
+          message="请在 Supabase 控制台执行 supabase/migrations/0005_creator_knowledge.sql，然后刷新本页。"
+        />
+      )}
+
+      {/* ── 构建结果摘要 ── */}
+      {buildSummary && (
+        <SurfaceCard className="mb-6">
+          <p className="text-[14px] font-medium text-zinc-100">
+            本次归纳：新增 {buildSummary.inserted} 条候选，更新{' '}
+            {buildSummary.updated} 条，跳过 {buildSummary.skipped} 条已确认
+          </p>
+          <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-500">
+            {buildSummary.degraded
+              ? 'AI 归纳调用失败，请稍后重试。已确认的单元不受影响。'
+              : buildSummary.groupCount === 0
+                ? '没有找到可归纳的分组 —— 一条知识单元至少需要来自 2 条不同素材的同类主张。'
+                : '新增内容一律为「候选」，需你确认后才会生效。'}
+          </p>
+        </SurfaceCard>
+      )}
+
+      {buildError && !needMigration && (
+        <ErrorState className="mb-6" message={buildError} onRetry={handleBuild} />
+      )}
+
+      {loadError && !needMigration && (
+        <ErrorState
+          className="mb-6"
+          message={loadError}
+          onRetry={() => fetchUnits(filter)}
+        />
+      )}
+
+      {/* ── 知识单元 ── */}
+      <Section
+        title="知识卡片"
+        description="每条知识都带着它的来源与适用领域。你确认得越准，AI 之后的创作就越像你。"
+        actions={
+          <div className="flex items-center gap-3">
+            <span className="text-[12px] text-zinc-500">{units.length} 条</span>
+            {linksAvailable && (
+              <button
+                onClick={handleBackfill}
+                disabled={backfilling || needMigration || units.length === 0}
+                className="text-[12px] text-zinc-400 transition hover:text-indigo-300 disabled:opacity-40"
+                title="把历史生成版本里用到的知识，回填成显式的知识↔作品关联"
               >
-                supabase/migrations/0005_creator_knowledge.sql
-              </code>
-              ，然后刷新本页。
-            </p>
+                {backfilling ? '回填中…' : '回填历史引用'}
+              </button>
+            )}
           </div>
-        )}
-
-        {/* ── 构建结果摘要 ── */}
-        {buildSummary && (
-          <div className="inner-item" style={{ marginBottom: 20 }}>
-            <p className="inner-item-title">
-              本次归纳：新增 {buildSummary.inserted} 条候选，更新{' '}
-              {buildSummary.updated} 条，跳过 {buildSummary.skipped} 条已确认
-            </p>
-            <p className="inner-item-desc">
-              {buildSummary.degraded
-                ? 'AI 归纳调用失败，请稍后重试。已确认的单元不受影响。'
-                : buildSummary.groupCount === 0
-                  ? '没有找到可归纳的分组 —— 一条知识单元至少需要来自 2 条不同素材的同类主张。'
-                  : '新增内容一律为「候选」，需你确认后才会生效。'}
-            </p>
-          </div>
-        )}
-
-        {buildError && !needMigration && (
-          <p style={{ color: '#fb7185', fontSize: 13, marginBottom: 20 }}>
-            {buildError}
+        }
+      >
+        {/* 关联区的反馈：只影响这一块，不占用知识列表的主错误位 */}
+        {(linkError || backfillNote) && linksAvailable && (
+          <p
+            className={`mb-4 rounded-xl border px-3.5 py-2.5 text-[13px] ${
+              linkError
+                ? 'border-red-500/25 bg-red-500/10 text-red-300'
+                : 'border-indigo-500/25 bg-indigo-500/10 text-indigo-300'
+            }`}
+          >
+            {linkError ?? backfillNote}
           </p>
         )}
 
-        {/* ── 状态筛选 ── */}
-        <div className="inner-filter-bar">
-          <button
-            onClick={() => setFilter('all')}
-            className={`inner-filter-chip ${filter === 'all' ? 'active' : ''}`}
-          >
-            全部
-          </button>
-          {KNOWLEDGE_STATUSES.map((s) => (
+        {/* 状态筛选 */}
+        <div className="mb-4 flex flex-wrap gap-1.5">
+          {(['all', ...KNOWLEDGE_STATUSES] as Filter[]).map((s) => (
             <button
               key={s}
               onClick={() => setFilter(s)}
-              className={`inner-filter-chip ${filter === s ? 'active' : ''}`}
+              className={`rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                filter === s
+                  ? 'border-indigo-500/40 bg-indigo-500/15 text-indigo-300'
+                  : 'border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:border-white/20 hover:text-zinc-200'
+              }`}
             >
-              {s}
+              {s === 'all' ? '全部' : s}
             </button>
           ))}
         </div>
 
-        {/* ── 列表区 ── */}
-        <div className="inner-section-head">
-          <span className="inner-section-title">知识单元</span>
-          <span className="inner-section-count">{units.length} 条</span>
-        </div>
-
-        {loadError && !needMigration && (
-          <p style={{ color: '#fb7185', fontSize: 13, marginBottom: 16 }}>
-            {loadError}
-          </p>
-        )}
-
         {loading ? (
-          <div className="inner-empty">
-            <p>加载中…</p>
-          </div>
+          <SkeletonList count={3} height={124} />
         ) : units.length === 0 ? (
-          <div className="inner-empty">
-            <p>{filter === 'all' ? '这里还没有知识单元' : `没有「${filter}」状态的单元`}</p>
-            <p className="sub">
-              {filter === 'all'
-                ? '先在「我的素材库」积累素材并完成 AI 理解；当同一主张出现在 2 条以上素材时，点击右上角「重新归纳」生成候选'
-                : '切换上方的状态筛选查看其他单元'}
-            </p>
-          </div>
+          <EmptyState
+            title={filter === 'all' ? '这里还没有知识单元' : `没有「${filter}」状态的单元`}
+            description={
+              filter === 'all'
+                ? '先在「我的素材」里积累素材并完成 AI 理解。当同一主张出现在 2 条以上素材时，点「重新归纳」，AI 会把它提炼成知识候选。'
+                : '切换上方的状态筛选，查看其他单元。'
+            }
+          />
         ) : (
-          <div className="inner-list">
+          <div className="flex flex-col gap-3">
             {units.map((u) => {
-              const st = STATUS_STYLE[u.status]
-              const kd = KIND_STYLE[u.kind] ?? KIND_STYLE['观点']
               const injectable = isUnitInjectable(u)
               const editing = editingId === u.id
+              const linked = linksMap[u.id] ?? []
+              const pickerOpen = pickerId === u.id
               return (
-                <div key={u.id} className="inner-item anim-rise">
-                  {/* 顶部行：种类 / 状态 / 概念 */}
-                  <div
-                    className="flex items-center justify-between gap-3 flex-wrap"
-                    style={{ marginBottom: 10 }}
-                  >
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <Tag text={u.kind} bg={kd.bg} color={kd.color} />
-                      <Tag text={u.status} bg={st.bg} color={st.color} />
-                      <span className="inner-item-title" style={{ margin: 0 }}>
-                        {u.concept}
-                      </span>
-                      {injectable && (
-                        <span
-                          className="inner-item-tag"
-                          style={{
-                            background: 'rgba(16, 185, 129, 0.12)',
-                            color: '#34d399',
-                            borderColor: 'transparent',
-                          }}
-                        >
-                          注入生成中
-                        </span>
-                      )}
-                    </div>
-                    <span className="inner-item-date shrink-0">
-                      来源 {u.sourceCount} 条素材
-                    </span>
+                <SurfaceCard key={u.id} className="vs-rise">
+                  {/* 顶部：类型 / 状态 / 概念 */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <TagChip tone="brand" size="sm">
+                      {u.kind}
+                    </TagChip>
+                    <TagChip tone={STATUS_TONE[u.status]} size="sm">
+                      {u.status}
+                    </TagChip>
+                    {injectable && (
+                      <TagChip tone="accent" size="sm">
+                        已用于创作
+                      </TagChip>
+                    )}
                   </div>
 
-                  {/* 命题正文 / 编辑 */}
+                  <h3 className="mt-2.5 text-[15px] font-semibold leading-snug text-white">
+                    {u.concept}
+                  </h3>
+
                   {editing ? (
-                    <div>
+                    <div className="mt-2">
                       <textarea
                         value={editClaim}
                         onChange={(e) => setEditClaim(e.target.value)}
                         rows={3}
                         maxLength={400}
-                        className="w-full rounded-lg text-sm outline-none"
-                        style={{
-                          background: 'rgba(255,255,255,0.05)',
-                          border: '1px solid rgba(255,255,255,0.12)',
-                          color: '#fff',
-                          padding: '10px 12px',
-                          resize: 'vertical',
-                        }}
+                        className="w-full rounded-xl border border-white/[0.12] bg-white/[0.04] px-3.5 py-2.5 text-sm text-white outline-none focus:border-indigo-500/50"
                       />
-                      <div className="flex items-center gap-3 mt-2 text-xs">
+                      <div className="mt-2 flex items-center gap-3 text-xs">
                         <button
-                          onClick={() =>
-                            patchUnit(u.id, { claim: editClaim.trim() })
-                          }
+                          onClick={() => patchUnit(u.id, { claim: editClaim.trim() })}
                           disabled={busyId === u.id || !editClaim.trim()}
-                          className="text-indigo-300 hover:text-indigo-200 disabled:opacity-50 transition"
+                          className="text-indigo-300 transition hover:text-indigo-200 disabled:opacity-50"
                         >
                           保存修正
                         </button>
                         <button
                           onClick={() => setEditingId(null)}
-                          className="text-zinc-500 hover:text-zinc-300 transition"
+                          className="text-zinc-500 transition hover:text-zinc-300"
                         >
                           取消
                         </button>
-                        <span className="text-zinc-600">
-                          {editClaim.length}/400
-                        </span>
+                        <span className="text-zinc-600">{editClaim.length}/400</span>
                       </div>
                     </div>
                   ) : (
-                    <p className="inner-item-desc">{u.claim}</p>
+                    <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-300">
+                      {u.claim}
+                    </p>
                   )}
 
-                  {/* 底部：适用场景 + 置信度 */}
+                  {/* 来源 / 领域 / 置信度 */}
                   {!editing && (
-                    <div className="flex items-center gap-2 flex-wrap mt-2">
-                      {u.domainScope.map((d) => (
-                        <span key={d} className="inner-item-tag">
-                          {d}
+                    <>
+                      <div className="vs-divider my-3" />
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[12px] text-zinc-500">来源</span>
+                        <TagChip size="sm" tone="muted">
+                          {u.sourceCount} 条素材
+                        </TagChip>
+                        {u.domainScope.map((d) => (
+                          <TagChip key={d} size="sm">
+                            {d}
+                          </TagChip>
+                        ))}
+                        <span
+                          className="ml-auto text-[12px]"
+                          style={{ color: confidenceColor(u.confidence) }}
+                        >
+                          置信度 {Math.round(u.confidence * 100)}%
                         </span>
-                      ))}
-                      <span
-                        className="inner-item-tag"
-                        style={{
-                          background: 'transparent',
-                          color: confidenceColor(u.confidence),
-                          borderColor: 'transparent',
-                        }}
-                      >
-                        置信度 {Math.round(u.confidence * 100)}%
-                      </span>
-                      {u.confirmedAt && (
-                        <span className="inner-item-date">
-                          确认于 {new Date(u.confirmedAt).toLocaleDateString('zh-CN')}
-                        </span>
+                        {u.confirmedAt && (
+                          <span className="text-[11px] text-zinc-600">
+                            确认于 {new Date(u.confirmedAt).toLocaleDateString('zh-CN')}
+                          </span>
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                  {/* ── 关联作品：这条知识具体体现在哪些作品里 ── */}
+                  {!editing && linksAvailable && (
+                    <div className="mt-3">
+                      <div className="flex flex-wrap items-center gap-1.5 text-[12px]">
+                        <span className="text-zinc-500">被用在这些作品</span>
+                        {linked.length === 0 ? (
+                          <span className="text-zinc-600">还没有关联作品</span>
+                        ) : (
+                          linked.map((w) => {
+                            const target = workOptionById.get(w.projectId)
+                            const href = target?.latestVersionId
+                              ? `/article/${target.latestVersionId}`
+                              : '/works'
+                            return (
+                              <span
+                                key={w.projectId}
+                                className="inline-flex items-center gap-1 rounded-full border border-indigo-500/25 bg-indigo-500/10 px-2.5 py-1 text-indigo-300"
+                              >
+                                <Link
+                                  href={href}
+                                  className="max-w-[180px] truncate transition hover:text-indigo-200"
+                                  title={w.title}
+                                >
+                                  《{w.title}》
+                                </Link>
+                                <button
+                                  type="button"
+                                  onClick={() => void unlinkWork(u.id, w.projectId)}
+                                  disabled={linkBusy === `${u.id}:${w.projectId}`}
+                                  className="text-[11px] text-indigo-400/70 transition hover:text-red-300 disabled:opacity-40"
+                                  title="取消关联"
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            )
+                          })
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setPickerId(pickerOpen ? null : u.id)}
+                          className="rounded-full border border-white/[0.1] px-2.5 py-1 text-zinc-400 transition hover:border-white/20 hover:text-zinc-100"
+                        >
+                          {pickerOpen ? '收起' : '关联作品'}
+                        </button>
+                      </div>
+
+                      {pickerOpen && (
+                        <div className="mt-2 rounded-xl border border-white/[0.08] bg-white/[0.03] p-2">
+                          {workOptions.length === 0 ? (
+                            <p className="px-2 py-2 text-[12px] text-zinc-500">
+                              还没有可关联的作品 —— 先去创作一版内容。
+                            </p>
+                          ) : (
+                            <ul className="max-h-56 overflow-y-auto">
+                              {workOptions.map((opt) => {
+                                const already = linked.some(
+                                  (w) => w.projectId === opt.id
+                                )
+                                return (
+                                  <li key={opt.id}>
+                                    <button
+                                      type="button"
+                                      disabled={already || !!linkBusy}
+                                      onClick={() => void linkWork(u.id, opt.id)}
+                                      className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[13px] transition ${
+                                        already
+                                          ? 'text-zinc-600'
+                                          : 'text-zinc-300 hover:bg-white/[0.06] hover:text-white'
+                                      } disabled:opacity-60`}
+                                    >
+                                      <span className="truncate">{opt.title}</span>
+                                      <span className="shrink-0 text-[11px] text-zinc-600">
+                                        {already
+                                          ? '已关联'
+                                          : opt.updatedAt
+                                            ? new Date(opt.updatedAt).toLocaleDateString('zh-CN')
+                                            : ''}
+                                      </span>
+                                    </button>
+                                  </li>
+                                )
+                              })}
+                            </ul>
+                          )}
+                        </div>
                       )}
                     </div>
                   )}
 
-                  {/* 操作区 */}
+                  {/* 操作 */}
                   {!editing && (
-                    <div className="flex items-center gap-4 mt-3 text-xs">
+                    <div className="mt-3.5 flex flex-wrap items-center gap-4 text-xs">
                       {u.status !== '已确认' ? (
                         <button
                           onClick={() => patchUnit(u.id, { status: '已确认' })}
                           disabled={busyId === u.id}
-                          className="text-emerald-400 hover:text-emerald-300 disabled:opacity-50 transition"
+                          className="text-emerald-400 transition hover:text-emerald-300 disabled:opacity-50"
                         >
                           确认
                         </button>
@@ -445,7 +695,7 @@ export default function KnowledgePage() {
                         <button
                           onClick={() => patchUnit(u.id, { status: '候选' })}
                           disabled={busyId === u.id}
-                          className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50 transition"
+                          className="text-zinc-500 transition hover:text-zinc-300 disabled:opacity-50"
                         >
                           撤回为候选
                         </button>
@@ -455,7 +705,7 @@ export default function KnowledgePage() {
                         <button
                           onClick={() => patchUnit(u.id, { status: '已拒绝' })}
                           disabled={busyId === u.id}
-                          className="text-zinc-500 hover:text-red-400 disabled:opacity-50 transition"
+                          className="text-zinc-500 transition hover:text-red-400 disabled:opacity-50"
                         >
                           拒绝
                         </button>
@@ -463,7 +713,7 @@ export default function KnowledgePage() {
                         <button
                           onClick={() => patchUnit(u.id, { status: '候选' })}
                           disabled={busyId === u.id}
-                          className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50 transition"
+                          className="text-zinc-500 transition hover:text-zinc-300 disabled:opacity-50"
                         >
                           恢复为候选
                         </button>
@@ -472,18 +722,18 @@ export default function KnowledgePage() {
                       <button
                         onClick={() => startEdit(u)}
                         disabled={busyId === u.id}
-                        className="text-zinc-500 hover:text-indigo-300 disabled:opacity-50 transition"
+                        className="text-zinc-500 transition hover:text-indigo-300 disabled:opacity-50"
                       >
                         修正表述
                       </button>
                     </div>
                   )}
-                </div>
+                </SurfaceCard>
               )
             })}
           </div>
         )}
-      </div>
-    </div>
+      </Section>
+    </PageShell>
   )
 }
