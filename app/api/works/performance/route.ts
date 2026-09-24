@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { createServerClient } from '@/lib/supabaseServer'
+import { authenticateRequest, type AuthResult } from '@/lib/apiAuth'
 
 export const dynamic = 'force-dynamic'
 
@@ -32,19 +32,12 @@ function str(v: unknown, max: number): string {
   return typeof v === 'string' ? v.trim().slice(0, max) : ''
 }
 
-async function authenticate(req: Request) {
-  const authHeader = req.headers.get('authorization') ?? ''
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
-  if (!token) return null
-
-  const supabase = createServerClient(token)
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser(token)
-  if (error || !user) return null
-
-  return { supabase, userId: user.id }
+/**
+ * 鉴权统一走 lib/apiAuth：网络故障 → 503「网络异常」（已登录用户不得踢），
+ * 凭证失效 → 401。旧的内联 getUser + 一律返回 null 会把网络抖动伪装成"未登录"。
+ */
+async function authenticate(req: Request): Promise<AuthResult> {
+  return authenticateRequest(req)
 }
 
 // ── GET：恢复已记录的表现（页面刷新后回显用）──
@@ -57,9 +50,7 @@ export async function GET(req: Request) {
     }
 
     const auth = await authenticate(req)
-    if (!auth) {
-      return NextResponse.json({ error: '请先登录' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
 
     const { data, error } = await auth.supabase
       .from('generation_history')
@@ -95,9 +86,7 @@ export async function POST(req: Request) {
     }
 
     const auth = await authenticate(req)
-    if (!auth) {
-      return NextResponse.json({ error: '请先登录' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
 
     // 入参校验（快速失败）
     const generationId = str(body.generationId, 100)

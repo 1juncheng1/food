@@ -3,10 +3,22 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { supabase } from '@/lib/supabaseClient'
+import { getValidSession } from '@/lib/supabaseClient'
+import { usePointAccount } from '@/hooks/use-point-account'
+import { AuthorAvatar } from '@/components/community/author-badge'
+import PostActionBar from '@/components/community/post-action-bar'
+import CommentSection from '@/components/community/comment-section'
+import ProfileEditor from '@/components/community/profile-editor'
+import { toggleInteraction } from '@/lib/community/postApi'
+import { extractTitleAndSummary, timeAgo } from '@/lib/community/format'
+// 与服务端共用同一句文案，避免两处措辞漂移
+import { MIN_GENERATION_COST, NO_BALANCE_MESSAGE } from '@/lib/balance'
+import { amountForPoints } from '@/lib/points'
+import type { ArchiveSnapshot } from '@/lib/creative/archive'
+import { EmptyState, ErrorState, PageShell } from '@/components/vision'
 
 // ────────────────────────────────────────────────────────────
-// 个人主页：展示创作者人格 + 语言特征 + 发布的帖子 + 关注按钮
+// 作者主页：头像 + 昵称 + 简介 + 创作数量 + 发布作品
 // 路径：/profile/[userId]
 // 数据源：get_user_profile RPC（统一从 Creator Profile 读取）
 // ────────────────────────────────────────────────────────────
@@ -28,7 +40,7 @@ interface StyleProfile {
   } | null
 }
 
-interface Post {
+interface ProfilePost {
   id: string
   content: string
   content_type: string
@@ -39,6 +51,8 @@ interface Post {
   save_count: number
   image_url: string | null
   created_at: string
+  post_type?: string | null
+  archive?: ArchiveSnapshot | null
   current_user_liked: boolean
   current_user_saved: boolean
 }
@@ -47,82 +61,92 @@ interface ProfileData {
   success: boolean
   userId: string
   authorName: string
+  /** 0008 迁移新增：未执行时为 undefined → 首字母头像 */
+  authorAvatarUrl?: string | null
+  /** 个人简介：优先 Creator Profile 人格描述，无则 null */
+  bio?: string | null
   isOwn: boolean
   isFollowing: boolean
   followerCount: number
   followingCount: number
   postCount: number
   styleProfile: StyleProfile | null
-  posts: Post[]
+  posts: ProfilePost[]
+  /** 0009 迁移新增：还有下一页作品（未执行迁移时为 undefined → 不再自动翻页） */
+  postsHasMore?: boolean
 }
 
 /** 核心信息（不含 posts）：首屏优先渲染，不被作品列表阻塞 */
 type ProfileInfo = Omit<ProfileData, 'posts'>
 
-/** 格式化时间为相对时间 */
-function timeAgo(dateStr: string): string {
-  const date = new Date(dateStr)
-  const now = new Date()
-  const diff = Math.floor((now.getTime() - date.getTime()) / 1000)
-  if (diff < 60) return '刚刚'
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`
-  if (diff < 2592000) return `${Math.floor(diff / 86400)} 天前`
-  return date.toLocaleDateString('zh-CN')
-}
-
-/** 取内容摘要 */
-function getContentSummary(content: string): string {
-  const cleanContent = content.replace(/\n\n\[图片描述\][\s\S]*$/, '')
-  const text = cleanContent || content
-  return text.length > 200 ? text.slice(0, 200) + '…' : text
-}
-
 export default function ProfilePage() {
   const params = useParams<{ userId: string }>()
   const router = useRouter()
   // ── state 拆分（P0-3）：核心信息优先渲染，posts 独立加载 ──
-  // profileInfo：用户卡 + 统计 + 风格卡（不含 posts 数组）
-  // posts：作品列表独立 state，客户端切片显示（前 10 条，触底"查看更多"）
   const [profileInfo, setProfileInfo] = useState<ProfileInfo | null>(null)
-  const [posts, setPosts] = useState<Post[]>([])
-  const [visibleCount, setVisibleCount] = useState(10)
+  const [posts, setPosts] = useState<ProfilePost[]>([])
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [followBusy, setFollowBusy] = useState(false)
   const [accessToken, setAccessToken] = useState<string | null>(null)
+  const [viewerName, setViewerName] = useState<string>('')
+  const [viewerId, setViewerId] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
-  // 客户端切片显示：visibleCount 控制当前展示条数，触底加载更多
-  const visiblePosts = posts.slice(0, visibleCount)
-  const hasMorePosts = visibleCount < posts.length
+  const [busy, setBusy] = useState<Set<string>>(new Set())
+  const busyRef = useRef<Set<string>>(new Set())
+  const postsRef = useRef<ProfilePost[]>([])
+  const tokenRef = useRef<string | null>(null)
+  const loadingMoreRef = useRef(false)
+  const hasMoreRef = useRef(false)
+  const [openComments, setOpenComments] = useState<Set<string>>(new Set())
+  // 账户余额：只在自己的主页查（别人的主页不该暴露我的余额）。
+  // 连带拿回汇率，让「≈ ¥X」的换算与真实扣费口径一致。
+  const { balance, pointsPerYuan } = usePointAccount(!!profileInfo?.isOwn)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
-  /** 加载个人主页数据：拆分为核心信息 + posts 两个独立 state */
+  useEffect(() => {
+    postsRef.current = posts
+  }, [posts])
+
+  useEffect(() => {
+    hasMoreRef.current = hasMore
+  }, [hasMore])
+
+  /** 每页作品数：与 RPC 默认 limit 对齐 */
+  const PAGE_SIZE = 20
+
+  /** 加载个人主页数据（第一页）：核心信息 + 前 20 条作品 */
   const loadProfile = useCallback(
     async (token: string) => {
-      // P2-1：路由切换时 abort 旧请求，避免旧响应覆盖新页面数据
       const controller = new AbortController()
       abortRef.current = controller
       try {
-        const res = await fetch(`/api/profile/${params.userId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: controller.signal,
-        })
+        const res = await fetch(
+          `/api/profile/${params.userId}?postLimit=${PAGE_SIZE}&postOffset=0`,
+          {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: controller.signal,
+          }
+        )
         if (!res.ok) {
-          const errData = await res.json().catch(() => null)
+          const errData = (await res.json().catch(() => null)) as { error?: string } | null
           setError(errData?.error ?? `加载失败（${res.status}）`)
           return
         }
-        const json = await res.json()
-        const profile: ProfileData = json.profile
+        const json = (await res.json()) as { profile: ProfileData }
+        const profile = json.profile
         // 拆分：核心信息（不含 posts）立即渲染，posts 独立 state
         const { posts: _posts, ...info } = profile
         setProfileInfo(info)
         setPosts(_posts ?? [])
-        setVisibleCount(10) // 重置切片
+        setHasMore(profile.postsHasMore ?? false)
+        setOpenComments(new Set())
         setError(null)
       } catch (e) {
-        // AbortError 静默：路由切换触发的取消是预期行为
         if (e instanceof Error && e.name === 'AbortError') return
         setError('网络异常，请稍后重试')
       }
@@ -130,8 +154,38 @@ export default function ProfilePage() {
     [params.userId]
   )
 
-  // P2-1：组件卸载时 abort 进行中的请求
-  const abortRef = useRef<AbortController | null>(null)
+  /**
+   * 加载下一页作品（服务端分页，只拉当页）。
+   * offsetOverride：删除一条后用它按"删除后的长度"补位，避免跳过一条作品。
+   */
+  const loadMorePosts = useCallback(async (offsetOverride?: number) => {
+    const token = tokenRef.current
+    if (!token || loadingMoreRef.current) return
+    const offset = offsetOverride ?? postsRef.current.length
+    loadingMoreRef.current = true
+    setLoadingMore(true)
+    try {
+      const res = await fetch(
+        `/api/profile/${params.userId}?postLimit=${PAGE_SIZE}&postOffset=${offset}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      if (!res.ok) return
+      const json = (await res.json()) as { profile: ProfileData }
+      const more = json.profile?.posts ?? []
+      // 去重：翻页期间若有人新发了作品，offset 会错位导致同一条出现两次
+      setPosts((prev) => {
+        const seen = new Set(prev.map((p) => p.id))
+        return [...prev, ...more.filter((p) => !seen.has(p.id))]
+      })
+      setHasMore(json.profile?.postsHasMore ?? false)
+    } catch {
+      // 翻页失败不打断浏览：保留已加载内容，交回给用户再滚一次重试
+    } finally {
+      loadingMoreRef.current = false
+      setLoadingMore(false)
+    }
+  }, [params.userId])
+
   useEffect(() => {
     return () => {
       abortRef.current?.abort()
@@ -144,7 +198,6 @@ export default function ProfilePage() {
     setFollowBusy(true)
     const wasFollowing = profileInfo.isFollowing
 
-    // 乐观更新
     setProfileInfo((prev) =>
       prev
         ? {
@@ -165,7 +218,6 @@ export default function ProfilePage() {
         body: JSON.stringify({ followingId: params.userId }),
       })
       if (!res.ok) {
-        // 回退
         setProfileInfo((prev) =>
           prev
             ? {
@@ -175,14 +227,13 @@ export default function ProfilePage() {
               }
             : prev
         )
-        const errData = await res.json().catch(() => null)
+        const errData = (await res.json().catch(() => null)) as { error?: string } | null
         setError(errData?.error ?? '操作失败')
       } else {
         setError(null)
       }
     } catch {
       setError('网络异常，请稍后重试')
-      // 回退
       setProfileInfo((prev) =>
         prev
           ? {
@@ -197,17 +248,75 @@ export default function ProfilePage() {
     }
   }
 
+  /** 点赞 / 收藏：乐观更新 + 服务端权威值校正 + 失败精确回退 */
+  const handleToggle = useCallback(
+    async (postId: string, type: 'like' | 'save') => {
+      if (!accessToken) return
+      const key = `${postId}:${type}`
+      if (busyRef.current.has(key)) return
+      const snapshot = postsRef.current.find((p) => p.id === postId)
+      if (!snapshot) return
+
+      busyRef.current.add(key)
+      setBusy(new Set(busyRef.current))
+
+      setPosts((prev) =>
+        prev.map((p) => {
+          if (p.id !== postId) return p
+          if (type === 'like') {
+            const next = !p.current_user_liked
+            return {
+              ...p,
+              current_user_liked: next,
+              like_count: Math.max(0, p.like_count + (next ? 1 : -1)),
+            }
+          }
+          const next = !p.current_user_saved
+          return {
+            ...p,
+            current_user_saved: next,
+            save_count: Math.max(0, p.save_count + (next ? 1 : -1)),
+          }
+        })
+      )
+
+      try {
+        const state = await toggleInteraction(accessToken, postId, type)
+        setPosts((prev) =>
+          prev.map((p) =>
+            p.id === postId
+              ? {
+                  ...p,
+                  current_user_liked: state.liked ?? p.current_user_liked,
+                  current_user_saved: state.saved ?? p.current_user_saved,
+                  like_count: state.likeCount ?? p.like_count,
+                  save_count: state.saveCount ?? p.save_count,
+                  comment_count: state.commentCount ?? p.comment_count,
+                }
+              : p
+          )
+        )
+      } catch (e) {
+        setPosts((prev) => prev.map((p) => (p.id === postId ? snapshot : p)))
+        setError(e instanceof Error ? e.message : '操作失败，请重试')
+      } finally {
+        busyRef.current.delete(key)
+        setBusy(new Set(busyRef.current))
+      }
+    },
+    [accessToken]
+  )
+
   /** 删除帖子（乐观更新 posts + profileInfo.postCount）*/
   async function handleDeletePost(postId: string) {
     if (!accessToken || deletingId) return
     if (!confirm('确定删除这条灵感吗？')) return
 
     setDeletingId(postId)
-    // 乐观删除：立即从 posts 移除 + postCount - 1
+    const snapshotPosts = postsRef.current
+    const snapshotCount = profileInfo?.postCount ?? 0
     setPosts((prev) => prev.filter((p) => p.id !== postId))
-    setProfileInfo((prev) =>
-      prev ? { ...prev, postCount: prev.postCount - 1 } : prev
-    )
+    setProfileInfo((prev) => (prev ? { ...prev, postCount: prev.postCount - 1 } : prev))
 
     try {
       const res = await fetch(`/api/posts/${postId}`, {
@@ -215,46 +324,61 @@ export default function ProfilePage() {
         headers: { Authorization: `Bearer ${accessToken}` },
       })
       if (!res.ok) {
-        // 删除失败：重新加载恢复
         setError('删除失败，已恢复')
-        await loadProfile(accessToken)
+        setPosts(snapshotPosts)
+        setProfileInfo((prev) => (prev ? { ...prev, postCount: snapshotCount } : prev))
+        return
+      }
+      // offset 分页的固有代价：删掉一条后整体前移，直接翻页会跳过一条。
+      // 还有下一页时按"删除后的长度"补拉一条，把空位填上。
+      if (hasMoreRef.current) {
+        await loadMorePosts(snapshotPosts.length - 1)
       }
     } catch {
       setError('网络异常，删除失败')
-      await loadProfile(accessToken)
+      setPosts(snapshotPosts)
+      setProfileInfo((prev) => (prev ? { ...prev, postCount: snapshotCount } : prev))
     } finally {
       setDeletingId(null)
     }
   }
 
-  // ── IntersectionObserver：触底"查看更多"（客户端切片，无网络请求）──
+  // ── IntersectionObserver：触底加载下一页（服务端分页）──
   useEffect(() => {
-    if (!sentinelRef.current || !hasMorePosts) return
+    if (!sentinelRef.current || !hasMore || loadingMore) return
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting) {
-          setVisibleCount((prev) => prev + 10)
+          void loadMorePosts()
         }
       },
       { rootMargin: '200px' }
     )
     observer.observe(sentinelRef.current)
     return () => observer.disconnect()
-  }, [hasMorePosts])
+  }, [hasMore, loadingMore, loadMorePosts])
 
   useEffect(() => {
     async function init() {
-      const { data: { session } } = await supabase.auth.getSession()
+      const session = await getValidSession()
       if (!session) {
         router.replace('/login')
         return
       }
+      const metaName = session.user.user_metadata?.display_name
       setAccessToken(session.access_token)
+      tokenRef.current = session.access_token
+      setViewerId(session.user.id)
+      setViewerName(
+        typeof metaName === 'string' && metaName.trim()
+          ? metaName.trim()
+          : session.user.email?.split('@')[0] ?? ''
+      )
       setLoading(true)
       await loadProfile(session.access_token)
       setLoading(false)
     }
-    init()
+    void init()
   }, [params.userId, router, loadProfile])
 
   if (loading) {
@@ -270,12 +394,18 @@ export default function ProfilePage() {
     )
   }
 
-  if (error) {
+  if (error && !profileInfo) {
     return (
       <div className="inner-page gen-stage" data-mode="inspiration">
         <div className="inner-container">
-          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4 flex items-center justify-between gap-4">
             <p className="text-sm text-red-400">{error}</p>
+            <Link
+              href="/explore"
+              className="text-xs text-indigo-400 hover:text-indigo-300 transition shrink-0"
+            >
+              回到灵感广场
+            </Link>
           </div>
         </div>
       </div>
@@ -284,13 +414,12 @@ export default function ProfilePage() {
 
   if (!profileInfo) return null
 
-  const initial = profileInfo.authorName ? profileInfo.authorName[0].toUpperCase() : 'U'
   const creator = profileInfo.styleProfile?.creator ?? null
+  const bio = profileInfo.bio?.trim() || creator?.description?.trim() || ''
 
   /** 语言事实（语气/节奏/开头/篇幅）：人格卡内折叠展示；无人格时平铺 */
   const styleFacts = profileInfo.styleProfile ? (
     <>
-      {/* 语气标签 */}
       <div className="mb-5">
         <p className="text-xs text-zinc-500 mb-2.5">语气标签</p>
         <div className="flex flex-wrap gap-2">
@@ -309,7 +438,6 @@ export default function ProfilePage() {
         </div>
       </div>
 
-      {/* 节奏偏好 + 常用开头 + 平均字数 */}
       <div className="grid grid-cols-3 gap-4">
         <div>
           <p className="text-xs text-zinc-500 mb-1.5">节奏偏好</p>
@@ -325,37 +453,60 @@ export default function ProfilePage() {
         </div>
         <div>
           <p className="text-xs text-zinc-500 mb-1.5">平均字数</p>
-          <p className="text-sm text-zinc-300">
-            {profileInfo.styleProfile.avg_length || 0}
-          </p>
+          <p className="text-sm text-zinc-300">{profileInfo.styleProfile.avg_length || 0}</p>
         </div>
       </div>
     </>
   ) : null
 
   return (
-    <div className="inner-page">
-      <div className="inner-container">
-        {/* ── 用户信息卡片 ── */}
-        <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-6 mb-6">
-          <div className="flex items-start gap-4">
-            {/* 头像 */}
-            <div className="w-16 h-16 rounded-full bg-indigo-500/20 text-indigo-300 flex items-center justify-center text-2xl font-medium shrink-0">
-              {initial}
-            </div>
+    <PageShell width="narrow">
+        <Link
+          href="/explore"
+          className="mb-6 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
+        >
+          ← 返回灵感广场
+        </Link>
+
+        {error && <ErrorState className="mb-6" message={error} />}
+
+        {/* ── 作者卡片：这里是社区里的「人」，不是账号详情页 ── */}
+        <div className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
+          <div className="flex items-start gap-4 flex-wrap">
+            <AuthorAvatar
+              name={profileInfo.authorName}
+              avatarUrl={profileInfo.authorAvatarUrl}
+              size="lg"
+            />
             <div className="min-w-0 flex-1">
               <h1 className="text-xl font-semibold text-white">
-                {profileInfo.authorName || '未知用户'}
+                {profileInfo.authorName || '创作者'}
               </h1>
-              <div className="flex gap-5 mt-2 text-sm text-zinc-400">
+              {bio ? (
+                <p className="mt-2 text-sm text-zinc-400 leading-relaxed max-w-2xl">
+                  {bio}
+                </p>
+              ) : (
+                <p className="mt-2 text-xs text-zinc-600">
+                  这位创作者还没有留下简介
+                </p>
+              )}
+              <div className="flex gap-5 mt-3 text-sm text-zinc-400">
                 <span>
-                  <span className="text-zinc-200 font-medium">{profileInfo.postCount}</span> 帖子
+                  <span className="text-zinc-200 font-medium">{profileInfo.postCount}</span>{' '}
+                  创作
                 </span>
                 <span>
-                  <span className="text-zinc-200 font-medium">{profileInfo.followerCount}</span> 粉丝
+                  <span className="text-zinc-200 font-medium">
+                    {profileInfo.followerCount}
+                  </span>{' '}
+                  粉丝
                 </span>
                 <span>
-                  <span className="text-zinc-200 font-medium">{profileInfo.followingCount}</span> 关注
+                  <span className="text-zinc-200 font-medium">
+                    {profileInfo.followingCount}
+                  </span>{' '}
+                  关注
                 </span>
               </div>
             </div>
@@ -374,12 +525,83 @@ export default function ProfilePage() {
                 {followBusy ? '处理中…' : profileInfo.isFollowing ? '已关注' : '关注'}
               </button>
             )}
+
+            {/* 账户余额（仅本人可见） */}
+            {profileInfo.isOwn && balance !== null && (
+              balance < MIN_GENERATION_COST ? (
+                <div className="shrink-0 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-4 py-2.5">
+                  <span aria-hidden="true">💰</span>
+                  <div>
+                    <p className="text-sm font-medium text-amber-200 leading-tight">
+                      {NO_BALANCE_MESSAGE}
+                    </p>
+                    <Link
+                      href="/recharge"
+                      className="mt-1 inline-flex rounded-lg border border-amber-400/40 px-2.5 py-1 text-xs font-medium text-amber-100 transition hover:border-amber-300/60 hover:bg-amber-400/10"
+                    >
+                      去充值
+                    </Link>
+                  </div>
+                </div>
+              ) : (
+                <div className="shrink-0 rounded-lg border border-zinc-800 bg-zinc-800/40 px-4 py-2.5 text-right">
+                  <p className="text-xs text-zinc-500 leading-tight">账户余额</p>
+                  <p className="text-sm font-medium text-zinc-100 leading-tight mt-0.5">
+                    {balance} 积分
+                  </p>
+                  {pointsPerYuan !== null && (
+                    <p className="text-[11px] text-zinc-500 leading-tight mt-0.5">
+                      ≈ ¥{amountForPoints(balance, pointsPerYuan).toFixed(2)}
+                    </p>
+                  )}
+                  <Link
+                    href="/recharge"
+                    className="mt-1 inline-flex text-[11px] text-indigo-300 transition hover:text-indigo-200"
+                  >
+                    充值
+                  </Link>
+                </div>
+              )
+            )}
+
+            {/* 编辑资料（仅本人）：昵称 + 头像 */}
+            {profileInfo.isOwn && !editing && (
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="shrink-0 px-3 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-700 hover:border-zinc-600 transition"
+              >
+                编辑资料
+              </button>
+            )}
           </div>
+
+          {profileInfo.isOwn && editing && accessToken && (
+            <ProfileEditor
+              token={accessToken}
+              initialName={profileInfo.authorName}
+              initialAvatar={profileInfo.authorAvatarUrl ?? null}
+              onSaved={(p) => {
+                setProfileInfo((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        authorName: p.displayName || prev.authorName,
+                        authorAvatarUrl: p.avatarUrl,
+                      }
+                    : prev
+                )
+                setViewerName(p.displayName || viewerName)
+                setEditing(false)
+              }}
+              onCancel={() => setEditing(false)}
+            />
+          )}
         </div>
 
-        {/* ── 创作者人格 + 语言特征 ── */}
+        {/* ── 创作者人格 ── */}
         {creator ? (
-          <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-6 mb-6">
+          <div className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-medium text-zinc-200">创作者人格</h2>
               {profileInfo.isOwn && (
@@ -395,12 +617,16 @@ export default function ProfilePage() {
             <h3 className="text-xl font-semibold text-white">
               {creator.main || '未命名人格'}
               {creator.sub && (
-                <span className="ml-2 text-sm font-normal text-zinc-400">× {creator.sub}</span>
+                <span className="ml-2 text-sm font-normal text-zinc-400">
+                  × {creator.sub}
+                </span>
               )}
             </h3>
 
             {creator.description && (
-              <p className="mt-3 text-sm text-zinc-300 leading-loose">{creator.description}</p>
+              <p className="mt-3 text-sm text-zinc-300 leading-loose">
+                {creator.description}
+              </p>
             )}
 
             {(creator.motifs.length > 0 || creator.narratives.length > 0) && (
@@ -434,7 +660,6 @@ export default function ProfilePage() {
               </div>
             )}
 
-            {/* 语言事实折叠区 */}
             <details className="mt-5 group">
               <summary className="cursor-pointer select-none text-xs text-zinc-500 hover:text-zinc-300 transition list-none">
                 <span className="inline-block group-open:rotate-90 transition-transform mr-1">
@@ -446,7 +671,7 @@ export default function ProfilePage() {
             </details>
           </div>
         ) : profileInfo.styleProfile ? (
-          <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-6 mb-6">
+          <div className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-sm font-medium text-zinc-200">创作风格</h2>
               <span className="text-xs text-zinc-500">
@@ -455,38 +680,63 @@ export default function ProfilePage() {
             </div>
             {styleFacts}
           </div>
-        ) : (
-          <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-6 mb-6">
-            <p className="text-sm text-zinc-500 text-center">暂无风格数据</p>
-          </div>
-        )}
+        ) : null}
 
-        {/* ── 帖子列表 ── */}
+        {/* ── 发布作品 ── */}
         <div>
-          <h2 className="text-sm font-medium text-zinc-200 mb-4">发布的灵感</h2>
+          <div className="mb-4 flex items-baseline gap-2">
+            <h2 className="text-[15px] font-semibold tracking-tight text-zinc-100">
+              发布的作品
+            </h2>
+            {posts.length > 0 && (
+              <span className="text-xs text-zinc-500">{posts.length} 条</span>
+            )}
+          </div>
           {posts.length === 0 ? (
-            <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-8">
-              <p className="text-sm text-zinc-500 text-center">还没有发布过灵感</p>
-            </div>
+            <EmptyState
+              title={profileInfo.isOwn ? '你还没有发布过作品' : 'TA 还没有公开作品'}
+              description={
+                profileInfo.isOwn
+                  ? '把你正在琢磨的一句话发到广场。别人的回应，往往就是你下一篇的起点。'
+                  : '关注一下，等 TA 发布新想法。'
+              }
+              {...(profileInfo.isOwn
+                ? { actionLabel: '发布我的灵感', actionHref: '/publish' }
+                : {})}
+            />
           ) : (
             <div className="space-y-4">
-              {visiblePosts.map((post) => {
-                const summary = getContentSummary(post.content)
+              {posts.map((post) => {
+                const { title, summary } = extractTitleAndSummary(post.content)
+                const isArchive = post.post_type === 'archive' && !!post.archive
+                const heading = isArchive
+                  ? post.archive!.title || title
+                  : title || '灵感分享'
+                const commentsOpen = openComments.has(post.id)
+
                 return (
-                  <div
+                  <article
                     key={post.id}
-                    className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-5 hover:border-zinc-700 transition"
+                    onClick={() => router.push(`/post/${post.id}`)}
+                    className="cursor-pointer bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-5 hover:border-zinc-700 transition"
                   >
-                    {/* 帖子头部 */}
                     <div className="flex items-center gap-2 mb-3">
                       <span className="text-xs px-2.5 py-1 rounded-lg bg-zinc-800 text-zinc-400 shrink-0">
                         {post.category}
                       </span>
                       <span className="text-xs text-zinc-600">{timeAgo(post.created_at)}</span>
-                      {/* 删除按钮（仅自己的帖子显示） */}
+                      {isArchive && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-lg bg-indigo-500/15 text-indigo-300 border border-indigo-500/25">
+                          📖 创作档案
+                        </span>
+                      )}
                       {profileInfo.isOwn && (
                         <button
-                          onClick={() => handleDeletePost(post.id)}
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            void handleDeletePost(post.id)
+                          }}
                           disabled={deletingId === post.id}
                           className="ml-auto text-xs text-zinc-600 hover:text-red-400 disabled:opacity-40 transition"
                         >
@@ -495,12 +745,16 @@ export default function ProfilePage() {
                       )}
                     </div>
 
-                    {/* 内容摘要 */}
-                    <p className="text-sm text-zinc-300 leading-relaxed mb-3">
-                      {summary}
-                    </p>
+                    <h3 className="text-base font-semibold text-zinc-100 leading-snug mb-2">
+                      {heading}
+                    </h3>
 
-                    {/* 图片缩略图 */}
+                    {summary && (
+                      <p className="text-sm text-zinc-300 leading-relaxed mb-3 whitespace-pre-wrap">
+                        {summary}
+                      </p>
+                    )}
+
                     {post.image_url && (
                       <div className="mb-3">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -512,12 +766,11 @@ export default function ProfilePage() {
                       </div>
                     )}
 
-                    {/* 标签 */}
                     {post.tags && post.tags.length > 0 && (
                       <div className="flex flex-wrap gap-2 mb-3">
-                        {post.tags.map((tag, i) => (
+                        {post.tags.map((tag) => (
                           <span
-                            key={i}
+                            key={tag}
                             className="text-xs px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
                           >
                             #{tag}
@@ -526,45 +779,68 @@ export default function ProfilePage() {
                       </div>
                     )}
 
-                    {/* 互动统计 */}
-                    <div className="flex items-center gap-5 text-xs text-zinc-500">
-                      <span className="flex items-center gap-1.5">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill={post.current_user_liked ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={post.current_user_liked ? 'text-red-400' : ''}>
-                          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                        </svg>
-                        {post.like_count}
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-                        </svg>
-                        {post.comment_count}
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill={post.current_user_saved ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={post.current_user_saved ? 'text-amber-400' : ''}>
-                          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-                        </svg>
-                        {post.save_count}
-                      </span>
-                    </div>
-                  </div>
+                    <PostActionBar
+                      postId={post.id}
+                      liked={post.current_user_liked}
+                      saved={post.current_user_saved}
+                      likeCount={post.like_count}
+                      commentCount={post.comment_count}
+                      saveCount={post.save_count}
+                      busyLike={busy.has(`${post.id}:like`)}
+                      busySave={busy.has(`${post.id}:save`)}
+                      onToggleLike={() => void handleToggle(post.id, 'like')}
+                      onToggleSave={() => void handleToggle(post.id, 'save')}
+                      onToggleComments={() =>
+                        setOpenComments((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(post.id)) next.delete(post.id)
+                          else next.add(post.id)
+                          return next
+                        })
+                      }
+                      commentsOpen={commentsOpen}
+                    />
+
+                    {commentsOpen && (
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <CommentSection
+                          postId={post.id}
+                          token={accessToken}
+                          viewerName={viewerName}
+                          viewerId={viewerId ?? undefined}
+                          onCommentAdded={() =>
+                            setPosts((prev) =>
+                              prev.map((p) =>
+                                p.id === post.id
+                                  ? { ...p, comment_count: p.comment_count + 1 }
+                                  : p
+                              )
+                            )
+                          }
+                          onCommentDeleted={(count) =>
+                            setPosts((prev) =>
+                              prev.map((p) =>
+                                p.id === post.id ? { ...p, comment_count: count } : p
+                              )
+                            )
+                          }
+                        />
+                      </div>
+                    )}
+                  </article>
                 )
               })}
 
-              {/* ── 触底哨兵：客户端切片显示更多（P0-3）── */}
-              {hasMorePosts && (
+              {hasMore && (
                 <div
                   ref={sentinelRef}
                   className="flex items-center justify-center py-6"
                 >
-                  <span className="animate-pulse text-sm text-zinc-500">
-                    加载更多…
-                  </span>
+                  <span className="animate-pulse text-sm text-zinc-500">加载更多…</span>
                 </div>
               )}
 
-              {/* ── 已显示全部 ── */}
-              {!hasMorePosts && posts.length > 0 && (
+              {!hasMore && posts.length > 0 && (
                 <div className="flex items-center justify-center py-6">
                   <span className="text-xs text-zinc-600">没有更多了</span>
                 </div>
@@ -572,7 +848,6 @@ export default function ProfilePage() {
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </PageShell>
   )
 }
