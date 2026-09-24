@@ -17,6 +17,7 @@ const {
   getUser, getProfile, findRunningBuild, getLastBuild, fetchActiveClusters,
   getGlobalTrending, getPersonalizedTrending, ingestGlobalTrending,
   getFeedPage, getDailySuggestionCount, getDailyServedCount, topUpQueue,
+  evaluateRebuild, refillSuggestions, loadFreshSuggestions,
 } = vi.hoisted(() => ({
   getUser: vi.fn().mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null }),
   getProfile: vi.fn().mockResolvedValue({ profile: null }),
@@ -33,6 +34,13 @@ const {
   // 属于 refill 自己的职责，由 lib/creative/interest/refill.test.ts 覆盖，
   // 不在这里穿透断言（否则 refill 的整条真实依赖链要进端点单测）。
   topUpQueue: vi.fn().mockResolvedValue(undefined),
+  // P0：重建判定与首屏新卡前置。判定逻辑由 rebuildTrigger.test.ts 覆盖，
+  // 本端点测试只固定"不触发"这一基线，避免 stub 客户端不支持 .gt 打出噪音日志。
+  evaluateRebuild: vi.fn().mockResolvedValue({
+    needed: false, reason: 'none', workSignal: false, sinceIso: null, freshWorkTopics: [],
+  }),
+  refillSuggestions: vi.fn().mockResolvedValue({ added: 0, reason: 'locked' }),
+  loadFreshSuggestions: vi.fn().mockResolvedValue([]),
 }))
 
 vi.mock('@/lib/supabaseServer', () => ({
@@ -41,7 +49,9 @@ vi.mock('@/lib/supabaseServer', () => ({
 vi.mock('@/lib/creative/interest/interestRepo', () => ({
   getProfile, findRunningBuild, fetchActiveClusters, getLastBuild,
 }))
-vi.mock('@/lib/creative/interest/refill', () => ({ topUpQueue }))
+vi.mock('@/lib/creative/interest/refill', () => ({ topUpQueue, refillSuggestions }))
+vi.mock('@/lib/creative/interest/rebuildTrigger', () => ({ evaluateRebuild }))
+vi.mock('@/lib/creative/interest/builder', () => ({ runBuild: vi.fn().mockResolvedValue(null) }))
 vi.mock('@/lib/ci/globalTrending', () => ({
   getGlobalTrending, getPersonalizedTrending, ingestGlobalTrending,
 }))
@@ -49,6 +59,7 @@ vi.mock('@/lib/creative/interest/feedRepo', () => ({
   getFeedPage,
   getDailySuggestionCount,
   getDailyServedCount,
+  loadFreshSuggestions,
   FEED_DAILY_CAP: 100,
   FEED_TOPUP_THRESHOLD: 8,
 }))
@@ -82,6 +93,11 @@ beforeEach(() => {
   getDailySuggestionCount.mockResolvedValue(0)
   getDailyServedCount.mockResolvedValue(0)
   topUpQueue.mockResolvedValue(undefined)
+  evaluateRebuild.mockResolvedValue({
+    needed: false, reason: 'none', workSignal: false, sinceIso: null, freshWorkTopics: [],
+  })
+  refillSuggestions.mockResolvedValue({ added: 0, reason: 'locked' })
+  loadFreshSuggestions.mockResolvedValue([])
 })
 
 const flushAsync = () => new Promise((resolve) => setTimeout(resolve, 0))

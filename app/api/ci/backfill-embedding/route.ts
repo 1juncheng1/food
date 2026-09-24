@@ -8,7 +8,7 @@
 // ============================================================
 
 import { NextResponse } from 'next/server'
-import { createServerClient } from '@/lib/supabaseServer'
+import { authenticateRequest } from '@/lib/apiAuth'
 import { backfillCiEmbeddings } from '@/lib/ci/backfillEmbedding'
 import { rateLimit } from '@/lib/rateLimit'
 
@@ -17,16 +17,9 @@ export const maxDuration = 60
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: Request) {
-  const authHeader = req.headers.get('Authorization')
-  const token = authHeader?.replace('Bearer ', '')
-  if (!token) {
-    return NextResponse.json({ error: '未登录' }, { status: 401 })
-  }
-  const supabase = createServerClient(token)
-  const { data: userData, error: authErr } = await supabase.auth.getUser()
-  if (authErr || !userData.user) {
-    return NextResponse.json({ error: '未登录' }, { status: 401 })
-  }
+  const auth = await authenticateRequest(req)
+  if (!auth.ok) return auth.response
+  const { supabase } = auth
 
   // 全局限流：bge-m3 按条计费，且 ci_items 是共享表
   const rl = rateLimit('ci-embedding-backfill', 1, 10 * 60_000)

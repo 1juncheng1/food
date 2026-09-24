@@ -4,6 +4,7 @@ import {
   extractBearerToken,
 } from '@/lib/storage'
 import { trackEvent } from '@/lib/creative/interest/eventTracker'
+import { invalidatePostsBaseCache } from '@/lib/postsCache'
 import type { CreatorEventType, TargetType } from '@/lib/creative/interest/types'
 
 export const maxDuration = 30
@@ -63,9 +64,69 @@ function reportInteractionEvent(
   })
 }
 
+/**
+ * 读取帖子最新计数 + 当前用户的点赞/收藏态，供前端校正乐观更新。
+ *
+ * 两段查询各自容错：互动本身已经写成功了，读回状态失败不该把响应变成 500
+ * （旧实现在这里炸掉会让用户看到"点赞失败"）。查不到就省略该字段，
+ * 前端保留自己的乐观值。
+ */
+async function readPostState(
+  supabase: Parameters<typeof trackEvent>[0],
+  userId: string,
+  postId: string
+): Promise<Partial<{
+  likeCount: number
+  saveCount: number
+  commentCount: number
+  liked: boolean
+  saved: boolean
+}>> {
+  const out: Partial<{
+    likeCount: number
+    saveCount: number
+    commentCount: number
+    liked: boolean
+    saved: boolean
+  }> = {}
+
+  try {
+    const { data: post } = await supabase
+      .from('posts')
+      .select('like_count, save_count, comment_count')
+      .eq('id', postId)
+      .maybeSingle()
+    if (post) {
+      out.likeCount = post.like_count ?? 0
+      out.saveCount = post.save_count ?? 0
+      out.commentCount = post.comment_count ?? 0
+    }
+  } catch (e) {
+    console.error('读取帖子计数失败:', e)
+  }
+
+  try {
+    const { data: rows } = await supabase
+      .from('post_interactions')
+      .select('interaction_type')
+      .eq('user_id', userId)
+      .eq('post_id', postId)
+    const types = new Set(
+      (rows ?? []).map((r: { interaction_type?: string }) => r.interaction_type)
+    )
+    out.liked = types.has('like')
+    out.saved = types.has('save')
+  } catch (e) {
+    console.error('读取用户互动状态失败:', e)
+  }
+
+  return out
+}
+
 // ────────────────────────────────────────────────────────────
 // POST /api/posts/[id]/interactions：点赞/收藏/风格共鸣 toggle
 // 逻辑：已存在则删除（取消），不存在则插入（添加），同时更新 posts 计数
+// 返回最新计数 + 最新 liked/saved，供前端校正乐观更新
 // ────────────────────────────────────────────────────────────
 export async function POST(
   req: Request,
@@ -78,14 +139,11 @@ export async function POST(
       return NextResponse.json({ error: '请先登录' }, { status: 401 })
     }
     const auth = await authenticateWithToken(token)
-    if (!auth) {
-      return NextResponse.json({ error: '登录已过期' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
     const { supabase, userId } = auth
 
     // ── 解析路径参数 ──
     const { id: postId } = await params
-    postId // 触发使用，避免 lint 警告
     const pid = str(postId, 100)
     if (!pid) {
       return NextResponse.json({ error: '无效的帖子 ID' }, { status: 400 })
@@ -144,19 +202,14 @@ export async function POST(
       // WF2：撤回事件（对称负向，withdraw）
       reportInteractionEvent(supabase, userId, EVENT_OF[interactionType].removed, pid)
 
-      // 查询最新计数返回
-      const { data: post } = await supabase
-        .from('posts')
-        .select('like_count, save_count, comment_count')
-        .eq('id', pid)
-        .maybeSingle()
+      // 计数已变：公共列表缓存必须失效，否则刷新后拿到旧计数
+      invalidatePostsBaseCache()
 
+      const state = await readPostState(supabase, userId, pid)
       return NextResponse.json({
         action: 'removed',
         interactionType,
-        likeCount: post?.like_count ?? 0,
-        saveCount: post?.save_count ?? 0,
-        commentCount: post?.comment_count ?? 0,
+        ...state,
       })
     }
 
@@ -170,9 +223,20 @@ export async function POST(
       })
 
     if (insertErr) {
-      // 可能是并发插入导致 unique 约束冲突，视为已存在
-      console.error('插入互动记录失败:', insertErr)
-      return NextResponse.json({ error: '操作失败' }, { status: 500 })
+      // 并发双击 / 旧请求重放会撞 (user_id, post_id, type) 唯一约束（23505）。
+      // 此时事实是「已点赞」，正确响应是回最新状态，而不是 500 —— 否则前端
+      // 会把自己刚做的乐观更新回退掉，用户看到"点了又弹回去"。
+      if (insertErr.code !== '23505') {
+        console.error('插入互动记录失败:', insertErr)
+        return NextResponse.json({ error: '操作失败' }, { status: 500 })
+      }
+      invalidatePostsBaseCache()
+      const conflictState = await readPostState(supabase, userId, pid)
+      return NextResponse.json({
+        action: 'added',
+        interactionType,
+        ...conflictState,
+      })
     }
 
     // 增加计数
@@ -188,19 +252,14 @@ export async function POST(
     // WF2：贡献事件（post_like 0.6 / post_save 1.5 / post_style_resonate 1.2）
     reportInteractionEvent(supabase, userId, EVENT_OF[interactionType].added, pid)
 
-    // 查询最新计数返回
-    const { data: post } = await supabase
-      .from('posts')
-      .select('like_count, save_count, comment_count')
-      .eq('id', pid)
-      .maybeSingle()
+    // 计数已变：公共列表缓存必须失效，否则刷新后拿到旧计数
+    invalidatePostsBaseCache()
 
+    const state = await readPostState(supabase, userId, pid)
     return NextResponse.json({
       action: 'added',
       interactionType,
-      likeCount: post?.like_count ?? 0,
-      saveCount: post?.save_count ?? 0,
-      commentCount: post?.comment_count ?? 0,
+      ...state,
     })
   } catch (error) {
     console.error('interactions API 错误:', error)
@@ -222,9 +281,7 @@ export async function DELETE(
       return NextResponse.json({ error: '请先登录' }, { status: 401 })
     }
     const auth = await authenticateWithToken(token)
-    if (!auth) {
-      return NextResponse.json({ error: '登录已过期' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
     const { supabase, userId } = auth
 
     const { id: postId } = await params
@@ -265,6 +322,8 @@ export async function DELETE(
 
     // WF2：撤回事件（对称负向，withdraw）
     reportInteractionEvent(supabase, userId, EVENT_OF[interactionType].removed, pid)
+
+    invalidatePostsBaseCache()
 
     return NextResponse.json({ action: 'removed', interactionType })
   } catch (error) {

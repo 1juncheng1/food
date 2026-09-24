@@ -146,6 +146,16 @@ async function runSummarize(
     temperature: 0.5,
     max_tokens: 1200,
     jsonMode: true,
+    // 计费（Phase 4）：余额不足时这里会直接返回 insufficient_points，
+    // 一个 token 都不会发给上游。refId 用新 UUID——同一次请求里若复用
+    // 同一个号，第二次预扣会被判重复（不真扣），账目就对不上了。
+    billing: {
+      supabase,
+      userId,
+      ability: 'diagnosis',
+      refId: `style-summarize:${crypto.randomUUID()}`,
+      description: '风格卡总结',
+    },
     messages: [
       {
         role: 'system',
@@ -234,7 +244,10 @@ async function runSummarize(
 export async function POST(req: Request) {
   try {
     const auth = await authenticateStyleProfile(req)
-    if (!auth) {
+    if (!auth.ok) {
+      // 503 = 网络故障没能验完身份（见 lib/apiAuth.ts）：登录态大概率仍有效，
+      // 原样透传，绝不伪装成 unauthenticated，否则前端会据此踢掉已登录用户。
+      if (auth.response.status !== 401) return auth.response
       return NextResponse.json(
         { success: false, code: 'unauthenticated', error: '请先登录' },
         { status: 401 }

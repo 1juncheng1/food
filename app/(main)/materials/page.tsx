@@ -4,6 +4,12 @@ import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { getValidSession } from '@/lib/supabaseClient'
+import {
+  AiStatus,
+  ErrorState,
+  PageHeader,
+  PageShell,
+} from '@/components/vision'
 import type {
   ClaimKind,
   KnowledgeItem,
@@ -378,33 +384,31 @@ export default function MaterialsPage() {
   // ── 渲染 ──
   return (
     <div className="inner-page gen-stage" data-mode="inspiration">
-      <div className="inner-container">
-        {/* ── 顶部 ── */}
-        <div className="inner-header">
-          <div>
-            <Link href="/dashboard" className="inner-back">← 返回主页</Link>
-            <h1 className="inner-header-title">我的素材</h1>
-            <p className="inner-header-sub">
-              管理你导入的原始文案，AI 生成时会自动学习这里的风格
-            </p>
-          </div>
-          <Link
-            href="/add"
-            className="inner-signout"
-            style={{
-              background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-              border: 'none',
-              color: '#ffffff',
-            }}
-          >
-            ＋ 添加素材
-          </Link>
-        </div>
+      <PageShell>
+        {/* 定位：素材不是收藏夹，而是 AI 认识你的原始材料 */}
+        <PageHeader
+          eyebrow="我的创作资产"
+          title="我的素材"
+          description="你导入的每一段原始文案，都会被 AI 读懂并提炼成可复用的知识。它学习的不是格式，而是你怎么看事情。"
+          actions={
+            <Link
+              href="/add"
+              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500"
+            >
+              ＋ 添加素材
+            </Link>
+          }
+          ai={
+            <AiStatus
+              task="material"
+              active={loadingGroups || loadingMaterials}
+              variant="bar"
+            />
+          }
+        />
 
         {groupActionError && (
-          <div className="bg-red-500/10 text-red-400 text-sm rounded-lg p-3 mb-4">
-            {groupActionError}
-          </div>
+          <ErrorState className="mb-4" message={groupActionError} />
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-6">
@@ -731,7 +735,6 @@ export default function MaterialsPage() {
             )}
           </section>
         </div>
-      </div>
 
       {/* ── 编辑弹窗 ── */}
       {editing && (
@@ -865,6 +868,7 @@ export default function MaterialsPage() {
           onSaveKnowledge={saveKnowledge}
         />
       )}
+      </PageShell>
     </div>
   )
 }

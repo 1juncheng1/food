@@ -2,8 +2,9 @@
 // POST /api/creative/analyze-feedback —— Feedback Analyzer
 //
 // 接收用户自由反馈 + 当前作品正文，输出结构化优化蓝图。
-// 登录用户：反馈 + 分析结果落 generation_feedback 表（free_text + analysis_result）
-// 游客：纯返回分析结果，不落库
+// 强制登录：反馈 + 分析结果落 generation_feedback 表（free_text + analysis_result）。
+// 游客不可用——这是一次付费 LLM 调用，没有 userId 就既落不了库也计不了费；
+// 登录入口统一在首页，游客不该走到这里。
 //
 // 与 /api/feedback 职责分离：
 //   /api/feedback → like/dislike/edit/regenerate 四种枚举反馈
@@ -11,7 +12,7 @@
 // ============================================================
 
 import { NextResponse } from 'next/server'
-import { authenticateWithToken } from '@/lib/storage'
+import { authenticateWithToken, type AuthOk } from '@/lib/storage'
 import { analyzeFeedback } from '@/lib/creative/feedbackAnalyzer'
 import { normalizeFeedbackAnalysis, type FeedbackAnalysis } from '@/lib/creative/workAgent'
 
@@ -43,21 +44,31 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: '缺少当前作品正文' }, { status: 400 })
     }
 
-    // 可选鉴权：登录则落库，游客纯返回
+    // ── 强制鉴权 ──
+    // 传了 token 就必须验证出结果：网络故障（503）与凭证过期（401）如实返回，
+    // 不悄悄降级成"游客"——否则登录用户会在不知情时跑一条记不了账的调用。
     const authHeader = req.headers.get('authorization') ?? ''
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
-    const auth = token ? await authenticateWithToken(token) : null
+    const auth = await authenticateWithToken(token, '请先登录后再使用反馈分析')
+    if (!auth.ok) return auth.response
 
     const generationId = str(body.generationId, 200)
     const topic = str(body.topic, 500)
 
-    // ── 调 LLM 分析反馈 ──
-    const analysis: FeedbackAnalysis | null = await analyzeFeedback({
-      freeText,
-      currentContent,
-      topic: topic || undefined,
-      diagnosis: body.diagnosis,
-    })
+    // ── 调 LLM 分析反馈（计费上下文此时必定存在）──
+    const analysis: FeedbackAnalysis | null = await analyzeFeedback(
+      {
+        freeText,
+        currentContent,
+        topic: topic || undefined,
+        diagnosis: body.diagnosis,
+      },
+      {
+        supabase: auth.supabase,
+        userId: auth.userId,
+        refId: `analyze-feedback:${crypto.randomUUID()}`,
+      }
+    )
 
     if (!analysis) {
       // 失败降级：返回 fallback 分析（custom 方向 + 原文作为 instruction）
@@ -73,8 +84,8 @@ export async function POST(req: Request) {
       })
     }
 
-    // ── 登录用户：落 generation_feedback 表 ──
-    if (auth && generationId) {
+    // ── 落 generation_feedback 表 ──
+    if (generationId) {
       const { error: insertErr } = await auth.supabase
         .from('generation_feedback')
         .insert({
@@ -114,9 +125,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: '请先登录' }, { status: 401 })
     }
     const auth = await authenticateWithToken(token)
-    if (!auth) {
-      return NextResponse.json({ error: '身份验证失败' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
 
     const { data, error } = await auth.supabase
       .from('generation_feedback')

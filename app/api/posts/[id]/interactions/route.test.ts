@@ -65,7 +65,9 @@ describe('WF2：interactions route 事件埋点', () => {
   // 每用例动态 import route，并注入鉴权 mock
   async function callRoute(method: 'POST' | 'DELETE', interaction: string) {
     const { supabase } = makeAuthStub()
-    authMock.mockResolvedValue({ supabase, userId: USER } as never)
+    // 契约：authenticateWithToken 返回 AuthResult（ok + supabase/userId/email），
+    // 不再是裸对象——失败分支带可直接 return 的 response
+    authMock.mockResolvedValue({ ok: true, supabase, userId: USER, email: null } as never)
     const mod = await import('./route')
     const req = new Request(
       `http://localhost/api/posts/p-1/interactions${method === 'DELETE' ? `?type=${interaction}` : ''}`,
@@ -112,7 +114,7 @@ describe('WF2：interactions route 事件埋点', () => {
     n.maybeSingle = vi.fn().mockResolvedValue({ data: { id: 'row-1' }, error: null })
     const rpc = vi.fn().mockResolvedValue({ error: null })
     const supabase = { from: vi.fn(() => n), rpc } as unknown as never
-    authMock.mockResolvedValue({ supabase, userId: USER } as never)
+    authMock.mockResolvedValue({ ok: true, supabase, userId: USER, email: null } as never)
     const mod = await import('./route')
     const req = new Request('http://localhost/api/posts/p-1/interactions', {
       method: 'POST',

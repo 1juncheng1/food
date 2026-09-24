@@ -18,8 +18,10 @@
 // ============================================================
 
 import { NextResponse } from 'next/server'
-import { authFailureResponse } from '@/lib/apiAuth'
+import { aiFailureResponse, authFailureResponse } from '@/lib/apiAuth'
 import { createServerClient } from '@/lib/supabaseServer'
+import { hasEnoughFor } from '@/lib/aiCost'
+import { INSUFFICIENT_POINTS_MESSAGE } from '@/lib/balance'
 import { assembleWorkContext, formatContextForPrompt } from '@/lib/creative/workAgentContext'
 import { clarifyIntent } from '@/lib/creative/intentClarifier'
 import { proposeRevisions } from '@/lib/creative/revisionPlan'
@@ -86,6 +88,19 @@ export async function POST(req: Request) {
     if (!generationId) return NextResponse.json({ error: '缺少作品版本标识' }, { status: 400 })
     if (action === 'say' && !message) {
       return NextResponse.json({ error: '请输入你的想法' }, { status: 400 })
+    }
+
+    // ── 调用前余额预检（Phase 4）─────────────────────────────────
+    // 本端点是"多轮对话"，每一轮都可能调 LLM；而链路内部大量使用
+    // "失败即降级"（返回 null）的写法——余额不足会让这些能力凭空消失，
+    // 用户只会觉得"AI 变笨了"，永远不知道是积分不够。
+    // 所以在这里一次性把话说明白，比让每一轮静默降级要诚实。
+    const budget = await hasEnoughFor(supabase, user.id, 'chat')
+    if (!budget.ok) {
+      return NextResponse.json(
+        { error: INSUFFICIENT_POINTS_MESSAGE, code: 'insufficient_balance' },
+        { status: 402 }
+      )
     }
     if (action !== 'say' && selectedIndex === null) {
       return NextResponse.json({ error: '缺少选择项' }, { status: 400 })
@@ -231,7 +246,11 @@ export async function POST(req: Request) {
         intentHint: message.slice(0, 60),
       })
 
-      const clarification = await clarifyIntent({ freeText: message, context })
+      const clarification = await clarifyIntent(
+        { freeText: message, context },
+        // 计费上下文：refId 带上会话与阶段，流水里能对上是哪一轮花的
+        { supabase, userId: user.id, refId: `${sessionId}:clarify` }
+      )
 
       if (!clarification) {
         // 降级：不假装"理解了"，直接告诉用户我们没能拆出候选，并把原话当作 custom 指令
@@ -317,7 +336,10 @@ export async function POST(req: Request) {
         intentHint: intent.label,
       })
 
-      const proposal = await proposeRevisions({ freeText, intent, context })
+      const proposal = await proposeRevisions(
+        { freeText, intent, context },
+        { supabase, userId: user.id, refId: `${sessionId}:propose` }
+      )
 
       if (!proposal) {
         const notice = await insertMessage({
@@ -441,14 +463,17 @@ export async function POST(req: Request) {
       preserveItems: plan.preserveItems,
     }
 
-    const result = await generateEditPatches({
-      content: baseContent,
-      freeText,
-      analysis,
-      topic: typeof row.topic === 'string' ? row.topic : undefined,
-      contextText: formatContextForPrompt(context, { includeContent: false }),
-      plan,
-    })
+    const result = await generateEditPatches(
+      {
+        content: baseContent,
+        freeText,
+        analysis,
+        topic: typeof row.topic === 'string' ? row.topic : undefined,
+        contextText: formatContextForPrompt(context, { includeContent: false }),
+        plan,
+      },
+      { supabase, userId: user.id, refId: `${sessionId}:patch` }
+    )
 
     if (!result) {
       const assistant = await insertMessage({
@@ -490,6 +515,6 @@ export async function POST(req: Request) {
     })
   } catch (e) {
     console.error('work-agent chat 异常:', e)
-    return NextResponse.json({ error: '对话处理失败，请重试' }, { status: 500 })
+    return await aiFailureResponse('对话处理失败，请重试')
   }
 }

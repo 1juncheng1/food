@@ -196,15 +196,21 @@ export function PlanPanel({
   onBack,
   onBackToEdit,
 }: PlanPanelProps) {
+  // AI 推荐方向：所有"随方向派生"的编辑态都以它作为初始值。
+  // 此前 viewpoint/langStyle 初始为空串/null，只有用户手动切换方向才会赋值，
+  // 导致首次进入方案态时"创作视角"和"语言风格"显示为空。
+  const initialDirection: PlanDirection =
+    plan.directions.find((d) => d.key === plan.recommended_direction_key) ?? plan.directions[0]
+
   const [dirKey, setDirKey] = useState(plan.recommended_direction_key)
   const [contentType, setContentType] = useState(plan.content_type)
   const [contentTypeDraft, setContentTypeDraft] = useState(plan.content_type)
   const [editingType, setEditingType] = useState(false)
-  const [viewpoint, setViewpoint] = useState('')
-  const [viewpointDraft, setViewpointDraft] = useState('')
+  const [viewpoint, setViewpoint] = useState(initialDirection.viewpoint)
+  const [viewpointDraft, setViewpointDraft] = useState(initialDirection.viewpoint)
   const [editingViewpoint, setEditingViewpoint] = useState(false)
-  const [langStyle, setLangStyle] = useState<PlanLanguageStyle | null>(null)
-  const [langDraft, setLangDraft] = useState<PlanLanguageStyle | null>(null)
+  const [langStyle, setLangStyle] = useState<PlanLanguageStyle | null>(initialDirection.language_style)
+  const [langDraft, setLangDraft] = useState<PlanLanguageStyle | null>(initialDirection.language_style)
   const [editingStyle, setEditingStyle] = useState(false)
   const [wordCount, setWordCount] = useState(plan.recommended_word_count)
   const [detailsOpen, setDetailsOpen] = useState(false)

@@ -15,8 +15,10 @@ import { getProfile } from '@/lib/creative/interest/interestRepo'
 import { getFallbackInspirations } from '@/lib/creative/interest/fallbackTemplates'
 import { selectSlots } from '@/lib/creative/interest/ranking'
 import { runBuild } from '@/lib/creative/interest/builder'
-import { BUILD_MAX_AGE_HOURS, BUILD_DIRTY_EVENT_COUNT, FIRST_BUILD_MIN_EVENTS } from '@/lib/creative/interest/config'
-import { getLastBuild, findRunningBuild } from '@/lib/creative/interest/interestRepo'
+import { BUILD_MAX_AGE_HOURS } from '@/lib/creative/interest/config'
+import { findRunningBuild } from '@/lib/creative/interest/interestRepo'
+import { evaluateRebuild } from '@/lib/creative/interest/rebuildTrigger'
+import { refillSuggestions } from '@/lib/creative/interest/refill'
 import { resolveDegradeReason, type DegradeReason } from '@/lib/creative/interest/degrade'
 import { buildReasonText } from '@/lib/creative/interest/reasonAi'
 import { getGlobalTrending, ingestGlobalTrending } from '@/lib/ci/globalTrending'
@@ -119,10 +121,10 @@ export async function GET(req: Request) {
     const authHeader = req.headers.get('authorization') ?? ''
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
     if (!token) {
-      // 游客路径：只读当日已摄取的全局热点（reader 在读不到时回退模板）。
-      // 注意：游客不触发 ingestGlobalTrending —— 摄取走 Tavily 付费搜索，
-      // 匿名请求不应成为成本入口（登录用户的 cold_start 路径仍保留懒触发）。
-      return await fallbackResponse('guest')
+      // 游客模式已下线：功能页全部需登录，登录入口统一在首页。
+      // 这里必须硬 401，而不是"返回几张模板卡将就一下"——给未登录用户一个 200，
+      // 等于告诉他"这功能你能用"，而这条链路后面就是付费的热点摄取与多次 LLM build。
+      return NextResponse.json({ error: '请先登录' }, { status: 401 })
     }
 
     const supabase = createServerClient(token)
@@ -142,48 +144,35 @@ export async function GET(req: Request) {
     const { profile } = await getProfile(supabase, userId)
     const hasProfile = profile && Object.keys(profile).length > 0 && (profile as Record<string, unknown>).build_id
 
-    // ── 自动触发 build（fire-and-forget：本次仍返回当前可用结果，build 下次进页生效） ──
-    let stale = false
-    if (hasProfile) {
-      const updatedAt = (profile as Record<string, unknown>).updated_at as string | undefined
-      if (updatedAt) {
-        const ageHrs = (Date.now() - Date.parse(updatedAt)) / 3_600_000
-        stale = ageHrs > BUILD_MAX_AGE_HOURS
-      }
-    }
-    if (stale) {
-      // 画像过期（>1h，BUILD_MAX_AGE_HOURS）：增量重建
-      void runBuild(supabase, userId, 'incremental').catch(() => {})
-    } else if (!hasProfile) {
-      // 新用户首建：无画像但行为事件已达阈值 → 首次 full build。
-      // 此前唯一的自动触发点被 hasProfile 挡死，新用户永远停在"平台推荐选题"。
-      const { count } = await supabase
-        .from('creator_events')
-        .select('id', { count: 'exact', head: true })
-        .eq('user_id', userId)
-      if ((count ?? 0) >= FIRST_BUILD_MIN_EVENTS) {
-        void runBuild(supabase, userId, 'full').catch(() => {})
-      }
-    } else {
-      // 画像未过期：自上次 build 末事件以来的脏事件达到阈值 → 提前增量重建（比 6h stale 更及时）
-      const lastBuild = await getLastBuild(supabase, userId)
-      const toEventId = (lastBuild?.event_range as { to_event_id?: string } | null)?.to_event_id
-      if (toEventId) {
-        const { data: lastEvent } = await supabase
-          .from('creator_events')
-          .select('occurred_at')
-          .eq('id', toEventId)
-          .maybeSingle()
-        if (lastEvent?.occurred_at) {
-          const { count } = await supabase
-            .from('creator_events')
-            .select('id', { count: 'exact', head: true })
-            .eq('user_id', userId)
-            .gt('occurred_at', lastEvent.occurred_at)
-          if ((count ?? 0) >= BUILD_DIRTY_EVENT_COUNT) {
-            void runBuild(supabase, userId, 'incremental').catch(() => {})
-          }
-        }
+    // ── 自动触发重建（fire-and-forget：本次仍返回当前可用结果，重建下次进页生效）──
+    //
+    // 判定逻辑已收敛到 rebuildTrigger（与 Feed 端点同源），此处只负责选择动作。
+    // 关键增量：作品级行为（新增/删除/定稿/采纳）走低阈值通道——1 篇作品只产生
+    // 1~3 条事件，旧的"脏事件 ≥5"永远够不着，用户创作完回来看到的还是旧卡。
+    const rawUpdatedAt = (profile as Record<string, unknown> | null)?.updated_at
+    const profileUpdatedAt: string | null = typeof rawUpdatedAt === 'string' ? rawUpdatedAt : null
+    const stale = profileUpdatedAt
+      ? (Date.now() - Date.parse(profileUpdatedAt)) / 3_600_000 > BUILD_MAX_AGE_HOURS
+      : false
+
+    // hasProfile 由 && 链推出，类型是 truthy 联合而非 boolean，此处显式收敛
+    const rebuild = await evaluateRebuild(supabase, userId, {
+      hasProfile: !!hasProfile,
+      profileUpdatedAt,
+    })
+    if (!building && rebuild.needed) {
+      if (rebuild.workSignal) {
+        // 作品级信号：走轻量补货，不清空队列。dashboard 一次只展示 3 张卡，
+        // 若这里 supersede 清空队列，用户会看到"卡片突然全换/变少"的跳变；
+        // 追加新卡则自然得多，且与 Feed 端点同口径。
+        void refillSuggestions(supabase, userId, {
+          freshWorkTopics: rebuild.freshWorkTopics,
+        }).catch(() => {})
+      } else {
+        // 首建 / 画像过期 / 一般行为累积：完整重建（本端点队列小，supersede 代价可控）
+        void runBuild(supabase, userId, rebuild.reason === 'first_build' ? 'full' : 'incremental').catch(
+          () => {}
+        )
       }
     }
 

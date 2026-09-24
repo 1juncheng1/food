@@ -13,6 +13,7 @@
 
 import { NextResponse } from 'next/server'
 import { CATEGORIES } from '@/lib/constants'
+import { aiFailureResponse } from '@/lib/apiAuth'
 import { rateLimit } from '@/lib/rateLimit'
 import { authenticateWithToken, generateEmbedding } from '@/lib/storage'
 import {
@@ -33,6 +34,7 @@ import { formatStyleDimensions } from '@/lib/creative/styleLearning'
 import { formatCreatorModel } from '@/lib/creative/creatorModel'
 import { resolveMode, buildCreatorIdentity } from '@/lib/creative/personalization'
 import { adoptRecommendation } from '@/lib/creative/interest/adopt'
+import { buildInterestBlock } from '@/lib/creative/interest/promptBlock'
 import { fetchCreatorStyleProfile } from '@/lib/creative/styleProfileRepo'
 import {
   buildKnowledgeInjection,
@@ -130,13 +132,8 @@ export async function POST(req: Request) {
     // ── 强制鉴权：游客不可使用方案生成 ──
     const authHeader = req.headers.get('authorization') ?? ''
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
-    const auth = token ? await authenticateWithToken(token) : null
-    if (!auth) {
-      return NextResponse.json(
-        { error: '请先登录后再生成方案' },
-        { status: 401 }
-      )
-    }
+    const auth = await authenticateWithToken(token, '请先登录后再生成方案')
+    if (!auth.ok) return auth.response
 
     // ── 限流：10 次/分钟/用户（三方向方案生成是重成本 LLM 路由）──
     const rl = rateLimit(`creative-plan:${auth.userId}`, RATE_LIMIT, RATE_WINDOW_MS)
@@ -202,6 +199,10 @@ export async function POST(req: Request) {
     // 灵感模式/游客不会进入下方 creator 分支，因此恒为空 —— 与个人化数据同口径。
     let knowledgeBlock = ''
     let knowledgeUnits: CreatorKnowledgeUnit[] = []
+    // Creator Interest Profile：长期关注领域。与知识单元完全同口径 ——
+    // 只有「我的模式」才装配，灵感模式恒为空（兴趣画像比知识更私人，不能破例）。
+    // 未建模用户 interest_profile 为 {} ，buildInterestBlock 返回空串，零影响。
+    let interestBlock = ''
 
     if (auth && mode === 'creator') {
       const { supabase, userId } = auth
@@ -262,6 +263,15 @@ export async function POST(req: Request) {
       const knowledge = await buildKnowledgeInjection(supabase, userId, topic)
       knowledgeBlock = knowledge.block
       knowledgeUnits = knowledge.units
+
+      // 长期关注领域：profile 已由上方 fetchCreatorStyleProfile 一并读出（可选列，
+      // 未迁移环境自动降级缺失，此处取到 undefined 时同样返回空串）。
+      // 纯函数、不读库、不调 LLM —— 无额外成本与失败面。
+      interestBlock = buildInterestBlock(profile?.interest_profile, {
+        // 方案阶段上下文紧张，且只需要「足以影响方向选取」的信号，收紧预算
+        maxTopics: 5,
+        maxLength: 420,
+      }).text
     }
 
     // ── AI 灵感分析：从 body 取出并转文本注入 plan（让 plan 延续灵感分析结论）──
@@ -287,14 +297,14 @@ export async function POST(req: Request) {
       inspirationContextText,
       // Creator Knowledge System Phase 3：创作者已确认的知识命题
       knowledgeText: knowledgeBlock || undefined,
+      // Creator Interest Profile：创作者长期关注领域（我的模式专属，软参考）
+      interestText: interestBlock || undefined,
     }
 
     const plan = await generatePlan(planInput)
     if (!plan) {
-      return NextResponse.json(
-        { error: '创作方案生成失败，请稍后重试或改用手动设置' },
-        { status: 502 }
-      )
+      // 失败原因优先取 LLM 真实错误码：余额耗尽要说"额度不足"，而不是让用户空重试
+      return await aiFailureResponse('创作方案生成失败，请稍后重试或改用手动设置')
     }
 
     // WF1 推荐采纳回流：带 rec_id 且方案生成成功 = 采纳。

@@ -12,6 +12,9 @@
 // ============================================================
 
 import { NextResponse } from 'next/server'
+import { aiFailureResponse } from '@/lib/apiAuth'
+import { hasEnoughFor } from '@/lib/aiCost'
+import { INSUFFICIENT_POINTS_MESSAGE } from '@/lib/points'
 import { rateLimit } from '@/lib/rateLimit'
 import { authenticateWithToken } from '@/lib/storage'
 import { getMarketProvider } from '@/lib/creative/marketAnalyzer'
@@ -38,13 +41,8 @@ export async function POST(req: Request) {
     // ── 强制鉴权：游客不可使用市场分析 ──
     const authHeader = req.headers.get('authorization') ?? ''
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
-    const auth = token ? await authenticateWithToken(token) : null
-    if (!auth) {
-      return NextResponse.json(
-        { error: '请先登录后再进行市场分析' },
-        { status: 401 }
-      )
-    }
+    const auth = await authenticateWithToken(token, '请先登录后再进行市场分析')
+    if (!auth.ok) return auth.response
 
     // ── 限流：登录按 userId ──
     const rateKey = `market:${auth.userId}`
@@ -73,19 +71,36 @@ export async function POST(req: Request) {
     const competitionReason = str(body.competition_reason, 200) || undefined
     const contentDomain = str(body.content_domain, 40) || undefined
 
-    // ── 调市场分析 Provider ──
-    const provider = getMarketProvider()
-    const report = await provider.analyze({
-      raw_input: rawInput,
-      competition_level: competitionLevel,
-      competition_reason: competitionReason,
-      content_domain: contentDomain,
-    })
-    if (!report) {
+    // ── 余额预检 ──
+    // 只为让余额不足时返回 402「请充值」，而不是含糊的 502「分析失败」。
+    // 它不替代扣费——真正的并发安全由 LLM 层的预扣那一刀保证。
+    const budget = await hasEnoughFor(auth.supabase, auth.userId, 'diagnosis')
+    if (!budget.ok) {
       return NextResponse.json(
-        { error: '市场分析失败，请稍后重试' },
-        { status: 502 }
+        { error: INSUFFICIENT_POINTS_MESSAGE, code: 'insufficient_balance' },
+        { status: 402 }
       )
+    }
+
+    // ── 调市场分析 Provider（计费：预扣 → 按真实用量结算 / 失败全额退）──
+    // 估算模式与真实数据模式走同一条计费链路；
+    // web_search 数据层不可用回退估算时，同样计费（成本一分没少）。
+    const provider = getMarketProvider()
+    const report = await provider.analyze(
+      {
+        raw_input: rawInput,
+        competition_level: competitionLevel,
+        competition_reason: competitionReason,
+        content_domain: contentDomain,
+      },
+      {
+        supabase: auth.supabase,
+        userId: auth.userId,
+        refId: crypto.randomUUID(),
+      }
+    )
+    if (!report) {
+      return await aiFailureResponse('市场分析失败，请稍后重试')
     }
 
     return NextResponse.json({ report })

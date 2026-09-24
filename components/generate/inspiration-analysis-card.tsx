@@ -8,9 +8,13 @@
 //   2. 优化建议（最大问题 / 缺什么 / 如何提升）
 //   3. 召回素材预览（仅登录用户）
 //   4. 市场机会分析（二级深挖动作，显式触发；含"AI 估算"免责标注）
-//   5. 两个 CTA：
-//      - "基于这个灵感开始创作"（携带 context 走现有 plan）
+//   5. 三个 CTA：
+//      - "基于这个灵感开始创作"（用灵感阶段最优解 optimized_topic 当创作主题）
+//      - "基于市场缺口开始创作"（用市场阶段最优解 recommended_topic 当创作主题）
 //      - "换个灵感再分析"
+//
+// 【阶段最优解】原则：两个创作入口各自携带本阶段的最优解进入 plan，
+// 而不是把用户最初输入的原始灵感当作创作主题。
 // ============================================================
 
 import { useState } from 'react'
@@ -36,7 +40,10 @@ interface Props {
   marketReport: MarketReport | null
   marketLoading: boolean
   onMarketAnalysis: () => void
+  /** 灵感阶段入口：用 value_assessment + optimization 体系下的最优解开始创作 */
   onStartCreation: () => void
+  /** 市场阶段入口：用市场缺口体系下的最优解开始创作 */
+  onStartCreationFromMarket: () => void
   onReset: () => void
   loading?: boolean
 }
@@ -111,13 +118,42 @@ const STRATEGY_META: Record<MarketStrategyAction, { label: string; className: st
   },
 }
 
+/**
+ * 「本阶段最优解」区块：把该阶段 AI 结论里最值得创作的那一句显式展示出来，
+ * 让用户知道自己点开始创作后，AI 到底会写什么。
+ */
+function OptimalTopicBlock({
+  eyebrow,
+  topic,
+  tone,
+}: {
+  eyebrow: string
+  topic: string
+  tone: 'indigo' | 'sky'
+}) {
+  const cls =
+    tone === 'sky'
+      ? 'border-sky-500/30 bg-sky-500/5'
+      : 'border-indigo-500/30 bg-indigo-500/5'
+  const eyebrowCls = tone === 'sky' ? 'text-sky-300' : 'text-indigo-300'
+  return (
+    <div className={`mt-4 rounded-xl border p-4 ${cls}`}>
+      <p className={`text-[11px] ${eyebrowCls}`}>{eyebrow}</p>
+      <p className="mt-1.5 text-sm text-zinc-100 leading-relaxed">{topic}</p>
+      <p className="mt-2 text-[11px] text-zinc-500">
+        开始创作后，这就是本次的创作主题（原始灵感仅作为分析依据保留）
+      </p>
+    </div>
+  )
+}
+
 /** 市场报告区块（含免责标注 + 折叠） */
 function MarketReportBlock({
   report,
-  onStartCreation,
+  onStartCreationFromMarket,
 }: {
   report: MarketReport
-  onStartCreation: () => void
+  onStartCreationFromMarket: () => void
 }) {
   const [open, setOpen] = useState(true)
   const sm = STRATEGY_META[report.strategy.action]
@@ -234,12 +270,25 @@ function MarketReportBlock({
             <p className="text-xs opacity-80 mt-0.5">{report.strategy.reason}</p>
           </div>
 
-          <p className="text-[11px] text-zinc-600 mt-3">
-            开始创作后，AI 将优先瞄准"内容缺口"设计方向，并避开同质化重复点
-          </p>
+          {report.recommended_topic ? (
+            <>
+              <OptimalTopicBlock
+                eyebrow="市场阶段最优解：最能打的内容缺口"
+                topic={report.recommended_topic}
+                tone="sky"
+              />
+              <p className="text-[11px] text-zinc-600 mt-2">
+                开始创作后，AI 将以这个题为创作主题，瞄准“内容缺口”设计方向、避开同质化重复点
+              </p>
+            </>
+          ) : (
+            <p className="text-[11px] text-zinc-600 mt-3">
+              开始创作后，AI 将优先瞄准“内容缺口”设计方向，并避开同质化重复点
+            </p>
+          )}
           <button
             type="button"
-            onClick={onStartCreation}
+            onClick={onStartCreationFromMarket}
             className="mt-2 w-full py-2.5 rounded-xl text-xs text-sky-200 border border-sky-500/30 hover:border-sky-500/50 hover:bg-sky-500/10 transition"
           >
             基于市场缺口开始创作 →
@@ -257,6 +306,7 @@ export function InspirationAnalysisCard({
   marketLoading,
   onMarketAnalysis,
   onStartCreation,
+  onStartCreationFromMarket,
   onReset,
   loading,
 }: Props) {
@@ -394,7 +444,10 @@ export function InspirationAnalysisCard({
 
       {/* ── 市场机会分析：二级深挖动作（显式触发，不默认执行）── */}
       {marketReport ? (
-        <MarketReportBlock report={marketReport} onStartCreation={onStartCreation} />
+        <MarketReportBlock
+          report={marketReport}
+          onStartCreationFromMarket={onStartCreationFromMarket}
+        />
       ) : marketLoading ? (
         <div className="mt-4 rounded-xl border border-sky-500/20 bg-sky-500/5 p-4">
           <div className="flex items-center gap-3">
@@ -412,6 +465,15 @@ export function InspirationAnalysisCard({
         </button>
       )}
 
+      {/* ── 灵感阶段最优解：点击下面的按钮即以此为创作主题 ── */}
+      {o.optimized_topic && (
+        <OptimalTopicBlock
+          eyebrow="灵感阶段最优解：按优化建议改写后的创作主题"
+          topic={o.optimized_topic}
+          tone="indigo"
+        />
+      )}
+
       {/* ── CTA ── */}
       <div className="mt-6 flex flex-col gap-2">
         <button
@@ -420,7 +482,11 @@ export function InspirationAnalysisCard({
           disabled={loading}
           className="gen-submit btn-shine w-full py-4 rounded-2xl font-semibold text-base text-white transition disabled:opacity-60"
         >
-          {loading ? '正在进入创作…' : '基于这个灵感开始创作 →'}
+          {loading
+            ? '正在进入创作…'
+            : o.optimized_topic
+              ? '用这个最优解开始创作 →'
+              : '基于这个灵感开始创作 →'}
         </button>
         <button
           type="button"
@@ -433,7 +499,7 @@ export function InspirationAnalysisCard({
       </div>
 
       <p className="text-[11px] text-zinc-600 mt-3 text-center">
-        点击后将携带本次分析进入创作方案阶段；AI 会延续分析结论设计 3 个差异化方向
+        点击后将携带本次分析进入创作方案阶段；创作主题为该阶段最优解，AI 会围绕它设计 3 个差异化方向
       </p>
     </div>
   )

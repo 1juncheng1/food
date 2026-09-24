@@ -41,7 +41,7 @@ export async function POST(req: Request) {
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
     if (!token) return NextResponse.json({ error: '请先登录' }, { status: 401 })
     const auth = await authenticateWithToken(token)
-    if (!auth) return NextResponse.json({ error: '身份验证失败' }, { status: 401 })
+    if (!auth.ok) return auth.response
 
     const body = (await req.json().catch(() => ({}))) as PostBody
     const projectId = str(body.projectId, 100) || null
@@ -117,7 +117,7 @@ export async function GET(req: Request) {
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
     if (!token) return NextResponse.json({ error: '请先登录' }, { status: 401 })
     const auth = await authenticateWithToken(token)
-    if (!auth) return NextResponse.json({ error: '身份验证失败' }, { status: 401 })
+    if (!auth.ok) return auth.response
 
     const { data: sessionRow, error: sErr } = await auth.supabase
       .from('work_agent_sessions')
@@ -162,7 +162,7 @@ export async function DELETE(req: Request) {
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
     if (!token) return NextResponse.json({ error: '请先登录' }, { status: 401 })
     const auth = await authenticateWithToken(token)
-    if (!auth) return NextResponse.json({ error: '身份验证失败' }, { status: 401 })
+    if (!auth.ok) return auth.response
 
     // 软删除：消息要留下来做偏好分析，用户"放弃"这个行为本身也是有价值的负例信号
     const { error } = await auth.supabase

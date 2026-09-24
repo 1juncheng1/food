@@ -4,9 +4,10 @@
 // 输入：topic（原始问题）+ problem（第一阶段的问题理解 JSON，服务端重新校验）
 // 输出：结构化解决方案（title/summary/sections/next_steps/success_check）+ 全文
 //
-// 可选鉴权：登录用户生成成功后 upsert generation_history（sample_text=全文，
+// 强制登录：生成成功后 upsert generation_history（sample_text=全文，
 // blueprint={problem_understanding}，category=问题类型）——复用现有历史/
-// 双写体系，零表结构变更；游客仅返回结果，由前端 localStorage 兜底。
+// 双写体系，零表结构变更。游客不可用：这是付费 LLM 调用，
+// 没有 userId 就既落不了库也计不了费。
 //
 // LLM 失败返回 502，前端展示重试入口，不阻塞其他功能。
 // ============================================================
@@ -14,6 +15,9 @@
 import { NextResponse } from 'next/server'
 import { rateLimit } from '@/lib/rateLimit'
 import { authenticateWithToken } from '@/lib/storage'
+import { aiFailureResponse } from '@/lib/apiAuth'
+import { hasEnoughFor } from '@/lib/aiCost'
+import { INSUFFICIENT_POINTS_MESSAGE } from '@/lib/points'
 import {
   generateSolution,
   strengthenSolution,
@@ -44,17 +48,16 @@ function str(v: unknown, maxLen: number): string {
 
 export async function POST(req: Request) {
   try {
-    // ── 可选鉴权：登录用户结果落库，游客纯返回 ──
+    // ── 强制鉴权 ──
+    // 传了 token 就必须验证出结果：网络故障（503）与凭证过期（401）如实返回，
+    // 不悄悄降级成"游客"——否则登录用户会在不知情时跑一条记不了账的调用。
     const authHeader = req.headers.get('authorization') ?? ''
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
-    const auth = token ? await authenticateWithToken(token) : null
+    const auth = await authenticateWithToken(token, '请先登录后再生成解决方案')
+    if (!auth.ok) return auth.response
 
-    // ── 限流：登录用户按用户 ID；游客按转发 IP ──
-    const clientIp =
-      req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-      req.headers.get('x-real-ip')?.trim() ||
-      'unknown'
-    const rateKey = auth ? `solve:${auth.userId}` : `solve:guest:${clientIp}`
+    // ── 限流：按用户 ID ──
+    const rateKey = `solve:${auth.userId}`
     const limit = rateLimit(rateKey, RATE_LIMIT, RATE_WINDOW_MS)
     if (!limit.ok) {
       return NextResponse.json(
@@ -88,9 +91,28 @@ export async function POST(req: Request) {
       ? rawGenerationId
       : crypto.randomUUID()
 
+    // ── 余额预检 ──
+    // 方案生成是重量级输出（1500-3000 字），按 generation 档预扣。
+    // 只为让余额不足时返回 402「请充值」，而不是含糊的 502「生成失败」。
+    // 它不替代扣费——真正的并发安全由 LLM 层的预扣那一刀保证。
+    const budget = await hasEnoughFor(auth.supabase, auth.userId, 'generation')
+    if (!budget.ok) {
+      return NextResponse.json(
+        { error: INSUFFICIENT_POINTS_MESSAGE, code: 'insufficient_balance' },
+        { status: 402 }
+      )
+    }
+
     // ── 生成或补强：携带 previousSolution 时走补强迭代 ──
+    // 计费：预扣 → 按真实用量结算 / 失败全额退。
+    // refId 每次请求都换：补强是又一次完整生成，复用会被判重复预扣（reserved=0）。
     let solution
     let review: StrengthenReview | null = null
+    const billing = {
+      supabase: auth.supabase,
+      userId: auth.userId,
+      refId: crypto.randomUUID(),
+    }
     if (body.previousSolution !== undefined) {
       const previous = normalizeSolution(body.previousSolution)
       if (!previous) {
@@ -99,17 +121,14 @@ export async function POST(req: Request) {
           { status: 400 }
         )
       }
-      const outcome = await strengthenSolution({ topic, problem, previous })
+      const outcome = await strengthenSolution({ topic, problem, previous }, billing)
       if (!outcome) {
-        return NextResponse.json(
-          { error: '方案补强失败，请稍后重试' },
-          { status: 502 }
-        )
+        return await aiFailureResponse('方案补强失败，请稍后重试')
       }
       solution = outcome.result
       review = outcome.review
     } else {
-      solution = await generateSolution({ topic, problem })
+      solution = await generateSolution({ topic, problem }, billing)
       if (!solution) {
         return NextResponse.json(
           { error: '解决方案生成失败，请稍后重试' },

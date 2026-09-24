@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
-import { authFailureResponse } from '@/lib/apiAuth'
+import { aiFailureResponse, authFailureResponse } from '@/lib/apiAuth'
+import { hasEnoughFor } from '@/lib/aiCost'
+import { INSUFFICIENT_POINTS_MESSAGE } from '@/lib/points'
 import { createServerClient } from '@/lib/supabaseServer'
 import { IDENTITY_TEMPLATES } from '@/lib/identityTemplates'
 import { generateBlueprint, type BlueprintInput } from '@/lib/creative/blueprint'
@@ -11,6 +13,7 @@ import {
   buildCreatorIdentity,
 } from '@/lib/creative/personalization'
 import { fetchCreatorStyleProfile } from '@/lib/creative/styleProfileRepo'
+import { buildInterestBlock } from '@/lib/creative/interest/promptBlock'
 import {
   buildKnowledgeInjection,
   summarizeInjectedUnits,
@@ -114,10 +117,14 @@ export async function POST(req: Request) {
     let styleProfileText = creatorIdentity
       ? `${creatorIdentity.forWriter}\n\n本次任务是为这位创作者构思创作蓝图：选题切入、Hook、核心冲突与情绪曲线都要像 ta 本人的作品会自然生长出来的样子，而不是平台通用模板。`
       : ''
+    // Creator Interest Profile 原始 jsonb。由下方风格卡查询顺带读出（不额外查库），
+    // 仅在我的模式注入；未建模用户为 {}，转成空串后整块剔除。
+    let interestProfileRaw: unknown = null
     if (plan.useStyleProfile) {
       const profile = await fetchCreatorStyleProfile(supabase, user.id)
 
       if (profile) {
+        interestProfileRaw = profile.interest_profile
       const p = profile as {
         tone_tags?: string[]
         pace_preference?: string
@@ -161,6 +168,19 @@ export async function POST(req: Request) {
       if (knowledge.block) {
         styleProfileText += `\n\n${knowledge.block}\n请在蓝图的主题定位与核心冲突上把上述命题作为可信的论述依据；不得提出与它们相反的主张。`
       }
+
+      // ── Creator Interest Profile：长期关注领域 ──
+      // 与知识注入同口径（同一个 creator 分支），理由也同源：
+      // 蓝图决定「写什么、从哪个角度写」，这一步不看人，产出的就是通用范文。
+      // 措辞刻意比知识软：兴趣是行为统计的观察，不是用户确认过的结论，
+      // 所以只要求「优先落在交叉处」，并明确允许主题无关时忽略。
+      const interestBlock = buildInterestBlock(interestProfileRaw, {
+        maxTopics: 5,
+        maxLength: 420,
+      }).text
+      if (interestBlock) {
+        styleProfileText += `\n\n${interestBlock}\n请在蓝图的选题切入与 Hook 设计上优先落在该创作者长期关注领域与本次主题的交叉处；这是参考倾向而非硬性命题，若本次主题与上述领域无关则忽略，不要为贴合而改写主题。`
+      }
     }
 
     // ── 调用 LLM 生成蓝图 ──
@@ -185,12 +205,25 @@ export async function POST(req: Request) {
       styleProfileText,
     }
 
-    const blueprint = await generateBlueprint(input)
-    if (!blueprint) {
+    // ── 调用前余额预检（Phase 4）─────────────────────────────────
+    // 真正的扣费发生在 LLM 层的「预扣」那一刀（行锁原子，并发安全）；
+    // 这里只是为了让余额不足时返回 402「请充值」，
+    // 而不是让用户看到含糊的 502「创作蓝图生成失败」。
+    const budget = await hasEnoughFor(supabase, user.id, 'blueprint')
+    if (!budget.ok) {
       return NextResponse.json(
-        { error: '创作蓝图生成失败，请稍后重试' },
-        { status: 502 }
+        { error: INSUFFICIENT_POINTS_MESSAGE, code: 'insufficient_balance' },
+        { status: 402 }
       )
+    }
+
+    // 传入计费上下文：预扣 → 生成 → 按真实 token 结算（失败自动全额退）
+    const blueprint = await generateBlueprint(input, {
+      supabase,
+      userId: user.id,
+    })
+    if (!blueprint) {
+      return await aiFailureResponse('创作蓝图生成失败，请稍后重试')
     }
 
     return NextResponse.json({

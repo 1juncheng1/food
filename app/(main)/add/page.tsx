@@ -4,6 +4,7 @@ import { useEffect, useState, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
 import { getValidSession } from '@/lib/supabaseClient'
 import Link from 'next/link'
+import { AiStatus, PageHeader } from '@/components/vision'
 import {
   type KnowledgeItem,
   extractKnowledgeTraits,
@@ -381,26 +382,36 @@ export default function AddPage() {
       </div>
 
       <div className="inner-container gen-sheet">
-        {/* ── 页眉 ── */}
-        <div className="inner-header">
-          <div>
-            <Link href="/materials" className="inner-back">← 返回素材库</Link>
-            <span className="gen-eyebrow">知识沉淀</span>
-            <h1 className="inner-header-title">添加素材</h1>
-            <p className="inner-header-sub">
-              粘贴文案或上传图片，AI 先理解素材的用途和意义，再帮你归档进知识库
-            </p>
-          </div>
-          {(stage === 'clarify' || stage === 'confirming') && (
-            <button
-              type="button"
-              onClick={resetToIdle}
-              className="text-sm text-zinc-500 hover:text-white transition"
-            >
-              重新输入
-            </button>
-          )}
-        </div>
+        {/* ── 页眉：素材不是收藏，而是 AI 认识你的原始材料 ── */}
+        <Link
+          href="/materials"
+          className="mb-5 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
+        >
+          ← 返回我的素材
+        </Link>
+        <PageHeader
+          eyebrow="知识沉淀"
+          title="添加素材"
+          description="一段文案、一张图都可以。AI 先理解它的用途和意义，再帮你沉淀成可复用的知识。"
+          ai={
+            <AiStatus
+              task="material"
+              active={stage === 'analyzing' || stage === 'saving'}
+              variant="bar"
+            />
+          }
+          actions={
+            (stage === 'clarify' || stage === 'confirming') ? (
+              <button
+                type="button"
+                onClick={resetToIdle}
+                className="shrink-0 rounded-xl border border-white/[0.1] px-3.5 py-2.5 text-[13px] font-medium text-zinc-300 transition hover:border-white/20 hover:text-white"
+              >
+                重新输入
+              </button>
+            ) : undefined
+          }
+        />
 
         {/* ── 稿纸卡 ── */}
         <form onSubmit={handleAnalyze} className="gen-paper glass anim-rise">

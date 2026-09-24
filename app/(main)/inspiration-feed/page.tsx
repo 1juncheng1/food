@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
-import { supabase } from '@/lib/supabaseClient'
+import { getValidSession } from '@/lib/supabaseClient'
 import { pickInspirationView, type InspirationApiRow } from '@/lib/creative/interest/inspirationView'
+import { EmptyState, ErrorState } from '@/components/vision'
 
 // ── 类型 ──
 
@@ -26,6 +26,8 @@ interface FeedCard {
   related_knowledge?: string[] | null
   reason_source?: string | null
   cross_exploration?: boolean
+  /** P0 闭环：本轮新作品驱动生成的卡（服务端首屏前置） */
+  fresh?: boolean
 }
 
 // ── 事件上报（复用 dashboard 模式，keepalive 保证跳转前发出，失败静默） ──
@@ -57,6 +59,8 @@ export default function InspirationFeedPage() {
   const [cursor, setCursor] = useState<string | null>(null)
   const [noMore, setNoMore] = useState(false)
   const [fallbackSource, setFallbackSource] = useState<string | null>(null)
+  /** 服务端正在重算画像/补卡：给用户一个"AI 正在重新理解你的新作品"的可见反馈 */
+  const [building, setBuilding] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -117,6 +121,9 @@ export default function InspirationFeedPage() {
         setCursor(nextCursor)
         setNoMore(nm)
         setFallbackSource(fs)
+        // 只有首屏的 building 有意义：翻页请求的 building 属于"下一批"，
+        // 提示条一直挂着反而误导
+        if (isInitial) setBuilding(data.building === true)
       } catch (e) {
         // AbortError 静默：路由切换触发的取消是预期行为
         if (e instanceof Error && e.name === 'AbortError') return
@@ -141,7 +148,9 @@ export default function InspirationFeedPage() {
   // ── 初始化 ──
   useEffect(() => {
     async function init() {
-      const { data: { session } } = await supabase.auth.getSession()
+      // 必须走 getValidSession：裸调 getSession() 只读 localStorage 缓存、不刷新，
+      // 页面停留超过 JWT 有效期后会拿到过期 token 直接 401（项目既定约定）
+      const session = await getValidSession()
       if (!session) {
         router.push('/login')
         return
@@ -251,41 +260,49 @@ export default function InspirationFeedPage() {
     )
   }
 
+  // 灵感流是整屏吸附的信息流，不用 PageShell 包容器；
+  // 但三态文案/样式统一走 vision 组件，保持全站一致的表达。
   if (error && cards.length === 0) {
     return (
-      <div className="flex h-[100dvh] flex-col items-center justify-center gap-4">
-        <p className="text-zinc-400">加载失败：{error}</p>
-        <button
-          onClick={() => {
+      <div className="flex h-[100dvh] items-center justify-center px-6">
+        <ErrorState
+          message={`加载失败：${error}`}
+          onRetry={() => {
             setError(null)
             setLoading(true)
             void loadPage(null, true)
           }}
-          className="rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
-        >
-          重试
-        </button>
+        />
       </div>
     )
   }
 
   if (cards.length === 0 && noMore) {
     return (
-      <div className="feed-end flex h-[100dvh] flex-col items-center justify-center gap-3">
-        <p className="text-lg text-zinc-300">今天的新选题先刷到这</p>
-        <p className="text-sm text-zinc-500">明天再来，AI 会为你准备新的创作灵感</p>
-        <Link
-          href="/dashboard"
-          className="mt-4 rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
-        >
-          返回素材库
-        </Link>
+      <div className="feed-end flex h-[100dvh] items-center justify-center px-6">
+        <EmptyState
+          title="今天的新选题先刷到这"
+          description="明天再来，AI 会根据你今天的创作重新准备灵感。"
+          actionLabel="回到创作机会"
+          actionHref="/dashboard"
+        />
       </div>
     )
   }
 
   return (
-    <div className="h-[100dvh] overflow-y-auto snap-y snap-mandatory bg-zinc-950">
+    <>
+      {/* 重建提示：用固定浮层而非流内元素——容器是 snap-mandatory，
+          插入非 snap-start 的流内节点会打乱整屏吸附 */}
+      {building && (
+        <div className="pointer-events-none fixed left-1/2 top-4 z-50 -translate-x-1/2">
+          <div className="flex items-center gap-2 rounded-full border border-zinc-700 bg-zinc-900/90 px-3 py-1.5 text-xs text-zinc-300 backdrop-blur-sm">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+            AI 正在根据你最新的创作重新理解方向
+          </div>
+        </div>
+      )}
+      <div className="h-[100dvh] overflow-y-auto snap-y snap-mandatory bg-zinc-950">
       {cards.map((card) => {
         const view = pickInspirationView(card as InspirationApiRow)
         const isTrending = card.rec_id.startsWith('trending-')
@@ -305,6 +322,11 @@ export default function InspirationFeedPage() {
             >
               {/* 标签行 */}
               <div className="mb-3 flex flex-wrap items-center gap-2">
+                {card.fresh && (
+                  <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-300">
+                    承接你的新作品
+                  </span>
+                )}
                 {isCross && (
                   <span className="rounded-full bg-purple-500/20 px-2 py-0.5 text-xs font-medium text-purple-300">
                     跨界灵感
@@ -397,15 +419,13 @@ export default function InspirationFeedPage() {
 
       {/* 末尾收尾 */}
       {noMore && cards.length > 0 && (
-        <div className="feed-end flex min-h-[100dvh] flex-col items-center justify-center gap-3">
-          <p className="text-lg text-zinc-300">今天的新选题先刷到这</p>
-          <p className="text-sm text-zinc-500">明天再来，AI 会为你准备新的创作灵感</p>
-          <Link
-            href="/dashboard"
-            className="mt-4 rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
-          >
-            返回素材库
-          </Link>
+        <div className="feed-end flex min-h-[100dvh] items-center justify-center px-6">
+          <EmptyState
+            title="今天的新选题先刷到这"
+            description="明天再来，AI 会根据你今天的创作重新准备灵感。"
+            actionLabel="回到创作机会"
+            actionHref="/dashboard"
+          />
         </div>
       )}
 
@@ -423,6 +443,7 @@ export default function InspirationFeedPage() {
           </button>
         </div>
       )}
-    </div>
+      </div>
+    </>
   )
 }

@@ -1,8 +1,18 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import {
+  ArrowRight,
+  Compass,
+  Layers,
+  Library,
+  PenLine,
+  Sparkles,
+  TrendingUp,
+  X,
+} from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
 import { CATEGORIES } from '@/lib/constants'
 import { pickInspirationView } from '@/lib/creative/interest/inspirationView'
@@ -13,8 +23,52 @@ import {
   restoreDashboardScroll,
   type DashboardScrollState,
 } from '@/lib/scrollMemory'
+import {
+  AiStatus,
+  CardLabel,
+  EmptyState,
+  PageHeader,
+  PageShell,
+  Section,
+  SkeletonList,
+  SkeletonText,
+  StatRow,
+  SurfaceCard,
+  TagChip,
+} from '@/components/vision'
+
+/** 推荐卡内的一行「标签 → 内容」，保证四段信息结构一致 */
+function InsightRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex gap-2.5">
+      <dt className="w-[88px] shrink-0 pt-[1px] text-[12px] text-zinc-500">
+        {label}
+      </dt>
+      <dd className="min-w-0 flex-1 text-[13px] leading-relaxed text-zinc-300">
+        {children}
+      </dd>
+    </div>
+  )
+}
 
 const filterOptions = ['全部', ...CATEGORIES]
+
+/** 兴趣画像（GET /api/creative/interest/profile）中本页用到的部分 */
+interface InterestProfile {
+  identity?: { completeness?: number; event_count_30d?: number }
+  core?: { label?: string; weight?: number; trend?: string }[]
+  exploration?: { label?: string; weight?: number; trend?: string }[]
+  domains?: Record<string, number>
+  recent_creation_direction?: { label: string; recentEvents: number } | null
+}
+
+/** 趋势枚举 → 中文（与 engine TrendDirection 对齐） */
+const TREND_LABEL: Record<string, string> = {
+  rising: '升温中',
+  stable: '保持稳定',
+  declining: '热度回落',
+  dormant: '暂时沉寂',
+}
 
 /** 灵感推荐数据结构（rec_id 仅个性化卡有，模板卡缺失；五字段为 WF6 AI 理由，旧卡为 null） */
 interface Inspiration {
@@ -34,7 +88,6 @@ interface Inspiration {
 
 export default function DashboardPage() {
   const router = useRouter()
-  const [email, setEmail] = useState('')
   const [works, setWorks] = useState<GeneratedWork[]>([])
   const [worksLoading, setWorksLoading] = useState(true)
   const [filter, setFilter] = useState('全部')
@@ -43,6 +96,9 @@ export default function DashboardPage() {
   // 行为D：服务端有在途 build（首篇创作后画像重建中）时展示分析中提示，
   // 配合既有 20s 补拉轮询，build 完成后本标记随下次响应自动消失、换成个性化卡
   const [inspBuilding, setInspBuilding] = useState(false)
+  // 「AI 正在理解你」区域数据源：兴趣画像（只读展示，失败静默降级为"还在认识你"）
+  const [profile, setProfile] = useState<InterestProfile | null>(null)
+  const [profileLoading, setProfileLoading] = useState(true)
   // 灵感推荐自动补拉：build 是 fire-and-forget（30-60s），首次进页若未个性化
   // （新用户首建中/画像重建中），需轮询补拉让卡片在当前页面自动刷新，而非要求手动二次刷新
   const inspTokenRef = useRef<string | null>(null)
@@ -144,6 +200,30 @@ export default function DashboardPage() {
     inspRefreshTimerRef.current = setTimeout(attempt, 20_000)
   }, [loadInspirations, inspirations])
 
+  // 兴趣画像：只用于「AI 正在理解你」展示，失败不影响任何主流程
+  const loadProfile = useCallback(async () => {
+    const token = inspTokenRef.current
+    if (!token) {
+      setProfileLoading(false)
+      return
+    }
+    try {
+      const res = await fetch('/api/creative/interest/profile', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const p = data?.profile
+        // 空对象 {} = 尚未建模，按无画像处理
+        setProfile(p && Object.keys(p).length > 0 ? (p as InterestProfile) : null)
+      }
+    } catch {
+      // 静默：画像只做展示
+    } finally {
+      setProfileLoading(false)
+    }
+  }, [])
+
   // 回到页面（切标签/切窗口）时若尚未个性化，立即补拉一次，缩短感知延迟
   useEffect(() => {
     function onVisibility() {
@@ -174,19 +254,20 @@ export default function DashboardPage() {
       // 游客可进入（AuthGuard 白名单 + 首页「立即开始」直达）：
       // 作品列表走 localStorage 与登录态无关；灵感区无 token 时接口降级为平台推荐
       const { data: { session } } = await supabase.auth.getSession()
-      setEmail(session?.user.email ?? '游客模式')
       setWorks(getWorks())
       setWorksLoading(false)
 
       // 加载灵感推荐（失败不阻断页面）；未个性化则进入自动补拉轮询
       inspTokenRef.current = session?.access_token ?? null
+      // 画像与灵感并行拉取：两者互不依赖，画像失败不影响卡片
+      void loadProfile()
       const result = await loadInspirations()
       inspDoneRef.current = result?.personalized === true
       setInspLoading(false)
       if (!inspDoneRef.current) scheduleInspRetry()
     }
     init()
-  }, [router, loadInspirations, scheduleInspRetry])
+  }, [router, loadInspirations, scheduleInspRetry, loadProfile])
 
   // 列表真实 DOM 提交后再恢复滚动：骨架屏阶段页面高度不足，恢复会被钳制为 0。
   // rAF 循环每帧按最新 scrollHeight 重算上限，直到列表高度足以承载目标 scrollTop。
@@ -267,219 +348,367 @@ export default function DashboardPage() {
   const filteredWorks =
     filter === '全部' ? works : works.filter((w) => w.category === filter)
 
+  // 「AI 正在理解你」三张卡的数据派生（全部来自兴趣画像，未建模时给出诚实说明）
+  const coreLabels = (profile?.core ?? [])
+    .map((c) => c.label)
+    .filter((l): l is string => !!l)
+  const domainTop = Object.entries(profile?.domains ?? {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+  const rising = (profile?.core ?? []).filter((c) => c.trend === 'rising')
+  const cooling = (profile?.core ?? []).filter(
+    (c) => c.trend === 'declining' || c.trend === 'dormant'
+  )
+
   return (
-    <div className="inner-page gen-stage" data-mode="inspiration">
-      <div className="inner-container">
-        {/* ── 顶部：标题（退出按钮已由 Sidebar 统一提供）── */}
-        <div className="inner-header">
-          <div>
-            <h1 className="inner-header-title">我的素材库</h1>
-            <p className="inner-header-sub">{email}</p>
-          </div>
-        </div>
-
-        {/* ── 功能入口：两张卡片式按钮 ── */}
-        <div className="inner-actions">
-          <Link href="/materials" className="inner-action-card">
-            <div className="inner-action-icon indigo">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4 6h16M4 12h16M4 18h10" />
-              </svg>
-            </div>
-            <div>
-              <div className="inner-action-title">素材库</div>
-              <div className="inner-action-desc">管理原始文案，建立你的风格库</div>
-            </div>
+    <PageShell>
+      <PageHeader
+        eyebrow="创作机会"
+        title="发现属于你的创作机会"
+        description="AI 结合你的创作风格、知识积累与兴趣变化，为你挑出值得动手的方向。你写得越多、反馈越具体，它下一次就挑得越准。"
+        actions={
+          <Link
+            href="/generate"
+            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500"
+          >
+            <PenLine size={15} />
+            开始创作
           </Link>
-          <Link href="/generate" className="inner-action-card">
-            <div className="inner-action-icon emerald">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
-              </svg>
-            </div>
-            <div>
-              <div className="inner-action-title">新建生成任务</div>
-              <div className="inner-action-desc">AI 学习你的风格，快速生成解说</div>
-            </div>
-          </Link>
+        }
+        ai={
+          <AiStatus
+            task="inspiration"
+            active={inspLoading || inspBuilding}
+            variant="bar"
+          />
+        }
+      />
+
+      {/* ── 沉淀条：让「积累」本身可见，而不是只有列表 ── */}
+      <StatRow
+        className="mb-9"
+        items={[
+          {
+            label: '已完成的作品',
+            value: worksLoading ? '—' : works.length,
+          },
+          {
+            label: 'AI 识别的创作方向',
+            value: profileLoading ? '—' : coreLabels.length,
+          },
+          {
+            label: 'AI 对你的理解度',
+            value: profile
+              ? `${Math.round((profile.identity?.completeness ?? 0) * 100)}%`
+              : '—',
+            hint: profile ? undefined : '创作几篇后开始建模',
+          },
+          {
+            label: '近 30 天创作行为',
+            value: profile?.identity?.event_count_30d ?? '—',
+          },
+        ]}
+      />
+
+      {/* ── AI 分析区域：明确告诉用户 AI 正在理解什么 ── */}
+      <Section
+        eyebrow="AI 正在理解"
+        title="它现在是这样认识你的"
+        description="下面的判断来自你的创作、修改与反馈记录，也是它挑选机会的依据。"
+        className="mb-10"
+      >
+        <div className="grid gap-3 sm:grid-cols-3">
+          <SurfaceCard className="flex flex-col gap-2.5">
+            <CardLabel icon={<Compass size={13} />}>我的创作方向</CardLabel>
+            {profileLoading ? (
+              <SkeletonText lines={2} />
+            ) : profile ? (
+              <>
+                <p className="text-[15px] font-medium leading-snug text-zinc-100">
+                  {profile.recent_creation_direction?.label ?? coreLabels[0] ?? '还在观察你的创作'}
+                </p>
+                <p className="text-[12px] leading-relaxed text-zinc-500">
+                  {profile.recent_creation_direction
+                    ? `近 7 天有 ${profile.recent_creation_direction.recentEvents} 次相关创作行为`
+                    : '继续创作，AI 会更快锁定你的主线方向'}
+                </p>
+                {coreLabels.length > 0 && (
+                  <div className="mt-0.5 flex flex-wrap gap-1.5">
+                    {coreLabels.slice(0, 3).map((l) => (
+                      <TagChip key={l} tone="brand" size="sm">
+                        {l}
+                      </TagChip>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <p className="text-[13px] leading-relaxed text-zinc-500">
+                还没有足够的创作记录。完成第一篇作品后，这里会出现 AI 对你方向的判断。
+              </p>
+            )}
+          </SurfaceCard>
+
+          <SurfaceCard className="flex flex-col gap-2.5">
+            <CardLabel icon={<Library size={13} />}>我的知识领域</CardLabel>
+            {profileLoading ? (
+              <SkeletonText lines={2} />
+            ) : domainTop.length > 0 ? (
+              <>
+                <p className="text-[15px] font-medium leading-snug text-zinc-100">
+                  {domainTop[0][0]}
+                </p>
+                <div className="mt-0.5 flex flex-wrap gap-1.5">
+                  {domainTop.map(([name, ratio]) => (
+                    <TagChip key={name} size="sm">
+                      {name} {Math.round(ratio * 100)}%
+                    </TagChip>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="text-[13px] leading-relaxed text-zinc-500">
+                沉淀素材与作品后，AI 会归纳出你真正擅长的知识领域。
+              </p>
+            )}
+          </SurfaceCard>
+
+          <SurfaceCard className="flex flex-col gap-2.5">
+            <CardLabel icon={<TrendingUp size={13} />}>我的兴趣变化</CardLabel>
+            {profileLoading ? (
+              <SkeletonText lines={2} />
+            ) : profile ? (
+              <>
+                {rising.length > 0 ? (
+                  <p className="text-[15px] font-medium leading-snug text-zinc-100">
+                    {rising[0].label} {TREND_LABEL[rising[0].trend ?? ''] ?? ''}
+                  </p>
+                ) : (
+                  <p className="text-[15px] font-medium leading-snug text-zinc-100">
+                    兴趣结构保持稳定
+                  </p>
+                )}
+                <div className="mt-0.5 flex flex-wrap gap-1.5">
+                  {rising.slice(0, 2).map((c) => (
+                    <TagChip key={`r-${c.label}`} tone="accent" size="sm">
+                      ↑ {c.label}
+                    </TagChip>
+                  ))}
+                  {cooling.slice(0, 2).map((c) => (
+                    <TagChip key={`c-${c.label}`} tone="muted" size="sm">
+                      ↓ {c.label}
+                    </TagChip>
+                  ))}
+                </div>
+                <p className="text-[12px] leading-relaxed text-zinc-500">
+                  AI 会据此决定：继续深挖，还是给你换个新方向。
+                </p>
+              </>
+            ) : (
+              <p className="text-[13px] leading-relaxed text-zinc-500">
+                AI 还在观察你的兴趣走向，暂时不会凭单次行为下结论。
+              </p>
+            )}
+          </SurfaceCard>
         </div>
+      </Section>
 
-        {/* ── 风格卡入口 ── */}
-        <Link href="/style-profile" className="inner-action-card" style={{ marginBottom: '40px' }}>
-          <div className="inner-action-icon" style={{ background: 'rgba(168,85,247,0.15)', color: '#c084fc' }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 7l9-4 9 4-9 4-9-4z" />
-              <path d="M3 12l9 4 9-4M3 17l9 4 9-4" />
-            </svg>
-          </div>
-          <div>
-            <div className="inner-action-title">我的风格卡</div>
-            <div className="inner-action-desc">查看你的创作风格特征与语气偏好</div>
-          </div>
-        </Link>
+      {/* ── 核心功能区：AI 找到的创作机会 ── */}
+      <Section
+        eyebrow="为你挑选"
+        title="AI 找到的创作机会"
+        description="每张卡都带着推荐理由、可切入的角度和它参考的你的知识。"
+        actions={
+          <Link
+            href="/inspiration-feed"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.1] px-3.5 py-2 text-[13px] font-medium text-zinc-300 transition hover:border-white/20 hover:text-white"
+          >
+            看更多灵感
+            <ArrowRight size={14} />
+          </Link>
+        }
+        className="mb-10"
+      >
+        {/* 首篇创作后画像重建中：明确告知 AI 正在做什么，完成后随轮询自动换卡 */}
+        {!inspLoading && inspBuilding && (
+          <AiStatus
+            task="inspiration"
+            active
+            variant="steps"
+            className="mb-3"
+          />
+        )}
 
-        {/* ── 分类筛选 ── */}
-        <div className="inner-filter-bar">
+        {inspLoading ? (
+          <SkeletonList count={3} height={148} />
+        ) : inspirations.length === 0 ? (
+          <EmptyState
+            icon={<Sparkles size={18} />}
+            title="AI 还没开始为你挑选"
+            description="它需要一点创作记录才能理解你的方向。完成第一篇作品后，这里会出现只属于你的机会。"
+            actionLabel="开始第一次创作"
+            actionHref="/generate"
+            secondaryLabel="去看看大家在创作什么"
+            secondaryHref="/explore"
+          />
+        ) : (
+          <div className="flex flex-col gap-3">
+            {inspirations.map((ins, idx) => {
+              // WF7：三段式视图（AI 理由优先，旧卡/模板卡回退模板 reason）
+              const view = pickInspirationView(ins)
+              const isAi = view.reasonSource === 'ai'
+              return (
+                <SurfaceCard
+                  key={ins.rec_id ?? `tpl-${idx}`}
+                  interactive
+                  className="group"
+                  onClick={() => {
+                    // WF1：个性化卡点击 = recommend_click（keepalive 保证跳转前发出）
+                    // 并透传 rec_id 到 /generate，方案生成成功后回流 recommend_adopt
+                    if (ins.rec_id) void reportRecEvent('click', ins.rec_id, true)
+                    const recParam = ins.rec_id ? `&rec_id=${encodeURIComponent(ins.rec_id)}` : ''
+                    router.push(
+                      `/generate?category=${encodeURIComponent(ins.params.category)}&topic=${encodeURIComponent(ins.params.topic)}${recParam}`
+                    )
+                  }}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <TagChip
+                          tone={isAi ? 'brand' : 'neutral'}
+                          size="sm"
+                          icon={<Sparkles size={11} />}
+                        >
+                          {isAi ? 'AI 为你挑选' : '大众创作方向'}
+                        </TagChip>
+                        {ins.cross_exploration && (
+                          <TagChip tone="violet" size="sm">
+                            跨界灵感
+                          </TagChip>
+                        )}
+                      </div>
+
+                      <h3 className="mt-2.5 text-[16px] font-semibold leading-snug text-white">
+                        {view.title}
+                      </h3>
+                      <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-400 line-clamp-2">
+                        {ins.description}
+                      </p>
+
+                      <div className="vs-divider my-3.5" />
+
+                      <dl className="space-y-2">
+                        <InsightRow label="为什么推荐给你">
+                          <span className={isAi ? 'text-zinc-200' : 'text-zinc-400'}>
+                            {view.whyForYou}
+                          </span>
+                        </InsightRow>
+                        {view.coreQuestion && (
+                          <InsightRow label="可能的方向">
+                            {view.coreQuestion}
+                          </InsightRow>
+                        )}
+                        {view.creationAngle && (
+                          <InsightRow label="创作角度">
+                            {view.creationAngle}
+                          </InsightRow>
+                        )}
+                        {view.relatedKnowledge.length > 0 && (
+                          <InsightRow label="相关知识">
+                            <span className="flex flex-wrap gap-1.5">
+                              {view.relatedKnowledge.map((k) => (
+                                <TagChip key={k} size="sm">
+                                  {k}
+                                </TagChip>
+                              ))}
+                            </span>
+                          </InsightRow>
+                        )}
+                      </dl>
+
+                      <div className="mt-4 inline-flex items-center gap-1.5 text-[13px] font-medium text-indigo-300">
+                        用这个方向开始创作
+                        <ArrowRight
+                          size={14}
+                          className="transition-transform duration-200 group-hover:translate-x-0.5"
+                        />
+                      </div>
+                    </div>
+
+                    {ins.rec_id && (
+                      <button
+                        onClick={(e) => handleDismissInsp(ins, e)}
+                        title="不再推荐这类主题"
+                        aria-label="不再推荐这类主题"
+                        className="shrink-0 rounded-lg p-1.5 text-zinc-600 transition hover:bg-red-500/10 hover:text-red-300"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+                </SurfaceCard>
+              )
+            })}
+          </div>
+        )}
+      </Section>
+
+      {/* ── 沉淀区：我的作品（历史作品入口，详细成长档案见 /works） ── */}
+      <Section
+        eyebrow="沉淀"
+        title="我的作品"
+        description="每一篇作品与每次修改，都会成为 AI 理解你的依据。"
+        actions={
+          <div className="flex items-center gap-2.5">
+            {!worksLoading && (
+              <span className="text-[12px] text-zinc-500">共 {works.length} 篇</span>
+            )}
+            <Link
+              href="/works"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.1] px-3.5 py-2 text-[13px] font-medium text-zinc-300 transition hover:border-white/20 hover:text-white"
+            >
+              成长档案
+              <ArrowRight size={14} />
+            </Link>
+          </div>
+        }
+      >
+        {/* 分类筛选：只作用于作品列表 */}
+        <div className="mb-4 flex flex-wrap gap-1.5">
           {filterOptions.map((cat) => (
             <button
               key={cat}
               onClick={() => setFilter(cat)}
-              className={`inner-filter-chip ${filter === cat ? 'active' : ''}`}
+              className={`rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                filter === cat
+                  ? 'border-indigo-500/40 bg-indigo-500/15 text-indigo-300'
+                  : 'border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:border-white/20 hover:text-zinc-200'
+              }`}
             >
               {cat}
             </button>
           ))}
         </div>
 
-        {/* ── AI 发现的创作机会（置于作品列表之上，优先激发创作） ── */}
-        <div className="inner-section-head">
-          <h2 className="inner-section-title">AI 发现的创作机会</h2>
-        </div>
-
-        {/* 行为D：首篇创作后画像重建中（building 由 /api/inspirations 依据在途 build 返回，
-            完成后随既有 20s 轮询自动换卡，无需手动刷新） */}
-        {!inspLoading && inspBuilding && (
-          <div className="inner-list" style={{ marginBottom: '12px' }}>
-            <div
-              className="inner-item"
-              style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '14px 16px' }}
-            >
-              <span className="animate-pulse" aria-hidden>✨</span>
-              <span className="text-sm text-zinc-400">
-                正在分析你的第一篇创作，为你定制的选题马上就来…
-              </span>
-            </div>
-          </div>
-        )}
-
-        {inspLoading ? (
-          <div className="inner-list">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="inner-item" style={{ height: 88 }} />
-            ))}
-          </div>
-        ) : inspirations.length > 0 ? (
-          <div className="inner-list">
-            {inspirations.map((ins, idx) => {
-              // WF7：三段式视图（AI 理由优先，旧卡/模板卡回退模板 reason）
-              const view = pickInspirationView(ins)
-              return (
-              <div
-                key={ins.rec_id ?? `tpl-${idx}`}
-                onClick={() => {
-                  // WF1：个性化卡点击 = recommend_click（keepalive 保证跳转前发出）
-                  // 并透传 rec_id 到 /generate，方案生成成功后回流 recommend_adopt
-                  if (ins.rec_id) void reportRecEvent('click', ins.rec_id, true)
-                  const recParam = ins.rec_id ? `&rec_id=${encodeURIComponent(ins.rec_id)}` : ''
-                  router.push(
-                    `/generate?category=${encodeURIComponent(ins.params.category)}&topic=${encodeURIComponent(ins.params.topic)}${recParam}`
-                  )
-                }}
-                className="inner-item clickable"
-              >
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0 flex-1">
-                  <h3 className="inner-item-title">{view.title}</h3>
-                  <p className="text-sm text-zinc-500 mt-1 line-clamp-2">{ins.description}</p>
-                  {view.coreQuestion && (
-                    <p className="text-sm text-zinc-600 mt-2">
-                      <span className="text-zinc-400">核心问题：</span>{view.coreQuestion}
-                    </p>
-                  )}
-                  <p className="text-sm text-zinc-600 mt-2">
-                    <span className="text-zinc-400">为什么适合你：</span>
-                    <span className={view.reasonSource === 'ai' ? '' : 'text-zinc-400'}>{view.whyForYou}</span>
-                  </p>
-                  {view.creationAngle && (
-                    <p className="text-sm text-zinc-600 mt-1.5">
-                      <span className="text-zinc-400">可以怎么创作：</span>{view.creationAngle}
-                    </p>
-                  )}
-                  {view.relatedKnowledge.length > 0 && (
-                    <p className="text-xs text-zinc-500 mt-1.5">
-                      <span className="text-zinc-400">关联你的素材：</span>
-                      {view.relatedKnowledge.join(' · ')}
-                    </p>
-                  )}
-                  <span className="inner-item-tag" style={{ marginTop: '8px', display: 'inline-block' }}>
-                    {view.reasonSource === 'ai' ? '基于你的创作行为' : '大众创作方向'}
-                  </span>
-                  {ins.cross_exploration && (
-                    <span
-                      className="ml-2 inline-block rounded-full bg-purple-500/20 px-2 py-0.5 text-xs font-medium text-purple-300"
-                      style={{ marginTop: '8px' }}
-                    >
-                      跨界灵感
-                    </span>
-                  )}
-                </div>
-                <svg className="shrink-0 text-zinc-600 mt-1" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M5 12h14M12 5l7 7-7 7" />
-                </svg>
-                {ins.rec_id && (
-                  <button
-                    onClick={(e) => handleDismissInsp(ins, e)}
-                    title="不再推荐这类主题"
-                    aria-label="不再推荐这类主题"
-                    className="shrink-0 mt-1 text-zinc-500 hover:text-red-400 transition text-base leading-none"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-              </div>
-              )
-            })}
-          </div>
-        ) : (
-          <div className="inner-empty">
-            <p>暂无灵感推荐</p>
-            <p className="sub">多生成几篇作品后，系统会根据你的偏好推荐选题</p>
-          </div>
-        )}
-
-        {/* WF11 P2：看更多灵感入口 → 全屏竖滑 Feed */}
-        {inspirations.length > 0 && (
-          <div className="mt-3 flex justify-center">
-            <Link
-              href="/inspiration-feed"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800/50 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-600 hover:bg-zinc-800"
-            >
-              看更多灵感
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c-1.5-1.5-2-4.5-2-9s.5-7.5 2-9M3 12a9 9 0 0 1 9-9" />
-              </svg>
-            </Link>
-          </div>
-        )}
-
-        {/* ── 区块标题 + 计数 ── */}
-        <div className="inner-section-head" style={{ marginTop: '48px' }}>
-          <h2 className="inner-section-title">生成作品</h2>
-          {!worksLoading && (
-            <span className="inner-section-count">共 {works.length} 篇</span>
-          )}
-        </div>
-
-        {/* ── 作品列表 ── */}
         {worksLoading ? (
-          <div className="inner-list">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="inner-item" style={{ height: 72 }} />
-            ))}
-          </div>
+          <SkeletonList count={3} height={76} />
         ) : filteredWorks.length === 0 ? (
-          <div className="inner-empty">
-            <p>
-              {filter === '全部' ? '还没有生成作品' : `暂无「${filter}」分类的作品`}
-            </p>
-            <p className="sub">点击上方「新建生成任务」，AI 将基于你的素材库进行创作</p>
-          </div>
+          <EmptyState
+            icon={<PenLine size={18} />}
+            title={filter === '全部' ? '还没有作品' : `暂无「${filter}」分类的作品`}
+            description="开始第一次创作，AI 会逐渐了解你的表达方式与关注领域。"
+            actionLabel="开始第一次创作"
+            actionHref="/generate"
+          />
         ) : (
-          <div className="inner-list">
+          <div className="flex flex-col gap-2.5">
             {filteredWorks.map((w) => (
-              <div
+              <SurfaceCard
                 key={w.id}
+                interactive
+                padded={false}
+                className="px-5 py-4"
                 onClick={() => {
                   // 跳转前记录精确位置与筛选，返回（popstate）后据此恢复
                   saveDashboardState(window.scrollY, filter)
@@ -487,42 +716,94 @@ export default function DashboardPage() {
                   // /works/[id] 仅作为老链接的重定向兼容层保留
                   router.push(`/article/${w.id}`)
                 }}
-                className="inner-item clickable"
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0 flex-1">
-                    <h3 className="inner-item-title">{w.title}</h3>
-                    <div className="inner-item-meta">
-                      {w.solution && <span className="inner-item-tag">问题求解</span>}
-                      <span className="inner-item-tag">{w.category}</span>
-                      {w.identityLabel && (
-                        <span className="inner-item-tag">
-                          {w.identityLabel.length > 24 ? `${w.identityLabel.slice(0, 24)}…` : w.identityLabel}
-                        </span>
+                    <h3 className="text-[15px] font-semibold leading-snug text-white line-clamp-1">
+                      {w.title}
+                    </h3>
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                      {w.solution && (
+                        <TagChip size="sm" tone="accent">
+                          问题求解
+                        </TagChip>
                       )}
-                      <span className="inner-item-date">
+                      <TagChip size="sm">{w.category}</TagChip>
+                      {w.identityLabel && (
+                        <TagChip size="sm" tone="muted">
+                          {w.identityLabel.length > 24
+                            ? `${w.identityLabel.slice(0, 24)}…`
+                            : w.identityLabel}
+                        </TagChip>
+                      )}
+                      <span className="text-[11px] text-zinc-600">
                         {new Date(w.created_at).toLocaleDateString('zh-CN')}
                       </span>
                     </div>
                   </div>
                   <button
                     onClick={(e) => handleDeleteWork(w, e)}
-                    className="text-xs text-zinc-600 hover:text-red-400 transition shrink-0"
+                    className="shrink-0 rounded-lg border border-white/[0.08] px-2 py-1 text-[12px] text-zinc-500 transition hover:border-red-500/40 hover:text-red-300"
                   >
                     删除
                   </button>
                 </div>
-              </div>
+              </SurfaceCard>
             ))}
           </div>
         )}
-      </div>
+      </Section>
 
-      {/* 右下角浮动：添加素材快捷入口
-      <Link href="/add" className="inner-fab">
-        <span className="inner-fab-label">添加素材</span>
-        <span className="inner-fab-plus">+</span>
-      </Link> */}
-    </div>
+      {/* ── 让 AI 更懂你：素材 / 知识 / 理解报告入口 ── */}
+      <Section eyebrow="让它更懂你" title="继续积累你的创作资产" className="mt-10">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Link href="/materials" className="block">
+            <SurfaceCard interactive className="h-full">
+              <div className="flex items-start gap-3">
+                <span className="text-indigo-300/80">
+                  <Layers size={16} />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[14px] font-medium text-zinc-100">我的素材</p>
+                  <p className="mt-1 text-[12px] leading-relaxed text-zinc-500">
+                    原始文案与资料，AI 理解的起点
+                  </p>
+                </div>
+              </div>
+            </SurfaceCard>
+          </Link>
+          <Link href="/knowledge" className="block">
+            <SurfaceCard interactive className="h-full">
+              <div className="flex items-start gap-3">
+                <span className="text-emerald-300/80">
+                  <Library size={16} />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[14px] font-medium text-zinc-100">知识库</p>
+                  <p className="mt-1 text-[12px] leading-relaxed text-zinc-500">
+                    从素材沉淀出的可复用观点
+                  </p>
+                </div>
+              </div>
+            </SurfaceCard>
+          </Link>
+          <Link href="/style-profile" className="block">
+            <SurfaceCard interactive className="h-full">
+              <div className="flex items-start gap-3">
+                <span className="text-violet-300/80">
+                  <Sparkles size={16} />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[14px] font-medium text-zinc-100">AI 理解报告</p>
+                  <p className="mt-1 text-[12px] leading-relaxed text-zinc-500">
+                    看看 AI 现在是怎么理解你的
+                  </p>
+                </div>
+              </div>
+            </SurfaceCard>
+          </Link>
+        </div>
+      </Section>
+    </PageShell>
   )
 }

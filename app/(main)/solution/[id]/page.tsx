@@ -20,6 +20,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
+import { AiStatus, PageHeader, PageShell } from '@/components/vision'
 import { normalizeProblem, formatProblemForPrompt } from '@/lib/creative/problemFormat'
 import type { ProblemUnderstanding, CreativeBlueprint } from '@/lib/creative/blueprint'
 import {
@@ -387,22 +388,32 @@ export default function SolutionPage() {
 
   return (
     <div className="inner-page gen-stage" data-mode="inspiration">
-      <div className="inner-container">
-        <div className="inner-header">
-          <div className="text-center">
-            <Link href="/generate" className="inner-back">← 返回灵感场</Link>
-            <span className="gen-eyebrow">问题求解</span>
-            <h1 className="inner-header-title line-clamp-2">
-              {phase === 'done' && solution ? solution.title : '解决方案'}
-            </h1>
-            {phase === 'done' && problem && (
-              <p className="inner-header-sub">
-                {problem.problem_type} · 为你量身定制
-                {versions.length > 1 && ` · 当前 V${activeIdx + 1}`}
-              </p>
-            )}
-          </div>
-        </div>
+      <PageShell width="narrow">
+        <Link
+          href="/generate"
+          className="mb-5 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
+        >
+          ← 返回创作工作台
+        </Link>
+
+        <PageHeader
+          eyebrow="问题求解"
+          title={phase === 'done' && solution ? solution.title : '解决方案'}
+          description={
+            phase === 'done' && problem
+              ? `${problem.problem_type} · 这是 AI 结合你的风格与知识给出的方案${
+                  versions.length > 1 ? ` · 当前 V${activeIdx + 1}` : ''
+                }。不合适可以继续改，AI 会记住你的调整。`
+              : '把问题交给 AI。它先理解你要解决什么，再结合你的风格与知识给出方案。'
+          }
+          ai={
+            <AiStatus
+              task="generate"
+              active={phase === 'loading' || phase === 'generating'}
+              variant="bar"
+            />
+          }
+        />
 
         {/* 加载中：读取既有结果或等待跳转 */}
         {phase === 'loading' && (
@@ -635,7 +646,7 @@ export default function SolutionPage() {
             )}
           </div>
         )}
-      </div>
+      </PageShell>
     </div>
   )
 }

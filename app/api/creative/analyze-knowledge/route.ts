@@ -153,11 +153,17 @@ export async function POST(req: Request) {
         )
       }
 
-      const result = await reAnalyzeKnowledge({
-        content: content.trim(),
-        previousKnowledge: prevKnowledge,
-        userCorrection: correction,
-      })
+      const result = await reAnalyzeKnowledge(
+        {
+          content: content.trim(),
+          previousKnowledge: prevKnowledge,
+          userCorrection: correction,
+        },
+        // 计费上下文。注意这里**不做余额预检拦截**：本端点 LLM 失败时
+        // 会降级为"照常保存素材"，余额不足同样走这条降级——
+        // 若改成 402，用户会连素材都存不了，那是把增强功能变成了主流程的拦路石。
+        { supabase, userId: user.id, refId: `reanalyze:${crypto.randomUUID()}` }
+      )
 
       if (result.degraded || !result.knowledge) {
         return NextResponse.json(
@@ -207,11 +213,15 @@ export async function POST(req: Request) {
     }
 
     // ── 调用 LLM 分析 ──────────────────────────────────────
-    const result = await analyzeKnowledge({
-      content: content.trim(),
-      category: category ?? undefined,
-      clarifications,
-    })
+    const result = await analyzeKnowledge(
+      {
+        content: content.trim(),
+        category: category ?? undefined,
+        clarifications,
+      },
+      // 同上：只计费，不拦截（失败降级为保存无 knowledge 的素材）
+      { supabase, userId: user.id, refId: `analyze:${crypto.randomUUID()}` }
+    )
 
     // 降级：LLM 失败 → 直接保存无 knowledge 的素材（不阻断用户）
     if (result.degraded) {

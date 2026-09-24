@@ -4,6 +4,13 @@ import { useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { CATEGORIES } from '@/lib/constants'
 import { supabase } from '@/lib/supabaseClient'
+import {
+  AiStatus,
+  ErrorState,
+  PageHeader,
+  PageShell,
+  SurfaceCard,
+} from '@/components/vision'
 
 // ────────────────────────────────────────────────────────────
 // 发布灵感页面：用户发布文字或图片灵感到社区
@@ -118,27 +125,25 @@ export default function PublishPage() {
 
   return (
     <div className="inner-page gen-stage" data-mode="inspiration">
-      <div className="inner-container">
-        {/* ── 顶部 ── */}
-        <div className="inner-header">
-          <div>
-            <h1 className="inner-header-title">发布灵感</h1>
-            <p className="inner-header-sub">把你的创作分享给社区</p>
-          </div>
-        </div>
+      <PageShell width="narrow">
+        {/* 定位：把还没成型的想法交给社区，也让 AI 更懂你在关注什么 */}
+        <PageHeader
+          eyebrow="创作者社区"
+          title="发布灵感"
+          description="把你正在琢磨的一句话或一篇作品交给社区。别人会看到，AI 也会据此更新对你关注点的理解。"
+          ai={<AiStatus task="publish" active={submitting} variant="bar" />}
+        />
 
         {/* ── 错误提示 ── */}
-        {error && (
-          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4 mb-6">
-            <p className="text-sm text-red-400">{error}</p>
-          </div>
-        )}
+        {error && <ErrorState className="mb-6" message={error} />}
 
         {/* ── 成功提示 ── */}
         {success && (
-          <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-5 py-4 mb-6">
-            <p className="text-sm text-emerald-400">发布成功！正在跳转到灵感广场…</p>
-          </div>
+          <SurfaceCard className="mb-6 border-emerald-500/25 bg-emerald-500/[0.06]">
+            <p className="text-sm text-emerald-300">
+              发布成功！正在跳转到灵感广场…
+            </p>
+          </SurfaceCard>
         )}
 
         {/* ── 发布表单 ── */}
@@ -243,7 +248,7 @@ export default function PublishPage() {
             </button>
           </div>
         </form>
-      </div>
+      </PageShell>
     </div>
   )
 }

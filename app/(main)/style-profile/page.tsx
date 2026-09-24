@@ -3,8 +3,20 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { Clock, Compass, Library, MessageSquare, Sparkles } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
 import type { CreatorReport, DnaItem } from '@/lib/creative/creatorReport'
+import {
+  AiStatus,
+  CardLabel,
+  EmptyState,
+  ErrorState,
+  PageHeader,
+  PageShell,
+  SkeletonList,
+  SurfaceCard,
+  TagChip,
+} from '@/components/vision'
 
 // ────────────────────────────────────────────────────────────
 // 风格卡页面：展示从历史内容统计出的创作风格特征，支持手动编辑
@@ -93,6 +105,10 @@ export default function StyleProfilePage() {
   const [recomputing, setRecomputing] = useState(false)
   // AI 协作修改（P5）：移除单条修改偏好记忆
   const [removingPreference, setRemovingPreference] = useState(false)
+  // 知识优势：已确认知识条数 + 主要领域（只做展示，失败静默）
+  const [knowledge, setKnowledge] = useState<{ count: number; domains: string[] } | null>(
+    null
+  )
 
   useEffect(() => {
     async function init() {
@@ -103,6 +119,27 @@ export default function StyleProfilePage() {
         return
       }
       await loadProfile(session.access_token)
+      // 知识库只用于「我的知识优势」展示，失败不影响本页任何功能
+      try {
+        const res = await fetch('/api/creative/knowledge', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        if (res.ok) {
+          const data = (await res.json()) as {
+            units?: Array<{ status?: string; domainScope?: string[] }>
+          }
+          const confirmed = (data.units ?? []).filter((u) => u.status === '已确认')
+          const domains: string[] = []
+          for (const u of confirmed) {
+            for (const d of u.domainScope ?? []) {
+              if (!domains.includes(d)) domains.push(d)
+            }
+          }
+          setKnowledge({ count: confirmed.length, domains: domains.slice(0, 4) })
+        }
+      } catch {
+        // 静默：知识优势为空即可
+      }
     }
     init()
   }, [router])
@@ -381,6 +418,33 @@ export default function StyleProfilePage() {
   const displayPersonality =
     profile?.creator_personality || report?.personality.main || ''
 
+  // ── AI 理解报告四段式的数据派生（全部来自已加载数据，不新增判断逻辑）──
+  const expressionTags = Array.from(
+    new Set([
+      ...(report?.languageDna.aiLabels ?? []),
+      ...(profile?.tone_tags ?? []),
+    ])
+  ).slice(0, 6)
+  const expressionSummary = report
+    ? `${report.languageDna.pace !== '未知' ? report.languageDna.pace : '节奏未定'} · 平均 ${report.languageDna.avgLength} 字/篇`
+    : profile
+      ? `平均 ${profile.avg_length} 字/篇`
+      : ''
+  const domainTags = Array.from(
+    new Set([
+      ...(profile?.topic_preferences ?? []),
+      ...(report?.motifDna.map((d) => d.label) ?? []),
+    ])
+  ).slice(0, 6)
+  /** 创作习惯：叙事结构特征 + 你在修改中表达过的偏好（like 类） */
+  const habitItems = [
+    ...(report?.narrativeDna.map((d) => `常用结构：${d.label}`) ?? []),
+    ...(profile?.editing_profile?.preferences ?? [])
+      .filter((p) => p.type === 'like')
+      .slice(0, 2)
+      .map((p) => p.statement),
+  ].slice(0, 4)
+
   /** 语言事实四卡（确定性统计）：有 DNA 报告时收入折叠区，主视图聚焦人格与 DNA */
   const languageFactsCards = profile ? (
     <div className="grid grid-cols-1 gap-4">
@@ -426,43 +490,55 @@ export default function StyleProfilePage() {
   ) : null
 
   return (
-    <div className="inner-page gen-stage" data-mode="inspiration">
-      <div className="inner-container">
-        {/* ── 顶部 ── */}
-        <div className="inner-header">
-          <div>
-            <Link href="/dashboard" className="inner-back">← 返回主页</Link>
-            <h1 className="inner-header-title">我的风格卡</h1>
-            <p className="inner-header-sub">
-              基于你的历史内容和生成反馈，自动统计出的创作风格特征
-            </p>
-          </div>
-        </div>
+    <PageShell>
+      <Link
+        href="/dashboard"
+        className="mb-5 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
+      >
+        ← 返回创作机会
+      </Link>
 
-        {/* ── 错误提示 ── */}
-        {error && (
-          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4 mb-6">
-            <p className="text-sm text-red-400">{error}</p>
-          </div>
-        )}
+      {/* 页面定位：这不是个人资料，而是 AI 的理解报告 */}
+      <PageHeader
+        eyebrow="AI 理解报告"
+        title="AI 现在是这样理解你的"
+        description="这不是一份个人资料，而是 AI 从你的作品、修改与素材里读出来的结论。它会直接决定 AI 帮你选题、起草和修改时的判断。"
+        ai={
+          <AiStatus
+            task="profile"
+            active={loading || summarizing || recomputing}
+            variant="bar"
+          />
+        }
+      />
 
-        {/* ── 加载中 ── */}
-        {loading && (
-          <div className="flex items-center gap-2 py-20 justify-center">
-            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:-0.3s]" />
-            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:-0.15s]" />
-            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce" />
-            <span className="ml-3 text-sm text-zinc-400">正在读取你的风格卡…</span>
-          </div>
-        )}
+      {/* ── 错误提示 ── */}
+      {error && (
+        <ErrorState
+          className="mb-6"
+          message={error}
+          onRetry={() => {
+            void (async () => {
+              const { data: { session } } = await supabase.auth.getSession()
+              if (session) await loadProfile(session.access_token)
+            })()
+          }}
+        />
+      )}
 
-        {/* ── 空数据兜底 ── */}
-        {!loading && !profile && !error && (
-          <div className="text-center py-20">
-            <p className="text-zinc-400 text-sm">暂无风格数据</p>
-            <p className="text-zinc-600 text-xs mt-2">请先生成或保存一些内容</p>
-          </div>
-        )}
+      {/* ── 加载中 ── */}
+      {loading && <SkeletonList count={3} height={112} />}
+
+      {/* ── 空数据兜底 ── */}
+      {!loading && !profile && !error && (
+        <EmptyState
+          icon={<Sparkles size={18} />}
+          title="AI 还没有足够的材料认识你"
+          description="先完成几篇作品或沉淀一些素材。有了足够样本，这里会出现 AI 对你的完整理解报告。"
+          actionLabel="开始第一次创作"
+          actionHref="/generate"
+        />
+      )}
 
         {/* ── 风格卡展示 ── */}
         {!loading && profile && !editing && (
@@ -481,6 +557,98 @@ export default function StyleProfilePage() {
                   更新于 {new Date(profile.updated_at).toLocaleDateString('zh-CN')}
                 </span>
               )}
+            </div>
+
+            {/* ── AI 理解报告四段式：表达特点 / 关注领域 / 知识优势 / 创作习惯 ── */}
+            <div className="mb-8 grid gap-3 sm:grid-cols-2">
+              <SurfaceCard className="flex flex-col gap-2.5">
+                <CardLabel icon={<MessageSquare size={13} />}>
+                  我的表达特点
+                </CardLabel>
+                {expressionTags.length > 0 ? (
+                  <>
+                    <div className="flex flex-wrap gap-1.5">
+                      {expressionTags.map((t) => (
+                        <TagChip key={t} tone="brand" size="sm">
+                          {t}
+                        </TagChip>
+                      ))}
+                    </div>
+                    <p className="text-[12px] leading-relaxed text-zinc-500">
+                      {expressionSummary}
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-[13px] leading-relaxed text-zinc-500">
+                    样本还不够，AI 暂时没有形成稳定的表达判断。
+                  </p>
+                )}
+              </SurfaceCard>
+
+              <SurfaceCard className="flex flex-col gap-2.5">
+                <CardLabel icon={<Compass size={13} />}>我的关注领域</CardLabel>
+                {domainTags.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {domainTags.map((t) => (
+                      <TagChip key={t} size="sm">
+                        {t}
+                      </TagChip>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[13px] leading-relaxed text-zinc-500">
+                    还没有稳定的主题倾向，继续创作，AI 会自己看出来。
+                  </p>
+                )}
+              </SurfaceCard>
+
+              <SurfaceCard className="flex flex-col gap-2.5">
+                <CardLabel icon={<Library size={13} />}>我的知识优势</CardLabel>
+                {knowledge && knowledge.count > 0 ? (
+                  <>
+                    <p className="text-[15px] font-medium text-zinc-100">
+                      {knowledge.count} 条已确认知识
+                    </p>
+                    {knowledge.domains.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {knowledge.domains.map((d) => (
+                          <TagChip key={d} tone="accent" size="sm">
+                            {d}
+                          </TagChip>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-[12px] leading-relaxed text-zinc-500">
+                      这些是你亲自确认过的判断，AI 会在创作时优先参考。
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-[13px] leading-relaxed text-zinc-500">
+                    去知识库确认几条知识，AI 才知道你真正擅长什么。
+                  </p>
+                )}
+              </SurfaceCard>
+
+              <SurfaceCard className="flex flex-col gap-2.5">
+                <CardLabel icon={<Clock size={13} />}>我的创作习惯</CardLabel>
+                {habitItems.length > 0 ? (
+                  <ul className="space-y-1.5">
+                    {habitItems.map((h) => (
+                      <li
+                        key={h}
+                        className="flex gap-2 text-[13px] leading-relaxed text-zinc-300"
+                      >
+                        <span className="shrink-0 text-indigo-300/70">·</span>
+                        <span>{h}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-[13px] leading-relaxed text-zinc-500">
+                    AI 还在观察你的结构与修改习惯。
+                  </p>
+                )}
+              </SurfaceCard>
             </div>
 
             {/* ── 创作者人格 Creator Model ── */}
@@ -873,8 +1041,7 @@ export default function StyleProfilePage() {
             </div>
           </>
         )}
-      </div>
-    </div>
+    </PageShell>
   )
 }
 

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { authFailureResponse } from '@/lib/apiAuth'
+import { authenticateRequest, authFailureResponse, type AuthResult } from '@/lib/apiAuth'
 import { createServerClient } from '@/lib/supabaseServer'
 import { generateEmbedding } from '@/lib/storage'
 import { averageVectors, parseVector, updateUserStyleVector } from '@/lib/styleVector'
@@ -62,19 +62,8 @@ function strArr(v: unknown, maxLen: number, maxCount: number): string[] {
  * 项目 session 存 localStorage，前端需显式把 access_token 传上来。
  * export 供同目录 summarize 子路由复用，避免鉴权逻辑分叉。
  */
-export async function authenticateStyleProfile(req: Request) {
-  const authHeader = req.headers.get('authorization') ?? ''
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
-  if (!token) return null
-
-  const supabase = createServerClient(token)
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser(token)
-  if (error || !user) return null
-
-  return { supabase, userId: user.id }
+export async function authenticateStyleProfile(req: Request): Promise<AuthResult> {
+  return authenticateRequest(req)
 }
 
 // ────────────────────────────────────────────────────────────
@@ -129,9 +118,7 @@ async function loadHistoryContents(
 export async function GET(req: Request) {
   try {
     const auth = await authenticateStyleProfile(req)
-    if (!auth) {
-      return NextResponse.json({ error: '请先登录' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
     const { supabase, userId } = auth
 
     // 1) 先查 style_profiles 是否已有记录
@@ -196,9 +183,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const auth = await authenticateStyleProfile(req)
-    if (!auth) {
-      return NextResponse.json({ error: '请先登录' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
     const { supabase, userId } = auth
 
     const body = (await req.json()) as UpdateBody

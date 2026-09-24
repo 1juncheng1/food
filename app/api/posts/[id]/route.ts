@@ -3,6 +3,7 @@ import {
   authenticateWithToken,
   extractBearerToken,
 } from '@/lib/storage'
+import { invalidatePostsBaseCache } from '@/lib/postsCache'
 
 export const maxDuration = 30
 export const dynamic = 'force-dynamic'
@@ -21,9 +22,7 @@ export async function GET(
       return NextResponse.json({ error: '请先登录' }, { status: 401 })
     }
     const auth = await authenticateWithToken(token)
-    if (!auth) {
-      return NextResponse.json({ error: '登录已过期' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
     const { supabase } = auth
 
     const { id: postId } = await params
@@ -73,9 +72,7 @@ export async function DELETE(
       return NextResponse.json({ error: '请先登录' }, { status: 401 })
     }
     const auth = await authenticateWithToken(token)
-    if (!auth) {
-      return NextResponse.json({ error: '登录已过期' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
     const { supabase, userId } = auth
 
     const { id: postId } = await params
@@ -128,6 +125,9 @@ export async function DELETE(
         // 图片清理失败不阻断删除流程
       }
     }
+
+    // 已删的帖子不能继续出现在广场：失效公共列表缓存
+    invalidatePostsBaseCache()
 
     return NextResponse.json({ success: true })
   } catch (error) {

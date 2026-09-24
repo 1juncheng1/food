@@ -4,16 +4,17 @@
 // 契约：
 //   - 所有响应带 building 布尔：该用户存在 status='running' 的 build 时为 true
 //     （前端据此显示「正在分析你的第一篇作品…」，配合既有 20s 轮询自动刷新）
+//   - 未登录 → 401：游客模式已下线，登录入口统一在首页，
+//     不再给匿名请求返回"模板卡 + 引导文案"这种看起来像能用的 200
 //   - 降级卡 reason 不再用答非所问的「大众创作方向」：
-//       guest       → 引导登录
 //       cold_start  → 告知画像积累中、第一篇创作后即有定制选题
-//   - 成本防线：游客与失效 token 不触发 ingestGlobalTrending（走 Tavily 付费搜索，
+//   - 成本防线：未登录与失效 token 都不触发 ingestGlobalTrending（走 Tavily 付费搜索，
 //     匿名请求不应成为成本入口）；仅登录用户的 cold_start 路径保留后台懒触发
 // ============================================================
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { getUser, getActiveSuggestions, getProfile, getLastBuild, findRunningBuild, runBuild, getGlobalTrending, ingestGlobalTrending } = vi.hoisted(() => ({
+const { getUser, getActiveSuggestions, getProfile, getLastBuild, findRunningBuild, runBuild, getGlobalTrending, ingestGlobalTrending, evaluateRebuild, refillSuggestions } = vi.hoisted(() => ({
   getUser: vi.fn().mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null }),
   getActiveSuggestions: vi.fn().mockResolvedValue([]),
   getProfile: vi.fn().mockResolvedValue({ profile: null }),
@@ -22,6 +23,12 @@ const { getUser, getActiveSuggestions, getProfile, getLastBuild, findRunningBuil
   runBuild: vi.fn().mockResolvedValue(null),
   getGlobalTrending: vi.fn().mockResolvedValue([]),
   ingestGlobalTrending: vi.fn().mockResolvedValue('skipped'),
+  // P0：触发判定已迁到 rebuildTrigger，由它自己的单测覆盖；
+  // 本文件固定"不触发"基线，保持原有断言意图不变。
+  evaluateRebuild: vi.fn().mockResolvedValue({
+    needed: false, reason: 'none', workSignal: false, sinceIso: null, freshWorkTopics: [],
+  }),
+  refillSuggestions: vi.fn().mockResolvedValue({ added: 0, reason: 'locked' }),
 }))
 
 vi.mock('@/lib/supabaseServer', () => ({
@@ -43,6 +50,8 @@ vi.mock('@/lib/supabaseServer', () => ({
 vi.mock('@/lib/creative/interest/suggestionRepo', () => ({ getActiveSuggestions }))
 vi.mock('@/lib/creative/interest/interestRepo', () => ({ getProfile, getLastBuild, findRunningBuild }))
 vi.mock('@/lib/creative/interest/builder', () => ({ runBuild }))
+vi.mock('@/lib/creative/interest/rebuildTrigger', () => ({ evaluateRebuild }))
+vi.mock('@/lib/creative/interest/refill', () => ({ refillSuggestions, topUpQueue: vi.fn() }))
 vi.mock('@/lib/ci/globalTrending', () => ({ getGlobalTrending, ingestGlobalTrending }))
 vi.mock('@/lib/creative/interest/fallbackTemplates', () => ({
   getFallbackInspirations: () => [
@@ -70,18 +79,21 @@ beforeEach(() => {
   runBuild.mockResolvedValue(null)
   getGlobalTrending.mockResolvedValue([])
   ingestGlobalTrending.mockResolvedValue('skipped')
+  evaluateRebuild.mockResolvedValue({
+    needed: false, reason: 'none', workSignal: false, sinceIso: null, freshWorkTopics: [],
+  })
+  refillSuggestions.mockResolvedValue({ added: 0, reason: 'locked' })
 })
 
 /** fire-and-forget 的 ingest 在响应后 settle；断言其调用前先让微任务排空 */
 const flushAsync = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('GET /api/inspirations：building 在途状态', () => {
-  it('游客降级响应带 building:false', async () => {
+  it('未登录 → 401，不再返回 guest 降级卡', async () => {
     const res = await get()
+    expect(res.status).toBe(401)
     const body = await res.json()
-    expect(body.personalized).toBe(false)
-    expect(body.degrade_reason).toBe('guest')
-    expect(body.building).toBe(false)
+    expect(body.error).toBeTruthy()
   })
 
   it('登录用户有在途 build（首篇创作后重建中）→ cold_start 且 building:true', async () => {
@@ -101,11 +113,11 @@ describe('GET /api/inspirations：building 在途状态', () => {
 })
 
 describe('GET /api/inspirations：降级文案诚实化（行为E）', () => {
-  it('游客看到登录引导文案，而非"大众创作方向"', async () => {
+  it('未登录不返回任何推荐卡（登录引导在首页完成，不在卡片文案里做）', async () => {
     const res = await get()
+    expect(res.status).toBe(401)
     const body = await res.json()
-    expect(body.inspirations[0].reason).not.toBe('大众创作方向')
-    expect(body.inspirations[0].reason).toContain('登录')
+    expect(body.inspirations).toBeUndefined()
   })
 
   it('冷启动用户看到"第一篇创作后定制"的预期管理文案', async () => {
@@ -117,29 +129,26 @@ describe('GET /api/inspirations：降级文案诚实化（行为E）', () => {
 })
 
 describe('GET /api/inspirations：P1 真实热点冷启动', () => {
-  it('游客请求且当日有全局热点 → 返回真实热点卡 fallback_source=trending，但不触发后台摄取', async () => {
+  it('未登录即使当日有全局热点也 401，绝不触发付费摄取', async () => {
     getGlobalTrending.mockResolvedValue([
       { title: '真实热点1', description: '热点描述1', category: 'AI工具最新趋势', url: 'https://x/1', platform: 'web_search' },
       { title: '真实热点2', description: '热点描述2', category: '副业变现新方向', url: null, platform: 'news' },
       { title: '真实热点3', description: '热点描述3', category: '自媒体运营爆款技巧', url: null, platform: 'web_search' },
     ])
     const res = await get()
-    const body = await res.json()
-    expect(body.fallback_source).toBe('trending')
-    expect(body.inspirations.map((i: { title: string }) => i.title)).toEqual(['真实热点1', '真实热点2', '真实热点3'])
-    expect(body.inspirations[0].params.category).toBe('AI工具最新趋势')
-    // WF10 诚实文案不回退：游客仍看到登录引导 reason
-    expect(body.inspirations[0].reason).toContain('登录')
+    expect(res.status).toBe(401)
     await flushAsync()
-    // 摄取走 Tavily 付费搜索，匿名请求不得成为成本入口
+    // 摄取走 Tavily 付费搜索：匿名请求不得成为成本入口
     expect(ingestGlobalTrending).not.toHaveBeenCalled()
+    // 连读取都不该发生：401 必须在任何数据访问之前返回
+    expect(getGlobalTrending).not.toHaveBeenCalled()
   })
 
-  it('无当日热点 → 回退静态模板 fallback_source=template，游客不触发摄取', async () => {
+  it('未登录且无热点 → 仍 401，不回退模板卡', async () => {
     const res = await get()
+    expect(res.status).toBe(401)
     const body = await res.json()
-    expect(body.fallback_source).toBe('template')
-    expect(body.inspirations[0].title).toBe('模板选题A')
+    expect(body.inspirations).toBeUndefined()
     await flushAsync()
     expect(ingestGlobalTrending).not.toHaveBeenCalled()
   })

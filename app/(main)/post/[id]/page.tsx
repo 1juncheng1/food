@@ -4,11 +4,20 @@
 // moment：普通灵感正文 + 图片
 // archive：完整创作档案叙事——灵感起点 → AI 创作方向 → 版本变化记录 → 最终作品 → 作者总结
 // 档案展示的是发布瞬间的只读快照，与作品之后的迭代无关。
+//
+// 社区化补齐：作者卡（头像/昵称/主页入口）+ 互动按钮（点赞/收藏/分享）+ 评论区，
+// 让"阅读 → 讨论 → 查看作者"在详情页内闭环，而不必回到广场。
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { useParams } from 'next/navigation'
-import { supabase } from '@/lib/supabaseClient'
+import { useParams, useRouter } from 'next/navigation'
+import { getValidSession } from '@/lib/supabaseClient'
+import { EmptyState, PageShell, SkeletonList } from '@/components/vision'
+import AuthorBadge from '@/components/community/author-badge'
+import PostActionBar from '@/components/community/post-action-bar'
+import CommentSection from '@/components/community/comment-section'
+import { toggleInteraction } from '@/lib/community/postApi'
+import { extractTitleAndSummary, formatDateTime } from '@/lib/community/format'
 import type { ArchiveSnapshot } from '@/lib/creative/archive'
 
 interface PostDetail {
@@ -23,152 +32,297 @@ interface PostDetail {
   save_count: number
   created_at: string
   author_name: string
+  author_avatar_url?: string | null
+  current_user_liked: boolean
+  current_user_saved: boolean
   image_url: string | null
   post_type: string
   archive: ArchiveSnapshot | null
   source_project_id: string | null
 }
 
-function formatTime(s: string): string {
-  return new Date(s).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
 export default function PostDetailPage() {
   const params = useParams<{ id: string }>()
+  const router = useRouter()
   const [post, setPost] = useState<PostDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [token, setToken] = useState<string | null>(null)
+  const [viewerName, setViewerName] = useState<string>('')
+  const [viewerId, setViewerId] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [busy, setBusy] = useState<Set<string>>(new Set())
+  const busyRef = useRef<Set<string>>(new Set())
+  const postRef = useRef<PostDetail | null>(null)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const { data: sessionData } = await supabase.auth.getSession()
-      const token = sessionData.session?.access_token
-      if (!token) {
+  useEffect(() => {
+    postRef.current = post
+  }, [post])
+
+  // 加载函数定义在 effect 内部（与 /explore 同模式），避免 effect 内同步 setState
+  useEffect(() => {
+    if (!params.id) return
+
+    async function load(id: string) {
+      const session = await getValidSession()
+      if (!session) {
         setError('请先登录后查看')
         setLoading(false)
         return
       }
-      const res = await fetch(`/api/posts/${params.id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const data = (await res.json().catch(() => null)) as
-        | { post?: PostDetail; error?: string }
-        | null
-      if (!res.ok || !data?.post) {
-        setError(data?.error ?? '帖子不存在')
-      } else {
-        setPost(data.post)
+      setToken(session.access_token)
+      setViewerId(session.user.id)
+      const metaName = session.user.user_metadata?.display_name
+      setViewerName(
+        typeof metaName === 'string' && metaName.trim()
+          ? metaName.trim()
+          : session.user.email?.split('@')[0] ?? ''
+      )
+      setError(null)
+      try {
+        const res = await fetch(`/api/posts/${id}`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        const data = (await res.json().catch(() => null)) as
+          | { post?: PostDetail; error?: string }
+          | null
+        if (!res.ok || !data?.post) {
+          setError(data?.error ?? '帖子不存在或未公开')
+        } else {
+          setPost(data.post)
+        }
+      } catch {
+        setError('网络异常，请稍后重试')
+      } finally {
+        setLoading(false)
       }
-    } catch {
-      setError('网络异常，请稍后重试')
-    } finally {
-      setLoading(false)
     }
+
+    void load(params.id)
   }, [params.id])
 
-  useEffect(() => {
-    if (params.id) void load()
-  }, [params.id, load])
+  /** 点赞 / 收藏：乐观更新 + 服务端权威值校正 + 失败精确回退 */
+  const handleToggle = useCallback(
+    async (type: 'like' | 'save') => {
+      const current = postRef.current
+      if (!token || !current) return
+      const key = type
+      if (busyRef.current.has(key)) return
+
+      const snapshot = current
+      busyRef.current.add(key)
+      setBusy(new Set(busyRef.current))
+
+      setPost((prev) => {
+        if (!prev) return prev
+        if (type === 'like') {
+          const next = !prev.current_user_liked
+          return {
+            ...prev,
+            current_user_liked: next,
+            like_count: Math.max(0, prev.like_count + (next ? 1 : -1)),
+          }
+        }
+        const next = !prev.current_user_saved
+        return {
+          ...prev,
+          current_user_saved: next,
+          save_count: Math.max(0, prev.save_count + (next ? 1 : -1)),
+        }
+      })
+
+      try {
+        const state = await toggleInteraction(token, current.id, type)
+        setPost((prev) =>
+          prev
+            ? {
+                ...prev,
+                current_user_liked: state.liked ?? prev.current_user_liked,
+                current_user_saved: state.saved ?? prev.current_user_saved,
+                like_count: state.likeCount ?? prev.like_count,
+                save_count: state.saveCount ?? prev.save_count,
+                comment_count: state.commentCount ?? prev.comment_count,
+              }
+            : prev
+        )
+      } catch (e) {
+        setPost(snapshot)
+        setError(e instanceof Error ? e.message : '操作失败，请重试')
+      } finally {
+        busyRef.current.delete(key)
+        setBusy(new Set(busyRef.current))
+      }
+    },
+    [token]
+  )
+
+  /** 删除自己的作品：成功后回广场（详情页没了，留在原页只会显示"不存在"） */
+  const handleDeletePost = useCallback(async () => {
+    const current = postRef.current
+    if (!token || !current || deleting) return
+    if (!confirm('确定删除这篇灵感吗？')) return
+    setDeleting(true)
+    try {
+      const res = await fetch(`/api/posts/${current.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null
+        setError(data?.error ?? '删除失败')
+        return
+      }
+      router.replace('/explore')
+    } catch {
+      setError('网络异常，删除失败')
+    } finally {
+      setDeleting(false)
+    }
+  }, [token, deleting, router])
 
   const isArchive = post?.post_type === 'archive' && post.archive
+  const plainTitle = post ? extractTitleAndSummary(post.content).title : ''
+  const heading = isArchive ? post!.archive!.title || plainTitle : plainTitle || '灵感分享'
+  const isOwn = !!post && !!viewerId && viewerId === post.user_id
 
   return (
-    <div className="inner-page gen-stage" data-mode="inspiration">
-      <Link
-        href="/explore"
-        className="inline-flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition mb-6"
-      >
-        ← 返回灵感广场
-      </Link>
+    <PageShell width="narrow">
+        <Link
+          href="/explore"
+          className="mb-6 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
+        >
+          ← 返回灵感广场
+        </Link>
 
-      {loading && (
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-10 text-center text-sm text-zinc-500">
-          加载中…
-        </div>
-      )}
+        {loading && <SkeletonList count={2} height={132} />}
 
-      {error && !loading && (
-        <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-10 text-center">
-          <p className="text-sm text-red-300">{error}</p>
-          <Link
-            href="/explore"
-            className="inline-block mt-4 text-xs text-indigo-400 hover:text-indigo-300"
-          >
-            回到灵感广场
-          </Link>
-        </div>
-      )}
+        {error && !loading && (
+          <EmptyState
+            title="这条内容没能打开"
+            description={error}
+            actionLabel="回到灵感广场"
+            actionHref="/explore"
+          />
+        )}
 
-      {post && !loading && (
-        <article className="space-y-6">
-          {/* ── 通用头部 ── */}
-          <header>
-            {isArchive && (
-              <span className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg bg-indigo-500/15 text-indigo-300 border border-indigo-500/25 mb-3">
-                📖 创作档案 · AI 协作全过程
-              </span>
+        {post && !loading && (
+          <article className="space-y-6">
+            {/* ── 标题 + 元信息 ── */}
+            <header>
+              {isArchive && (
+                <span className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg bg-indigo-500/15 text-indigo-300 border border-indigo-500/25 mb-3">
+                  📖 创作档案 · AI 协作全过程
+                </span>
+              )}
+              <h1 className="text-xl font-bold text-zinc-100 leading-snug">{heading}</h1>
+              <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-3 text-xs text-zinc-500">
+                <span className="px-2 py-0.5 rounded bg-zinc-800/80 text-zinc-400">
+                  {post.category}
+                </span>
+                <span>{formatDateTime(post.created_at)}</span>
+              </div>
+            </header>
+
+            {/* ── 作者卡：点击头像/昵称进作者主页 ── */}
+            <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-6 py-5">
+              <AuthorBadge
+                userId={post.user_id}
+                name={post.author_name}
+                avatarUrl={post.author_avatar_url}
+                size="lg"
+              />
+              <div className="flex items-center gap-3 mt-4 flex-wrap">
+                <Link
+                  href={`/profile/${post.user_id}`}
+                  className="text-xs text-indigo-400 hover:text-indigo-300 transition"
+                >
+                  查看 TA 的主页与更多作品 →
+                </Link>
+                {isOwn && (
+                  <button
+                    type="button"
+                    onClick={() => void handleDeletePost()}
+                    disabled={deleting}
+                    className="text-xs text-zinc-600 hover:text-red-400 disabled:opacity-40 transition"
+                  >
+                    {deleting ? '删除中…' : '删除这篇'}
+                  </button>
+                )}
+              </div>
+            </section>
+
+            {/* ── 正文 ── */}
+            {isArchive ? (
+              <ArchiveStory archive={post.archive!} />
+            ) : (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-6 py-5">
+                <p className="text-sm text-zinc-300 leading-loose whitespace-pre-wrap">
+                  {post.content}
+                </p>
+                {post.image_url && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={post.image_url}
+                    alt="配图"
+                    className="mt-4 rounded-lg max-w-full border border-zinc-800"
+                  />
+                )}
+              </div>
             )}
-            <h1 className="text-xl font-bold text-zinc-100 leading-snug">
-              {isArchive ? post.archive!.title : '灵感分享'}
-            </h1>
-            <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-3 text-xs text-zinc-500">
-              <span className="text-zinc-300 font-medium">{post.author_name || '未知用户'}</span>
-              <span>{formatTime(post.created_at)}</span>
-              <span className="px-2 py-0.5 rounded bg-zinc-800/80 text-zinc-400">
-                {post.category}
-              </span>
-            </div>
+
+            {/* ── 标签 ── */}
             {post.tags && post.tags.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mt-3">
+              <div className="flex flex-wrap gap-2">
                 {post.tags.map((t) => (
-                  <span key={t} className="text-[11px] text-zinc-500">
+                  <span
+                    key={t}
+                    className="text-xs px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
+                  >
                     #{t}
                   </span>
                 ))}
               </div>
             )}
-          </header>
 
-          {/* ── 档案：创作故事 ── */}
-          {isArchive ? (
-            <ArchiveStory archive={post.archive!} />
-          ) : (
-            /* ── 普通灵感帖 ── */
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-6 py-5">
-              <p className="text-sm text-zinc-300 leading-loose whitespace-pre-wrap">
-                {post.content}
-              </p>
-              {post.image_url && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={post.image_url}
-                  alt="配图"
-                  className="mt-4 rounded-lg max-w-full border border-zinc-800"
-                />
-              )}
-            </div>
-          )}
+            {/* ── 互动按钮 ── */}
+            <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-6 py-4">
+              <PostActionBar
+                postId={post.id}
+                liked={post.current_user_liked}
+                saved={post.current_user_saved}
+                likeCount={post.like_count}
+                commentCount={post.comment_count}
+                saveCount={post.save_count}
+                busyLike={busy.has('like')}
+                busySave={busy.has('save')}
+                onToggleLike={() => void handleToggle('like')}
+                onToggleSave={() => void handleToggle('save')}
+              />
+            </section>
 
-          {/* ── 互动计数（互动操作在广场列表中进行） ── */}
-          <footer className="flex items-center gap-5 text-xs text-zinc-600 pt-4 border-t border-zinc-800/70">
-            <span>👍 {post.like_count}</span>
-            <span>💬 {post.comment_count}</span>
-            <span>⭐ {post.save_count}</span>
-            <Link href="/explore" className="ml-auto text-indigo-400/80 hover:text-indigo-300">
-              去广场互动 →
-            </Link>
-          </footer>
-        </article>
-      )}
-    </div>
+            {/* ── 评论区 ── */}
+            <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-6 py-5">
+              <h2 className="text-sm font-medium text-zinc-200 mb-1">
+                评论 {post.comment_count > 0 ? `· ${post.comment_count}` : ''}
+              </h2>
+              <CommentSection
+                postId={post.id}
+                token={token}
+                viewerName={viewerName}
+                viewerId={viewerId ?? undefined}
+                onCommentAdded={() =>
+                  setPost((prev) =>
+                    prev ? { ...prev, comment_count: prev.comment_count + 1 } : prev
+                  )
+                }
+                onCommentDeleted={(count) =>
+                  setPost((prev) => (prev ? { ...prev, comment_count: count } : prev))
+                }
+              />
+            </section>
+          </article>
+        )}
+    </PageShell>
   )
 }
 
@@ -274,7 +428,9 @@ function ArchiveStory({ archive }: { archive: ArchiveSnapshot }) {
       <section className="rounded-xl border border-emerald-500/20 bg-zinc-900/40 px-6 py-5">
         <h2 className="text-sm font-semibold text-emerald-200/90 mb-3">
           ✍️ 最终作品
-          <span className="text-[11px] font-normal text-zinc-600 ml-2">V{archive.finalVersionNumber}</span>
+          <span className="text-[11px] font-normal text-zinc-600 ml-2">
+            V{archive.finalVersionNumber}
+          </span>
         </h2>
         <p className="text-sm text-zinc-200 leading-loose whitespace-pre-wrap">
           {archive.finalWork}

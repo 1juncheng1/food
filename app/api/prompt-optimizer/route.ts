@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server'
 import { IDENTITY_TEMPLATES } from '@/lib/identityTemplates'
-import { createServerClient } from '@/lib/supabaseServer'
-import { callDeepSeekChat, type ChatMessage } from '@/lib/llm'
+import { authenticateRequest, type AuthResult } from '@/lib/apiAuth'
+import { callDeepSeekChat, isLlmNetworkError, llmUserMessage, type ChatMessage } from '@/lib/llm'
+import { addUsage, INSUFFICIENT_POINTS_MESSAGE, ZERO_USAGE } from '@/lib/balance'
+// Phase 4：AI 计费改为「调用前预扣 + 调用后按真实 token 结算」
+import { refundAiCost, reserveAiCost, settleAiCost } from '@/lib/aiCost'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { resolveTargetLanguage } from '@/lib/languageConsistency'
 import {
   normalizeBlueprint,
@@ -194,33 +198,33 @@ interface StyleProfile {
  * 强制鉴权：只有登录用户才能生成文案。
  * 游客请求直接返回 401，不进入生成流程。
  */
-async function authenticateRequired(req: Request) {
-  const authHeader = req.headers.get('authorization') ?? ''
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
-  if (!token) return null
-
-  const supabase = createServerClient(token)
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser(token)
-  if (error || !user) return null
-
-  return { supabase, userId: user.id }
+/**
+ * 鉴权统一走 lib/apiAuth：无 token → 401「请先登录后再生成文案」；
+ * 网络故障 → 503「网络异常」（已登录用户不得踢）；凭证失效 → 401「登录已过期」。
+ */
+async function authenticateRequired(req: Request): Promise<AuthResult> {
+  return authenticateRequest(req, '请先登录后再生成文案')
 }
 
 export async function POST(req: Request) {
+  // ── AI 计费状态（Phase 4）─────────────────────────────────────
+  // 刻意声明在 try **之外**：任何异常分支都要能读到它，把预扣退回去。
+  //   预扣成功 → 生成 → 结算（多退少补）
+  //   中途任何失败 → 全额退，绝不让"没生成出东西还扣了积分"
+  let billing: {
+    supabase: SupabaseClient
+    userId: string
+    refId: string
+    reserved: number
+  } | null = null
+  let settled = false
+
   try {
     const body = (await req.json()) as RequestBody
 
     // 强制鉴权：游客不可生成文案，只有登录用户才能使用
     const auth = await authenticateRequired(req)
-    if (!auth) {
-      return NextResponse.json(
-        { error: '请先登录后再生成文案' },
-        { status: 401 }
-      )
-    }
+    if (!auth.ok) return auth.response
 
     // ── 限流：5 次/60s/用户（Prompt-optimizer 是重成本 LLM 路由）──
     const rl = rateLimit(
@@ -236,6 +240,44 @@ export async function POST(req: Request) {
           headers: { 'Retry-After': String(rl.retryAfterSec) },
         }
       )
+    }
+
+    // ── 调用前预扣：余额不足 → 绝不发起付费 LLM 调用（需求 §18）──
+    //
+    // 与旧逻辑的本质差别：以前只是「查一下够不够最低扣费」，查完到真正扣费
+    // 之间隔着两次 LLM 网络往返；并发请求会同时通过检查，最后谁也扣不动。
+    // 现在把「扣」提前到「检查」的同一时刻（行锁内原子完成），
+    // 生成完再按真实 token 用量多退少补（settleAiCost）。
+    const billingRefId = crypto.randomUUID()
+    const reserved = await reserveAiCost({
+      supabase: auth.supabase,
+      userId: auth.userId,
+      ability: 'generation',
+      refId: billingRefId,
+      description: '正文生成预扣',
+    })
+
+    if (!reserved.ok) {
+      // fail-open 只在**读不到**时生效：数据库抖动不该锁死创作。
+      // 但明确判定为余额不足时，必须拦住——否则成本就是平台自己承担。
+      if (reserved.code === 'insufficient_balance') {
+        return NextResponse.json(
+          {
+            error: INSUFFICIENT_POINTS_MESSAGE,
+            code: 'insufficient_balance',
+            balance: reserved.balance ?? 0,
+          },
+          { status: 402 }
+        )
+      }
+      console.warn('[aiCost] 预扣失败（按放行处理）:', reserved.code)
+    } else {
+      billing = {
+        supabase: auth.supabase,
+        userId: auth.userId,
+        refId: billingRefId,
+        reserved: reserved.reserved,
+      }
     }
 
     // usage_filter 推断（inferUsageFilter）已在 Phase 3 搬迁至
@@ -310,15 +352,19 @@ export async function POST(req: Request) {
       const isCustom = improveDirection === 'custom'
       const diagLines = analysis
         ? [
-            ...analysis.strengths.slice(0, 3).map((s) => `  [优势] ${s}`),
-            ...analysis.problems.slice(0, 3).map((s) => `  [问题] ${s}`),
-            ...analysis.suggestions.slice(0, 3).map((s) => `  [建议] ${s}`),
+            ...analysis.strengths.slice(0, 3).map((s) => `  [表现良好] ${s}`),
+            ...analysis.improvements.slice(0, 3).map((s) => `  [需要改进] ${s}`),
+            // 旧版诊断遗留字段：有则补上，无则忽略
+            ...(analysis.problems ?? []).slice(0, 3).map((s) => `  [问题] ${s}`),
+            ...(analysis.suggestions ?? []).slice(0, 3).map((s) => `  [建议] ${s}`),
           ].join('\n')
         : '  （暂无上一版诊断，请凭专业判断重写）'
-      // custom 方向：以用户自己的一句话指令为最高优先级改法；其余方向用诊断中的该方向建议
+      // custom 方向：以用户自己的一句话指令为最高优先级改法；
+      // 其余方向优先用诊断里该方向的建议（旧数据），退回"需要改进"清单，最后才是泛化兜底
       const directionHow = isCustom
         ? improveInstruction
-        : analysis?.nextActions[improveDirection as NextActionKey] ||
+        : analysis?.nextActions?.[improveDirection as NextActionKey] ||
+          (analysis?.improvements?.length ? analysis.improvements.join('；') : '') ||
           `按"${actionMeta.label}"方向整体提升`
 
       improveCtx = {
@@ -831,9 +877,22 @@ ${bp ? '6' : '5'}. 语言精炼、指令清晰，可直接复制给大模型使�
 
     if (!promptRes.ok) {
       console.error('系统提示词生成失败:', promptRes.error)
+      // 一个 token 都没产出：预扣必须全额退，不能让用户为失败买单
+      if (billing) {
+        await refundAiCost({
+          supabase: billing.supabase,
+          userId: billing.userId,
+          refId: billing.refId,
+          amount: billing.reserved,
+          reason: `系统提示词生成失败（${promptRes.error}）`,
+        })
+        billing = null
+      }
+      // 文案按原因区分（余额耗尽 / 超时 / 网络故障），502/503 而非 500：
+      // 这是上游不可用，不是本服务代码错误，且不触发任何登录态变更
       return NextResponse.json(
-        { error: '系统提示词生成失败，请稍后重试', detail: promptRes.error },
-        { status: 500 }
+        { error: llmUserMessage(promptRes.error), detail: promptRes.error },
+        { status: isLlmNetworkError(promptRes.error) ? 503 : 502 }
       )
     }
 
@@ -900,9 +959,20 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
 
     if (!sampleRes.ok) {
       console.error('范文生成失败:', sampleRes.error)
+      // 同上：用户没拿到任何正文，预扣全额退
+      if (billing) {
+        await refundAiCost({
+          supabase: billing.supabase,
+          userId: billing.userId,
+          refId: billing.refId,
+          amount: billing.reserved,
+          reason: `范文生成失败（${sampleRes.error}）`,
+        })
+        billing = null
+      }
       return NextResponse.json(
-        { error: '范文生成失败，请稍后重试', detail: sampleRes.error },
-        { status: 500 }
+        { error: llmUserMessage(sampleRes.error), detail: sampleRes.error },
+        { status: isLlmNetworkError(sampleRes.error) ? 503 : 502 }
       )
     }
 
@@ -1180,10 +1250,38 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
       }
     }
 
+    // ── 生成成功：按本次真实 token 消耗结算（预扣多退少补）──
+    // 放在最后：作品已经生成好了，记账失败绝不能让它变成"生成失败"。
+    // 系统提示词 + 范文两次调用都要算，漏掉任何一次都是平台替用户买单。
+    const totalUsage = addUsage(
+      promptRes.usage ?? ZERO_USAGE,
+      sampleRes.usage ?? ZERO_USAGE
+    )
+    let finalBalance: number | null = null
+    if (billing) {
+      const settledResult = await settleAiCost({
+        supabase: billing.supabase,
+        userId: billing.userId,
+        refId: billing.refId,
+        reserved: billing.reserved,
+        usage: totalUsage,
+        description: '正文生成结算',
+      })
+      settled = true
+      finalBalance = settledResult.balance
+      console.info(
+        `[aiCost] 正文生成：预扣 ${settledResult.reserved} / 实际 ${settledResult.actual}` +
+          `（补扣 ${settledResult.extraCharged}，退还 ${settledResult.refunded}）` +
+          `｜输入(未命中)=${totalUsage.missTokens}, 输入(缓存)=${totalUsage.cachedTokens}, 输出=${totalUsage.outputTokens}`
+      )
+    }
+
     return NextResponse.json({
       systemPrompt,
       sampleText,
       generationId: resultGenId,
+      // 回传最新余额：前端可直接刷新展示，省掉一次查询
+      balance: finalBalance,
       projectId: resultProjectId,
       versionNumber: resultVersionNumber,
       improveDirection: improveCtx?.direction ?? null,
@@ -1207,6 +1305,17 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
     })
   } catch (error) {
     console.error('prompt-optimizer API 错误:', error)
+    // 异常路径：预扣了但没结算 → 全额退。
+    // 用 void + catch：退款失败不能覆盖原始的 500 原因，也不该拖慢错误响应。
+    if (billing && !settled) {
+      void refundAiCost({
+        supabase: billing.supabase,
+        userId: billing.userId,
+        refId: billing.refId,
+        amount: billing.reserved,
+        reason: '生成流程异常中断，预扣全额退还',
+      }).catch(() => {})
+    }
     return NextResponse.json({ error: '服务器内部错误' }, { status: 500 })
   }
 }

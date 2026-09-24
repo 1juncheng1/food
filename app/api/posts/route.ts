@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { CATEGORIES, toCategory } from '@/lib/constants'
+import { CATEGORIES } from '@/lib/constants'
 import { rateLimit } from '@/lib/rateLimit'
 import {
   authenticateWithToken,
@@ -11,81 +11,18 @@ import {
   validateImageFile,
 } from '@/lib/storage'
 import { parseVector, updateUserStyleVector } from '@/lib/styleVector'
-import type { SupabaseClient } from '@supabase/supabase-js'
+import { fetchPostsBaseCached, invalidatePostsBaseCache } from '@/lib/postsCache'
 
 export const maxDuration = 60
 export const dynamic = 'force-dynamic'
 
-// ────────────────────────────────────────────────────────────
-// P3-1: 公共帖子列表服务端缓存（无风格向量分支）
-// 用 Map + TTL 代替 unstable_cache（unstable_cache 不能接收
-// Supabase 客户端对象作为参数，会触发循环引用序列化错误）
-// 模式参考 lib/ci/globalTrending.ts 的 Map + TTL 实现
-// ────────────────────────────────────────────────────────────
-type PostBase = {
-  id: string
-  user_id: string
-  content: string
-  content_type: string
-  category: string
-  tags: string[] | null
-  like_count: number
-  comment_count: number
-  save_count: number
-  is_public: boolean
-  created_at: string
-  author_name: string
-  image_url: string | null
-  post_type: string | null
-  archive: unknown
-  source_project_id: string | null
-}
+// 公共帖子列表缓存已抽到 lib/postsCache.ts：
+// 互动/评论/发布/删除等写路径都要 invalidatePostsBaseCache()，
+// 否则刷新后会拿到 60 秒前的旧计数（"点赞刷新消失"根因之一）。
+export { invalidatePostsBaseCache }
 
-type CacheEntry = {
-  value: PostBase[]
-  expiresAt: number
-}
-
-const postsBaseCache = new Map<string, CacheEntry>()
-const POSTS_BASE_TTL = 60 * 1000 // 60 秒 TTL
-
-async function fetchPostsBaseRaw(
-  supabase: SupabaseClient,
-  limit: number,
-  offset: number
-): Promise<PostBase[]> {
-  const { data, error } = await supabase.rpc('get_posts_base', {
-    p_limit: limit,
-    p_offset: offset,
-  })
-  if (error) {
-    console.error('get_posts_base 失败:', error)
-    return []
-  }
-  return (data ?? []) as PostBase[]
-}
-
-async function fetchPostsBaseCached(
-  supabase: SupabaseClient,
-  limit: number,
-  offset: number
-): Promise<PostBase[]> {
-  const key = `pb:${limit}:${offset}`
-  const now = Date.now()
-  const cached = postsBaseCache.get(key)
-  if (cached && cached.expiresAt > now) {
-    return cached.value
-  }
-  const value = await fetchPostsBaseRaw(supabase, limit, offset)
-  if (value.length > 0) {
-    postsBaseCache.set(key, { value, expiresAt: now + POSTS_BASE_TTL })
-  }
-  return value
-}
-
-export function invalidatePostsBaseCache() {
-  postsBaseCache.clear()
-}
+/** 单个帖子的当前用户状态 */
+type PostUserState = { liked: boolean; saved: boolean }
 
 /** POST 请求体字段 */
 interface PostBody {
@@ -134,9 +71,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: '请先登录' }, { status: 401 })
     }
     const auth = await authenticateWithToken(token)
-    if (!auth) {
-      return NextResponse.json({ error: '登录已过期，请重新登录' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
     const { supabase, userId } = auth
 
     // 从 query string 解析分页参数
@@ -168,7 +103,7 @@ export async function GET(req: Request) {
         p_user_id: userId,
         p_post_ids: postIds,
       })
-      const stateMap = new Map<string, { liked: boolean; saved: boolean }>()
+      const stateMap = new Map<string, PostUserState>()
       for (const row of stateRows ?? []) {
         stateMap.set(row.post_id, {
           liked: !!row.liked,
@@ -187,6 +122,8 @@ export async function GET(req: Request) {
       return NextResponse.json({
         posts,
         hasStyleVector: false,
+        // 前端据此判断"这条是不是我发的"（删除按钮 / 是否可给自己点赞）
+        viewerId: userId,
       })
     }
 
@@ -210,6 +147,7 @@ export async function GET(req: Request) {
     return NextResponse.json({
       posts: data ?? [],
       hasStyleVector: true,
+      viewerId: userId,
     })
   } catch (error) {
     console.error('posts GET 错误:', error)
@@ -234,9 +172,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: '请先登录' }, { status: 401 })
     }
     const auth = await authenticateWithToken(token)
-    if (!auth) {
-      return NextResponse.json({ error: '登录已过期，请重新登录' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
     const { supabase, userId } = auth
 
     // ── 限流：每用户每分钟最多 5 次（涉及视觉模型 + 向量化，成本较高）──

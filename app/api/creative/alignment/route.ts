@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server'
-import { createServerClient } from '@/lib/supabaseServer'
+import { authenticateRequest } from '@/lib/apiAuth'
 import { normalizeRevisionPlan } from '@/lib/creative/workAgent'
 import { verifyFeedbackAlignment } from '@/lib/creative/feedbackAlignment'
+import { hasEnoughFor } from '@/lib/aiCost'
+import { INSUFFICIENT_POINTS_MESSAGE } from '@/lib/balance'
 
 export const maxDuration = 60
 export const dynamic = 'force-dynamic'
@@ -43,15 +45,10 @@ function strArr(v: unknown, max: number, len: number): string[] {
 
 export async function POST(req: Request) {
   try {
-    const authHeader = req.headers.get('authorization') ?? ''
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
-    if (!token) return NextResponse.json({ error: '请先登录' }, { status: 401 })
-    const supabase = createServerClient(token)
-    const {
-      data: { user },
-      error: authErr,
-    } = await supabase.auth.getUser(token)
-    if (authErr || !user) return NextResponse.json({ error: '登录已过期' }, { status: 401 })
+    // 鉴权走统一入口：网络故障 → 503（不踢用户），凭证失效 → 401
+    const auth = await authenticateRequest(req)
+    if (!auth.ok) return auth.response
+    const { supabase, userId } = auth
 
     const body = (await req.json().catch(() => ({}))) as AlignmentBody
     const generationId = str(body.generationId, 200)
@@ -67,7 +64,7 @@ export async function POST(req: Request) {
       .maybeSingle()
     if (nvErr || !nv) return NextResponse.json({ error: '作品版本不存在' }, { status: 404 })
     const newRow = nv as Record<string, unknown>
-    if (newRow.user_id !== user.id) {
+    if (newRow.user_id !== userId) {
       return NextResponse.json({ error: '无权访问该作品' }, { status: 403 })
     }
     const after = typeof newRow.sample_text === 'string' ? newRow.sample_text : ''
@@ -119,14 +116,30 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: '缺少用户反馈原文，无法校验方向' }, { status: 400 })
     }
 
-    const report = await verifyFeedbackAlignment({
-      freeText,
-      intentLabel: intentLabel || plan?.title || undefined,
-      targets: finalTargets,
-      preserveItems: finalPreserve,
-      before,
-      after,
-    })
+    // ── 调用前余额预检（Phase 4）─────────────────────────────────
+    // 本端点的语义是"失败即静默跳过校验"（返回 null 而不是报错）。
+    // 一旦接了计费，余额不足会让校验凭空消失，用户却不知道为什么——
+    // 所以在这里先把话说明白：余额不够就直接告诉用户去充值。
+    // 真正的并发安全仍由 LLM 层的预扣保证，这里只是把文案说准。
+    const budget = await hasEnoughFor(supabase, userId, 'diagnosis')
+    if (!budget.ok) {
+      return NextResponse.json(
+        { error: INSUFFICIENT_POINTS_MESSAGE, code: 'insufficient_balance' },
+        { status: 402 }
+      )
+    }
+
+    const report = await verifyFeedbackAlignment(
+      {
+        freeText,
+        intentLabel: intentLabel || plan?.title || undefined,
+        targets: finalTargets,
+        preserveItems: finalPreserve,
+        before,
+        after,
+      },
+      { supabase, userId, refId: `alignment:${generationId}` }
+    )
 
     // report 为 null 表示校验不可用（LLM 失败等）——这是降级不是错误，
     // 不能返回 5xx：新版本已经落库了，校验只是锦上添花。

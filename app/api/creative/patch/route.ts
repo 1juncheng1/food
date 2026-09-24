@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { authFailureResponse } from '@/lib/apiAuth'
+import { aiFailureResponse, authFailureResponse } from '@/lib/apiAuth'
 import { createServerClient } from '@/lib/supabaseServer'
 import {
   generateEditPatches,
@@ -95,6 +95,6 @@ export async function POST(req: Request) {
     })
   } catch (e) {
     console.error('补丁生成路由异常:', e)
-    return NextResponse.json({ error: '生成修改建议失败，请重试' }, { status: 500 })
+    return await aiFailureResponse('生成修改建议失败，请重试')
   }
 }

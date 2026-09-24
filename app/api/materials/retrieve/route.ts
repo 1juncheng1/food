@@ -125,7 +125,14 @@ export async function POST(req: Request) {
         ...(currentContext ? { currentContext } : {}),
         ...(selectedMaterialIds ? { selectedMaterialIds } : {}),
       },
-      { reasonMode }
+      // 计费上下文**只在 reasonMode='llm' 时携带**：template 模式零 LLM，
+      // 带上它既没有任何作用，也会让"这一层到底会不会花钱"变得含糊。
+      {
+        reasonMode,
+        ...(reasonMode === 'llm'
+          ? { billing: { supabase, userId: user.id, refId: `retrieve:${crypto.randomUUID()}` } }
+          : {}),
+      }
     )
 
     // Material Library 2.0 Phase 5：为自动召回项写 suggested_by_ai=true

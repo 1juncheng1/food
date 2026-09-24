@@ -15,6 +15,9 @@
 import { NextResponse } from 'next/server'
 import { rateLimit } from '@/lib/rateLimit'
 import { authenticateWithToken, generateEmbedding } from '@/lib/storage'
+import { aiFailureResponse } from '@/lib/apiAuth'
+import { hasEnoughFor } from '@/lib/aiCost'
+import { INSUFFICIENT_POINTS_MESSAGE } from '@/lib/points'
 import {
   analyzeInspiration,
   recallMaterials,
@@ -40,13 +43,8 @@ export async function POST(req: Request) {
     // ── 强制鉴权：游客不可使用灵感分析 ──
     const authHeader = req.headers.get('authorization') ?? ''
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
-    const auth = token ? await authenticateWithToken(token) : null
-    if (!auth) {
-      return NextResponse.json(
-        { error: '请先登录后再分析灵感' },
-        { status: 401 }
-      )
-    }
+    const auth = await authenticateWithToken(token, '请先登录后再分析灵感')
+    if (!auth.ok) return auth.response
 
     // ── 限流：登录按 userId ──
     const rateKey = `inspiration:${auth.userId}`
@@ -67,13 +65,25 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: '灵感内容太短，至少 2 个字' }, { status: 400 })
     }
 
-    // ── 调 LLM 分析 ──
-    const result = await analyzeInspiration(rawInput)
-    if (!result) {
+    // ── 余额预检 ──
+    // 只为让余额不足时返回 402「请充值」，而不是含糊的 502「分析失败」。
+    // 真正的扣费在 LLM 层的预扣那一刀（行锁原子，并发安全）。
+    const budget = await hasEnoughFor(auth.supabase, auth.userId, 'diagnosis')
+    if (!budget.ok) {
       return NextResponse.json(
-        { error: '灵感分析失败，请稍后重试或直接进入创作方案' },
-        { status: 502 }
+        { error: INSUFFICIENT_POINTS_MESSAGE, code: 'insufficient_balance' },
+        { status: 402 }
       )
+    }
+
+    // ── 调 LLM 分析（计费：预扣 → 按真实用量结算 / 失败全额退）──
+    const result = await analyzeInspiration(rawInput, {
+      supabase: auth.supabase,
+      userId: auth.userId,
+      refId: crypto.randomUUID(),
+    })
+    if (!result) {
+      return await aiFailureResponse('灵感分析失败，请稍后重试或直接进入创作方案')
     }
 
     // ── 登录用户：召回相关素材（失败降级为空数组，不阻塞分析返回）──

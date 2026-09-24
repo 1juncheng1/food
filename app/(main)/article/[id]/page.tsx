@@ -18,10 +18,8 @@ import type { FrozenPlan } from '@/lib/creative/plan'
 import { BlueprintCard } from '@/components/creative/blueprint-card'
 import {
   parseDiagnosis,
-  DIMENSION_META,
   NEXT_ACTION_META,
   type CreativeDiagnosis,
-  type DimensionKey,
   type NextActionKey,
 } from '@/lib/creative/diagnosisMeta'
 import { DiagnosisCard } from '@/components/creative/diagnosis-card'
@@ -29,6 +27,12 @@ import type { AlignmentReport } from '@/lib/creative/feedbackAlignment'
 // Work Agent：用对话式共创替换原「自由反馈输入框」（保留其内部快捷方向入口）
 import { WorkAgentChat } from '@/components/creative/work-agent-chat'
 import { PerformanceCard } from '@/components/creative/performance-card'
+import {
+  AiStatus,
+  PageHeader,
+  PageShell,
+  StatRow,
+} from '@/components/vision'
 import type { FeedbackAnalysis, RevisionPlan } from '@/lib/creative/workAgent'
 import { formatFeedbackForPrompt } from '@/lib/creative/workAgent'
 import type { ModificationPatch } from '@/lib/creative/patchEngine'
@@ -76,7 +80,7 @@ export default function ArticlePage() {
   const [pending, setPending] = useState(true) // true = 生成任务进行中，展示 thinking 动画
   const [error, setError] = useState<string | null>(null)
   const [favorited, setFavorited] = useState(false)
-  const [copied, setCopied] = useState<'prompt' | 'sample' | null>(null)
+  const [copied, setCopied] = useState<'sample' | null>(null)
   // ── 反馈状态 ──
   const [feedback, setFeedback] = useState<'like' | 'dislike' | 'edit' | 'regenerate' | null>(null)
   // 仅 👍/👎 走 toggle 接口；记录「哪个按钮的请求在飞行中」，只锁该按钮，不全屏屏蔽
@@ -128,9 +132,12 @@ export default function ArticlePage() {
   const [adoptError, setAdoptError] = useState<string | null>(null)
   // ── 作品→灵感广场分享弹窗 ──
   const [shareOpen, setShareOpen] = useState(false)
+  // 定稿成功后的发布引导。定稿→发布转化曾长期为 0%，根因是定稿后页面完全静默：
+  // 用户刚认可了作品，却没有任何提示告诉他「下一步可以让更多人看到」。
+  const [justFinalized, setJustFinalized] = useState(false)
 
   /** 复制文本（clipboard API 失败时降级 execCommand） */
-  async function handleCopy(text: string, field: 'prompt' | 'sample') {
+  async function handleCopy(text: string) {
     try {
       await navigator.clipboard.writeText(text)
     } catch {
@@ -141,7 +148,7 @@ export default function ArticlePage() {
       document.execCommand('copy')
       document.body.removeChild(ta)
     }
-    setCopied(field)
+    setCopied('sample')
     setTimeout(() => setCopied(null), 1500)
   }
 
@@ -945,7 +952,11 @@ export default function ArticlePage() {
         },
         body: JSON.stringify({ status: next }),
       })
-      if (res.ok) setProjectStatus(next)
+      if (res.ok) {
+        setProjectStatus(next)
+        // 刚定稿 = 用户刚认可作品，此刻是提示「让更多人看到」的最佳时机
+        setJustFinalized(next === 'finalized')
+      }
     } catch {
       // 静默：按钮恢复即可
     } finally {
@@ -1148,7 +1159,7 @@ export default function ArticlePage() {
       ? versions.find((v) => v.versionNumber === activeVersion) ?? null
       : null
   const displayContent = viewingVersion?.sampleText ?? work.content
-  const displayPrompt = viewingVersion?.systemPrompt ?? work.systemPrompt ?? null
+  // 成品系统提示词不再对外展示（内部生成依据，不对用户暴露）
   const displayBlueprint = viewingVersion ? viewingVersion.blueprint : blueprint
   const latestVersionNumber = work.versionNumber ?? versions[versions.length - 1]?.versionNumber ?? null
   // 第四阶段：当前展示版本的"迭代元信息"（版本名/方向/时间/AI 修改说明）。
@@ -1204,53 +1215,36 @@ export default function ArticlePage() {
     if (seed) return `最初想探讨的是：${seed}`
     return work.title ? `关于「${work.title}」的一次创作——` : ''
   })()
-  // 阶段 5：最新版诊断与紧邻上一版对比（五维升降箭头）
-  const prevVersion = versions.length >= 2 ? versions[versions.length - 2] : null
-  const compareToPrev =
-    diagnosis && prevVersion?.analysis
-      ? {
-          label: `V${prevVersion.versionNumber}`,
-          levels: DIMENSION_META.reduce(
-            (acc, meta) => {
-              acc[meta.key] = prevVersion.analysis?.dimensions[meta.key]?.level ?? 3
-              return acc
-            },
-            {} as Record<DimensionKey, number>
-          ),
-        }
-      : null
-
   return (
-    <div className="inner-page gen-stage text-white" data-mode="inspiration">
-      <div className="max-w-3xl mx-auto px-6 py-12 sm:py-14">
-        {/* 从素材库进入（有记忆）→ back 触发 popstate 恢复列表位置；生成页进入/直访 → push 主页 */}
-        <button
-          type="button"
-          onClick={() => backToDashboard(router)}
-          className="text-sm text-zinc-500 hover:text-white transition"
-        >
-          ← 返回主页
-        </button>
+    <PageShell width="narrow">
+      {/* 从素材库进入（有记忆）→ back 触发 popstate 恢复列表位置；生成页进入/直访 → push 主页 */}
+      <button
+        type="button"
+        onClick={() => backToDashboard(router)}
+        className="mb-5 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
+      >
+        ← 返回主页
+      </button>
 
-        {/* 顶部：标题 */}
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight leading-snug mt-8">
-          {work.title}
-        </h1>
+      {/* 页面理念：这是作品成长空间，不是文章查看器 */}
+      <PageHeader
+        eyebrow="持续创作空间"
+        title={work.title}
+        description="这是你和 AI 共同完成的作品。AI 会先读懂它，再和你一起改——你说哪里不对，它先确认你的意思，再动手。"
+        ai={
+          <AiStatus
+            task="diagnose"
+            active={diagnosisStatus === 'loading' || diagnosisRefreshing}
+            variant="bar"
+          />
+        }
+      />
 
-        {/* 阶段 4：创作参数改为 work_tags DNA + blueprint 摘要 */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6">
-          {paramCells.map(([label, value]) => (
-            <div
-              key={label}
-              className="bg-zinc-900 border border-zinc-800/80 rounded-lg px-4 py-3"
-            >
-              <div className="text-[11px] text-zinc-500">{label}</div>
-              <div className="text-sm text-zinc-200 mt-1 truncate" title={value}>
-                {value}
-              </div>
-            </div>
-          ))}
-        </div>
+      {/* 阶段 4：创作参数改为 work_tags DNA + blueprint 摘要 */}
+      <StatRow
+        className="mb-2"
+        items={paramCells.map(([label, value]) => ({ label, value }))}
+      />
 
         {/* 阶段四：登场角色快照（本篇生成时锁定的设定，悬停可看详情） */}
         {work.characters && work.characters.length > 0 && (
@@ -1316,29 +1310,65 @@ export default function ArticlePage() {
                 </button>
               )
             })}
-            {/* 发布到灵感广场（仅最新版视图；档案快照由服务端构建） */}
+            {/* 发布到灵感广场（仅最新版视图；档案快照由服务端构建）
+                定稿后升级为主按钮：用户已认可作品，发布就是最自然的下一步。
+                注意：ml-auto 只放在外层容器上——原先发布按钮与定稿按钮各带一个
+                ml-auto，两个 auto 外边距互相抢空间，导致排版错乱。 */}
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={() => setShareOpen(true)}
+                title="把灵感、创作过程与最终作品分享到灵感广场"
+                className={
+                  projectStatus === 'finalized'
+                    ? 'text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 rounded-lg px-3 py-1.5 transition'
+                    : 'text-xs text-zinc-400 hover:text-indigo-300 border border-zinc-800 hover:border-indigo-500/40 rounded-lg px-3 py-1.5 transition'
+                }
+              >
+                📢 发布到灵感广场
+              </button>
+              {/* 阶段 5：定稿为最终作品 / 已定稿徽标 */}
+              {projectStatus === 'finalized' ? (
+                <span className="inline-flex items-center gap-1 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-3 py-1.5">
+                  ✓ 最终作品 V{latestVersionNumber ?? '?'}
+                </span>
+              ) : (
+                <button
+                  onClick={handleToggleFinalize}
+                  disabled={finalizeBusy || !diagnosis}
+                  title={!diagnosis ? 'AI 诊断完成后即可定稿' : '把当前最新版本确定为最终作品'}
+                  className="text-xs text-zinc-400 hover:text-emerald-300 border border-zinc-800 hover:border-emerald-500/40 rounded-lg px-3 py-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {finalizeBusy ? '处理中…' : '✓ 定为最终作品'}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 定稿后的发布引导 —— 补齐「定稿 → 发布」这一环。
+            实测定稿→发布转化长期为 0%：定稿成功后页面只换了个徽标、没有任何引导，
+            而用户此刻恰恰刚完成「我认可这个作品」的心理动作，是最该被提示的时机。
+            给一个明确的下一步，但不强制（可「暂不」关掉）。 */}
+        {justFinalized && projectStatus === 'finalized' && (
+          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-3">
+            <p className="min-w-[12rem] flex-1 text-[13px] leading-relaxed text-zinc-300">
+              ✅ 已定为最终作品。要让它被更多人看到吗？
+            </p>
             <button
-              onClick={() => setShareOpen(true)}
-              title="把灵感、创作过程与最终作品分享到灵感广场"
-              className="ml-auto text-xs text-zinc-400 hover:text-indigo-300 border border-zinc-800 hover:border-indigo-500/40 rounded-lg px-3 py-1.5 transition"
+              onClick={() => {
+                setShareOpen(true)
+                setJustFinalized(false)
+              }}
+              className="text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg px-3.5 py-1.5 transition"
             >
               📢 发布到灵感广场
             </button>
-            {/* 阶段 5：定稿为最终作品 / 已定稿徽标 */}
-            {projectStatus === 'finalized' ? (
-              <span className="ml-auto inline-flex items-center gap-1 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-3 py-1.5">
-                ✓ 最终作品 V{latestVersionNumber ?? '?'}
-              </span>
-            ) : (
-              <button
-                onClick={handleToggleFinalize}
-                disabled={finalizeBusy || !diagnosis}
-                title={!diagnosis ? 'AI 诊断完成后即可定稿' : '把当前最新版本确定为最终作品'}
-                className="ml-auto text-xs text-zinc-400 hover:text-emerald-300 border border-zinc-800 hover:border-emerald-500/40 rounded-lg px-3 py-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {finalizeBusy ? '处理中…' : '✓ 定为最终作品'}
-              </button>
-            )}
+            <button
+              onClick={() => setJustFinalized(false)}
+              className="text-xs text-zinc-400 hover:text-zinc-200 transition"
+            >
+              暂不
+            </button>
           </div>
         )}
 
@@ -1465,26 +1495,6 @@ export default function ArticlePage() {
           </div>
         )}
 
-        {/* 中间：系统提示词（仅新生成的文章有）+ 完整范文，各带复制按钮 */}
-        {displayPrompt && (
-          <div className="bg-zinc-900 border border-zinc-800/80 rounded-xl mt-8 overflow-hidden">
-            <div className="flex items-center justify-between px-6 py-3 border-b border-zinc-800">
-              <h2 className="text-sm font-semibold text-zinc-200">
-                A. 成品系统提示词
-              </h2>
-              <button
-                onClick={() => handleCopy(displayPrompt!, 'prompt')}
-                className="text-xs bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded transition"
-              >
-                {copied === 'prompt' ? '已复制' : '复制'}
-              </button>
-            </div>
-            <p className="px-6 py-5 text-sm text-zinc-400 whitespace-pre-wrap break-words leading-relaxed">
-              {displayPrompt}
-            </p>
-          </div>
-        )}
-
         {/* ── 阶段 5：本次生成参考（Creator Profile + Knowledge Base + 声明约束）── */}
         {activeVersion === null && (
           (work.personalization || (work.declarationTraits && work.declarationTraits.length > 0)) && (
@@ -1565,10 +1575,10 @@ export default function ArticlePage() {
         <div className="bg-zinc-900 border border-zinc-800/80 rounded-xl mt-6 overflow-hidden">
           <div className="flex items-center justify-between px-6 py-3 border-b border-zinc-800">
             <h2 className="text-sm font-semibold text-zinc-200">
-              {displayPrompt ? 'B. AI 解说范文' : '解说范文'}
+              解说范文
             </h2>
             <button
-              onClick={() => handleCopy(displayContent, 'sample')}
+              onClick={() => handleCopy(displayContent)}
               className="text-xs bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded transition"
             >
               {copied === 'sample' ? '已复制' : '复制'}
@@ -1685,15 +1695,12 @@ export default function ArticlePage() {
           </div>
         )}
 
-        {/* ── AI 作品诊断（阶段 4：五维定性体检 + 优势/问题/建议 + 6 类下一步方向）── */}
+        {/* ── AI 作品诊断（表现良好 / 需要改进 两段）── */}
         <div className="mt-8">
           {viewingVersion ? (
             // 历史版本：展示该版本自己的诊断；从未诊断过时给手动入口（不自动批量消耗额度）
             viewingVersion.analysis ? (
-              <DiagnosisCard
-                diagnosis={viewingVersion.analysis}
-                actionsDisabled={projectStatus === 'finalized'}
-              />
+              <DiagnosisCard diagnosis={viewingVersion.analysis} />
             ) : (
               <button
                 onClick={() => handleAnalyzeHistoryVersion(viewingVersion)}
@@ -1732,8 +1739,6 @@ export default function ArticlePage() {
                   onRetry={() => work && runDiagnosis(work.versionId ?? work.id, false)}
                   onRefresh={() => work && runDiagnosis(work.versionId ?? work.id, true)}
                   refreshing={diagnosisRefreshing}
-                  actionsDisabled={projectStatus === 'finalized'}
-                  compare={compareToPrev}
                 />
                 {diagnosisRefreshing && diagnosis && (
                   <p className="text-[11px] text-zinc-600 mt-2">正在重新诊断，当前展示的是上一次结果…</p>
@@ -1744,9 +1749,19 @@ export default function ArticlePage() {
         </div>
 
         {/* ── 继续优化这一版（替换原"下一步可以这样做"方向卡）──
-            自由反馈 → AI 分析 → 用户确认 → 生成下一版；快捷方向直接触发 */}
+            自由反馈 → AI 分析 → 用户确认 → 生成下一版；快捷方向直接触发
+            这是作品页的协作主入口：AI 不是按钮，而是带着上下文的编辑伙伴 */}
         {work.projectId && !viewingVersion && (
-          <WorkAgentChat
+          <>
+            <div className="mb-3 mt-12">
+              <h2 className="text-[17px] sm:text-lg font-semibold tracking-tight text-zinc-100">
+                和 AI 一起改这一版
+              </h2>
+              <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-500">
+                直接说你的感觉，比如「这里太平淡」。AI 会先确认你指的是什么、再给出改法，不会擅自重写。
+              </p>
+            </div>
+            <WorkAgentChat
             currentContent={work.content}
             topic={work.title}
             generationId={work.versionId}
@@ -1762,7 +1777,8 @@ export default function ArticlePage() {
             onPatchDecision={handlePatchDecision}
             alignmentReport={alignment}
             aligning={aligning}
-          />
+            />
+          </>
         )}
 
         {/* ── 发布表现回流（闭环最后一环）：站内 👍/👎 记录生成质量，
@@ -1928,7 +1944,6 @@ export default function ArticlePage() {
             ? '该作品属于创作项目，V1/V2/V3 历史版本已保存在云端'
             : '文章保存在浏览器本地，清除缓存后将无法通过此链接访问'}
         </p>
-      </div>
 
       {/* 作品 → 灵感广场分享（仅项目作品可触发；项目 id 与版本数来自已加载数据） */}
       {work.projectId && (
@@ -1941,7 +1956,7 @@ export default function ArticlePage() {
           defaultInspiration={shareDefaultInspiration}
         />
       )}
-    </div>
+    </PageShell>
   )
 }
 

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { authFailureResponse } from '@/lib/apiAuth'
+import { isLlmNetworkError, llmUserMessage } from '@/lib/llm'
 import { createServerClient } from '@/lib/supabaseServer'
 import {
   blueprintFromRaw,
@@ -87,12 +88,19 @@ export async function POST(req: Request) {
       blueprint: blueprintFromRaw(row.blueprint),
       sampleText,
     })
-    if (!result) {
-      return NextResponse.json({ error: '诊断失败，请稍后重试' }, { status: 502 })
+    if (!result.ok) {
+      // 文案按失败原因区分：余额耗尽（402）、超时、网络故障各不相同。
+      // 尤其不能把所有失败都说成"请稍后重试"——余额问题重试一万次也不会好。
+      // 网络类用 503（与 lib/apiAuth 同口径：可用性问题不是鉴权问题，前端不得据此踢登录态）。
+      const status = isLlmNetworkError(result.error) ? 503 : 502
+      return NextResponse.json(
+        { error: llmUserMessage(result.error), detail: result.error },
+        { status, headers: { 'Cache-Control': 'no-store' } }
+      )
     }
 
     const analysis: CreativeDiagnosis = {
-      ...result,
+      ...result.data,
       diagnosedAt: new Date().toISOString(),
     }
 

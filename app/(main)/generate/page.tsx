@@ -15,7 +15,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { CATEGORIES } from '@/lib/constants'
+import { Sparkles } from 'lucide-react'
 import { makeWorkId } from '@/lib/works'
 import { buildMemorySummaryForTopic } from '@/lib/styleMemory'
 import { startGenerationTask } from '@/lib/generationTask'
@@ -47,12 +47,15 @@ import type { ClarificationAnswer } from '@/lib/creative/intentClarity'
 import type { InspirationAnalysis } from '@/lib/creative/inspirationAnalyzer'
 import type { MarketReport } from '@/lib/creative/marketAnalyzer'
 import { InspirationAnalysisCard } from '@/components/generate/inspiration-analysis-card'
-import { LoginGate } from '@/components/login-gate'
 import {
   MaterialSelector,
   type MaterialSelectorMode,
 } from '@/components/generate/material-selector'
 import type { MaterialAnnotation } from '@/lib/creative/material'
+// 只用到常量（无服务端依赖），可安全进浏览器包
+import { INSUFFICIENT_POINTS_MESSAGE, MIN_GENERATION_COST } from '@/lib/balance'
+// 纯函数（积分 ↔ 金额换算），可安全进浏览器包
+import { amountForPoints } from '@/lib/points'
 
 type Stage = 'input' | 'analyzing' | 'clarify' | 'plan' | 'insight' | 'materials'
 
@@ -62,11 +65,8 @@ interface RecalledMaterialPreview {
   similarity: number
 }
 
-const ANALYZING_STEPS = [
-  '正在理解你想解决的问题',
-  '设计 3 个差异化的创作方向',
-  '匹配最适合的叙事结构与语言风格',
-]
+// 中栏「AI 理解过程」的轻量检查项（纯展示，不参与业务流程）
+const ANALYZING_STEPS = ['主题方向', '用户目标', '创作价值', '相关知识', '表达方式']
 
 export default function PromptOptimizerPage() {
   const router = useRouter()
@@ -76,10 +76,18 @@ export default function PromptOptimizerPage() {
 
   // ── 创作模式 ──
   const [mode, setMode] = useState<CreationMode>('inspiration')
-  const [guestPeek, setGuestPeek] = useState(false)
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [accessToken, setAccessToken] = useState<string | null>(null)
   const [creatorStatus, setCreatorStatus] = useState<CreatorUnderstanding | null>(null)
+
+  // ── 账户余额 ──
+  // null = 尚未查到 / 读取失败（**不是 0**）：此时不提示"请充值"，
+  // 否则数据库抖动会让用户看到一条凭空出现的欠费提示。
+  const [balance, setBalance] = useState<number | null>(null)
+  // 汇率（1 元 = ? 积分）：由 /api/user/balance 下发。
+  // 前端不再写死「20 积分 ≈ ¥0.5」——管理员后台一改价，写死的文案必然漂移。
+  // null = 没拿到汇率：此时只展示积分，不编一个价格出来。
+  const [pointsPerYuan, setPointsPerYuan] = useState<number | null>(null)
 
   // ── 访谈触发判断（登录后自动检查是否需要首次访谈）──
   const interviewTrigger = useInterviewTrigger(isLoggedIn, accessToken)
@@ -116,8 +124,6 @@ export default function PromptOptimizerPage() {
   // ── 市场机会分析：insight 态的二级深挖动作（可选，消费灵感分析结论作种子）──
   const [marketReport, setMarketReport] = useState<MarketReport | null>(null)
   const [marketLoading, setMarketLoading] = useState(false)
-  // ── 登录引导弹窗：游客点击生成入口时弹出（封堵游客生成）──
-  const [loginGateOpen, setLoginGateOpen] = useState(false)
 
   // ── Material Library 2.0 Phase 4：素材选择步骤状态 ──
   // 含每条素材的本次创作注解（根基角色/临时标签/备注），仅透传给本次生成请求
@@ -179,7 +185,8 @@ export default function PromptOptimizerPage() {
         const { error: authErr } = await supabase.auth.getUser()
         if (cancelled) return
         if (authErr) {
-          // 清本设备缓存，保持游客态（创作入口会弹登录引导）
+          // 清本设备缓存：token 已失效，留在本地只会被守卫放行后再吃一次 401。
+          // 清掉后 AuthGuard 会把用户送回 /login 重新登录。
           await supabase.auth.signOut({ scope: 'local' })
           return
         }
@@ -193,30 +200,37 @@ export default function PromptOptimizerPage() {
             if (!cancelled && d && typeof d.percent === 'number') setCreatorStatus(d)
           })
           .catch(() => {})
+
+        // 余额：只在**明确查到数字**时才写入 state。
+        // 服务端在读取失败时返回 balance:null（fail-open），这里不能把它当 0。
+        fetch('/api/user/balance', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+          .then(async (r) =>
+            r.ok
+              ? ((await r.json()) as { balance: number | null; pointsPerYuan?: number })
+              : null
+          )
+          .then((d) => {
+            if (cancelled || !d) return
+            if (typeof d.balance === 'number') setBalance(d.balance)
+            if (typeof d.pointsPerYuan === 'number' && d.pointsPerYuan > 0) {
+              setPointsPerYuan(d.pointsPerYuan)
+            }
+          })
+          .catch(() => {})
       } catch { /* ignore */ }
     })()
     return () => { cancelled = true }
   }, [])
 
   function selectMode(next: CreationMode) {
-    if (next === 'creator') {
-      if (!isLoggedIn) {
-        setGuestPeek(true)
-        return
-      }
-      setGuestPeek(false)
-      setError('')
-      setMode('creator')
-      try { localStorage.setItem('creation_mode', 'creator') } catch { /* ignore */ }
-      return
-    }
-    setGuestPeek(false)
     setError('')
-    setMode('inspiration')
-    try { localStorage.setItem('creation_mode', 'inspiration') } catch { /* ignore */ }
+    setMode(next)
+    try { localStorage.setItem('creation_mode', next) } catch { /* ignore */ }
   }
 
-  // 游客后端强制灵感模式（与服务端裁决一致，不信任前端状态）
+  // session 验活完成前保守回落灵感模式（前端状态不可信，服务端会再裁决一次）
   const effectiveMode: CreationMode = isLoggedIn ? mode : 'inspiration'
   const creatorMeta = creatorStatus ? CREATOR_LEVEL_META[creatorStatus.level] : null
 
@@ -226,6 +240,22 @@ export default function PromptOptimizerPage() {
     (stage === 'plan' || stage === 'clarify') &&
     !!analyzedTopic &&
     topic.trim() !== analyzedTopic
+
+  // ── 中栏「AI 理解过程」的展示状态：idle / running / done（纯视觉，不驱动流程）──
+  const processStage: 'idle' | 'running' | 'done' =
+    stage === 'analyzing'
+      ? 'running'
+      : stage === 'plan' || stage === 'clarify' || stage === 'materials'
+        ? 'done'
+        : 'idle'
+  const processLead =
+    stage === 'insight'
+      ? '灵感价值已评估'
+      : processStage === 'running'
+        ? '正在理解你的创作'
+        : processStage === 'done'
+          ? '已完成理解'
+          : '等待你的创作命题'
 
   // 方案卡"返回改题目"：题目本就常驻页首，只需滚回顶部并聚焦
   function backToTopic() {
@@ -238,11 +268,9 @@ export default function PromptOptimizerPage() {
   // → 显示价值评估+优化建议+召回素材 → 用户确认 → 携带 context 进入现有 plan
   async function analyzeInspiration() {
     if (inspirationLoading) return
-    // 封堵游客生成：未登录弹出引导弹窗，不进入分析流程
-    if (!isLoggedIn) {
-      setLoginGateOpen(true)
-      return
-    }
+    // session 验活未完成：不发起分析。守卫已保证只有登录用户能进本页，
+    // 这里挡的是 token 还在校验的那一瞬，不是游客。
+    if (!isLoggedIn) return
     const t = topic.trim()
     if (!t) {
       setError('请先填写灵感内容')
@@ -303,28 +331,58 @@ export default function PromptOptimizerPage() {
     setStage('input')
   }
 
-  // 用户在 insight 态点"基于这个灵感开始创作"
-  // 重置灵感分析卡 → 进入 input 态但保留 topic → 触发 analyze 进入 plan
-  // 关键：plan 请求体携带 inspiration_context，让 plan 延续灵感分析结论
-  function startCreationFromInspiration() {
+  // 用户在 insight 态点"基于这个灵感 / 市场缺口 开始创作"
+  //
+  // 核心改动：两个入口不再是"同一个原始灵感 + 不同的分析结论"，
+  // 而是各自携带【本阶段最优解】进入创作：
+  //   - 灵感阶段最优解 = optimization_suggestions.optimized_topic
+  //     （按优化建议改写后、可直接拿去创作的具体题目）
+  //   - 市场阶段最优解 = market_report.recommended_topic
+  //     （挑最有机会的内容缺口落成的具体题目）
+  // 最优解会被写成"本次创作主题"，后续 plan、正文、作品标题都以它为准；
+  // 原始灵感仅留在 inspiration_context.raw_input 里作为分析依据。
+  function resolveStageOptimalTopic(stage: 'inspiration' | 'market'): string {
+    if (stage === 'market') return marketReport?.recommended_topic.trim() ?? ''
+    return inspirationAnalysis?.optimization_suggestions.optimized_topic.trim() ?? ''
+  }
+
+  function startCreationFromStage(target: 'inspiration' | 'market') {
     if (!inspirationAnalysis) return
     const t = topic.trim()
-    if (!t || t !== inspirationAnalysis.raw_input) {
-      // 用户在 insight 态改了 topic：直接以新 topic 走无 context 的 analyze
+    if (!t) {
+      setError('请先填写灵感内容')
+      return
+    }
+    // 用户在 insight 态改了 topic：旧分析不再适用，直接以新 topic 走无 context 的 analyze
+    if (t !== inspirationAnalysis.raw_input) {
       setInspirationAnalysis(null)
       setRecalledMaterials([])
       setMarketReport(null)
-      void analyze()
+      void analyze(t)
       return
     }
-    setStage('input')
+
     // 关键：若用户做了市场深挖，把 market_report 合入 inspiration_context
     // → plan 阶段瞄准内容缺口设计方向 → 一并落 generation_history.inspiration_context
     const analysisWithMarket: InspirationAnalysis = marketReport
       ? { ...inspirationAnalysis, market_report: marketReport }
       : inspirationAnalysis
+
+    // 用该阶段最优解替换创作主题（缺字段时回退原始灵感，流程不中断）
+    const nextTopic = resolveStageOptimalTopic(target) || t
+    setTopic(nextTopic)
+    setStage('input')
     // 异步触发 analyze，让 stage 切换先完成
-    void analyze(undefined, analysisWithMarket)
+    void analyze(nextTopic, analysisWithMarket)
+  }
+
+  // 兼容旧调用：灵感阶段入口
+  function startCreationFromInspiration() {
+    startCreationFromStage('inspiration')
+  }
+  // 市场阶段入口：以"内容缺口最优解"为创作主题
+  function startCreationFromMarketGap() {
+    startCreationFromStage('market')
   }
 
   function resetInspiration() {
@@ -375,9 +433,12 @@ export default function PromptOptimizerPage() {
   // ── AI 方案分析 ──
   async function analyze(currentTopic?: string, inspiration?: InspirationAnalysis | null) {
     if (analyzingRef.current) return // 防 Enter 连点 / 分析中重复提交
-    // 封堵游客生成：未登录弹出引导弹窗，不进入生成流程
-    if (!isLoggedIn) {
-      setLoginGateOpen(true)
+    // session 验活未完成：不发起生成（理由同 analyzeInspiration）
+    if (!isLoggedIn) return
+    // 余额不足一次最低扣费：拦在发起分析之前——既省一次付费 LLM 调用，
+    // 也免得用户等完整轮方案生成后才知道要充值
+    if (balance !== null && balance < MIN_GENERATION_COST) {
+      setError(INSUFFICIENT_POINTS_MESSAGE)
       return
     }
     const t = (currentTopic ?? topic).trim()
@@ -651,6 +712,14 @@ export default function PromptOptimizerPage() {
     annotations: MaterialAnnotation[],
     modeLabel: MaterialSelectorMode
   ) {
+    // 余额不足一次最低扣费：后端 /api/prompt-optimizer 也会返回 402，但在这里拦可以
+    // 让用户留在当前页面（而不是跳到作品页才看到失败）
+    if (balance !== null && balance < MIN_GENERATION_COST) {
+      setError(INSUFFICIENT_POINTS_MESSAGE)
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+      return
+    }
+
     const t = topic.trim()
     const genId = makeWorkId()
     const memory = buildMemorySummaryForTopic(t)
@@ -784,297 +853,396 @@ export default function PromptOptimizerPage() {
         <i className="gm-meteor" style={{ '--m-top': '-8%', '--m-left': '80%', '--dur': '11s', '--delay': '-3s', '--dx': '-200px', '--dy': '320px', '--len': '70px' } as React.CSSProperties} />
         <i className="gm-meteor" style={{ '--m-top': '2%', '--m-left': '10%', '--dur': '8.5s', '--delay': '-7s', '--dx': '-320px', '--dy': '460px', '--len': '120px' } as React.CSSProperties} />
       </div>
-      <div className="inner-container gen-sheet">
-        {/* ── 页眉：左对齐 ── */}
-        <div className="inner-header">
+      <div className="gen-workbench">
+        {/* ── 页眉 ── */}
+        <header className="gw-head">
+          <Link href="/dashboard" className="inner-back">← 返回主页</Link>
           <div>
-            <Link href="/dashboard" className="inner-back">← 返回主页</Link>
             <span className="gen-eyebrow">智能创作</span>
-            <h1 className="inner-header-title">灵感场</h1>
-            <p className="inner-header-sub">
-              告诉 AI 你想做什么，它先理解你的问题、再给创作方案；你确认方向，它负责表达
+            <h1 className="gw-title">创作工作台</h1>
+            <p className="gw-sub">
+              告诉 AI 你想做什么。它先理解你的问题，参考你的风格、知识与素材，给出方案；你确认方向，它负责表达。
             </p>
           </div>
-        </div>
+        </header>
 
-        {/* ── 稿纸：题目（作文标题）在三个阶段始终保留，不再随状态卸载 ── */}
-        <form
-          onSubmit={(e) => { e.preventDefault(); void analyze() }}
-          className="gen-paper glass anim-rise"
-        >
-          {/* 题目（唯一必填） */}
-          <div>
-            <label htmlFor="gen-topic" className="gen-field-label">
-              你想写什么？ <span className="text-red-400">*</span>
-            </label>
-            <input
-              id="gen-topic"
-              ref={topicInputRef}
-              type="text"
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              placeholder="例：《巨齿鲨2》、最近为什么越来越多人开始戒咖啡、一个北漂十年的朋友回老家了"
-              autoFocus
-              disabled={stage === 'analyzing'}
-              className={`gen-topic-input w-full ${isDirty ? 'is-dirty' : ''}`}
-            />
-            <p className="gen-hint">
-              可以是一个主题，也可以是一个想解决的问题——AI 会先理解问题，再给你完整建议
-            </p>
-            {isDirty && (
-              <p className="gen-dirty">
-                题目已修改，点击「重新分析」让 AI 为新题目设计方案
-              </p>
-            )}
-          </div>
+        <div className="gw-grid">
+          {/* ── 左：创作入口（一个命题，不是一个输入框） ── */}
+          <section className="gw-col gw-col-sticky">
+            <form
+              onSubmit={(e) => { e.preventDefault(); void analyze() }}
+              className="gw-panel gw-entry anim-rise"
+            >
+              <div className="gw-panel-head">
+                <span className="gw-kicker">创作入口</span>
+              </div>
 
-          {/* 模式：滑动指示块分段控件（切换时背景氛围同步变换） */}
-          <div>
-            <div className="gen-mode-row">
-              <div className="mode-switch" role="group" aria-label="创作模式">
-                <span
-                  className="mode-switch-thumb"
-                  style={{ transform: `translateX(${(effectiveMode === 'creator' ? 1 : 0) * 100}%)` }}
-                  aria-hidden="true"
+              {/* 创作命题：三个阶段始终保留，不再随状态卸载 */}
+              <div>
+                <label htmlFor="gen-topic" className="gw-label">
+                  你想创作什么？ <span className="text-red-400/80">*</span>
+                </label>
+                <input
+                  id="gen-topic"
+                  ref={topicInputRef}
+                  type="text"
+                  value={topic}
+                  onChange={(e) => setTopic(e.target.value)}
+                  placeholder="例：《巨齿鲨2》，最近为什么越来越多人喜欢？"
+                  autoFocus
+                  disabled={stage === 'analyzing'}
+                  className={`gw-topic gen-topic-input w-full ${isDirty ? 'is-dirty' : ''}`}
                 />
-                {CREATION_MODES.map((m) => {
-                  const selected = mode === m
-                  const locked = m === 'creator' && !isLoggedIn
+                <p className="gen-hint gw-hint">
+                  可以是一个主题，也可以是一个想解决的问题——AI 会先理解问题，再给你完整建议
+                </p>
+                {isDirty && (
+                  <p className="gen-dirty">
+                    题目已修改，点击「重新分析」让 AI 为新题目设计方案
+                  </p>
+                )}
+              </div>
+
+              {/* 创作方式：两个简洁选项（不是按钮切换） */}
+              <div>
+                <p className="gw-block-label">创作方式</p>
+                <div className="gw-modes" role="group" aria-label="创作方式">
+                  {CREATION_MODES.map((m) => {
+                    const selected = mode === m
+                    return (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => selectMode(m)}
+                        aria-pressed={selected}
+                        data-active={selected || undefined}
+                        className="gw-mode"
+                      >
+                        <span className="gw-mode-mark" aria-hidden="true" />
+                        <span className="gw-mode-body">
+                          <span className="gw-mode-title">
+                            <span aria-hidden="true">{m === 'inspiration' ? '✨' : '🧠'}</span>
+                            {CREATION_MODE_META[m].label}
+                          </span>
+                          <span className="gw-mode-desc">{CREATION_MODE_META[m].tagline}</span>
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+
+                <p className="gw-mode-note">
+                  {mode === 'creator' && isLoggedIn ? (
+                    creatorStatus ? (
+                      <>
+                        {creatorMeta?.label ?? '专属创作助手已就位'} · 理解程度 {creatorStatus.percent}%
+                        <span className="text-zinc-600">
+                          {' '}— 已创作 {creatorStatus.signals.works} 篇 · 结合你的创作者人格、素材库与历史作品
+                        </span>
+                      </>
+                    ) : (
+                      <>结合你的创作者人格、素材库与历史作品创作，你写得越多，它越像你</>
+                    )
+                  ) : (
+                    <>基于平台通用的高完播创作经验给你建议</>
+                  )}
+                </p>
+              </div>
+
+              {/* 账户余额：只在明确查到数字时展示。
+                  余额 < 一次最低扣费 → 醒目提示充值（生成入口已在上方拦截）；
+                  balance === null → 完全不渲染，避免把"查不到"说成"没钱"。 */}
+              {isLoggedIn && balance !== null && (
+                balance < MIN_GENERATION_COST ? (
+                  <div className="gw-balance gw-balance-warn">
+                    <span aria-hidden="true">💰</span>
+                    <span>当前没有余额，请充值</span>
+                    <Link href="/recharge" className="gw-balance-link">去充值</Link>
+                    <span className="gw-balance-note">充值后即可继续生成</span>
+                  </div>
+                ) : (
+                  <div className="gw-balance">
+                    账户余额 <span className="gw-balance-num">{balance}</span> 积分
+                    {pointsPerYuan !== null && (
+                      <>
+                        （1 元 = {pointsPerYuan} 积分，≈ ¥
+                        {amountForPoints(balance, pointsPerYuan).toFixed(2)}）
+                      </>
+                    )}
+                  </div>
+                )
+              )}
+
+              {/* 错误提示 */}
+              {error && <div className="gw-error">{error}</div>}
+
+              {/* 主行动：输入态=开始分析 / 方案态=重新分析 / 分析中=禁用 */}
+              <button
+                type="submit"
+                disabled={stage === 'analyzing' || inspirationLoading}
+                className="gw-submit"
+              >
+                <span>
+                  {stage === 'analyzing'
+                    ? 'AI 正在分析…'
+                    : stage === 'plan'
+                      ? '重新分析'
+                      : '开始分析'}
+                </span>
+                <span className="gw-submit-arrow" aria-hidden="true">→</span>
+              </button>
+
+              {/* AI 灵感分析系统：在主行动按钮下方的次行动入口 */}
+              {/* 设计原则：与"开始分析"区分——"开始分析"直接进 plan；"分析灵感"先进 insight 态做价值评估 */}
+              <button
+                type="button"
+                onClick={() => void analyzeInspiration()}
+                disabled={stage === 'analyzing' || inspirationLoading || !topic.trim()}
+                className="gw-ghost"
+              >
+                {inspirationLoading ? 'AI 正在分析灵感…' : '✨ 先分析这个灵感值不值得做'}
+              </button>
+              <p className="gw-foot">
+                模糊想法 / 标题 / 一句话 / 新闻都行——AI 先评估价值与差异化，再决定要不要做
+              </p>
+            </form>
+          </section>
+
+          {/* ── 中：AI 理解过程 ── */}
+          <section className="gw-col">
+            <div className="gw-panel gw-process anim-rise">
+              <div className="gw-panel-head">
+                <span className="gw-kicker">AI 理解过程</span>
+                {processStage === 'running' && (
+                  <span className="gw-live" aria-hidden="true">
+                    <i className="vs-ai-dot" />
+                    <i className="vs-ai-dot" />
+                    <i className="vs-ai-dot" />
+                  </span>
+                )}
+              </div>
+
+              {processStage === 'running' && (
+                <div className="vs-bar-track" aria-hidden="true">
+                  <span className="vs-bar" />
+                </div>
+              )}
+
+              <p className="gw-process-lead" style={{ marginTop: processStage === 'running' ? 14 : 0 }}>
+                {processLead}
+              </p>
+
+              <ul className="gw-checklist">
+                {ANALYZING_STEPS.map((label, i) => {
+                  const state =
+                    processStage === 'done'
+                      ? 'done'
+                      : processStage === 'running'
+                        ? i < analyzeStep
+                          ? 'done'
+                          : i === analyzeStep
+                            ? 'active'
+                            : 'pending'
+                        : 'pending'
                   return (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => selectMode(m)}
-                      aria-pressed={selected}
-                      data-active={selected || undefined}
-                      className={`mode-switch-btn flex items-center justify-center gap-2 ${
-                        selected ? 'text-white' : 'text-zinc-400 hover:text-zinc-200'
-                      }`}
-                    >
-                      <span className="mode-switch-ico" aria-hidden="true">{m === 'inspiration' ? '💡' : '🧠'}</span>
-                      <span>{CREATION_MODE_META[m].label}</span>
-                      {locked && <span className="text-[10px] opacity-70">🔒</span>}
-                    </button>
+                    <li key={label} className="gw-check" data-state={state}>
+                      <span className="gw-check-dot" aria-hidden="true">
+                        {state === 'done' ? '✓' : ''}
+                      </span>
+                      <span className="gw-check-text">
+                        {label}
+                        {state === 'active' && <span className="animate-pulse">…</span>}
+                      </span>
+                    </li>
                   )
                 })}
-              </div>
-            </div>
+              </ul>
 
-            {/* 模式说明（单行，随选择切换） */}
-            <p className="gen-mode-note text-xs text-zinc-500 leading-relaxed">
-              {mode === 'creator' && isLoggedIn ? (
-                creatorStatus ? (
-                  <>
-                    {creatorMeta?.label ?? '专属创作助手已就位'} · 理解程度 {creatorStatus.percent}%
-                    <span className="text-zinc-600">
-                      {' '}— 已创作 {creatorStatus.signals.works} 篇 · 结合你的创作者人格、素材库与历史作品
-                    </span>
-                  </>
-                ) : (
-                  <>结合你的创作者人格、素材库与历史作品创作，你写得越多，它越像你</>
-                )
+              {stage === 'analyzing' ? (
+                <div className="gw-process-foot">
+                  <button
+                    type="button"
+                    onClick={cancelAnalyze}
+                    className="gw-ghost gw-ghost-sm"
+                  >
+                    取消分析
+                  </button>
+                  <p className="gw-foot">
+                    首次分析需要设计完整方案，通常需要 10-40 秒
+                  </p>
+                </div>
               ) : (
-                <>基于平台通用的高完播创作经验给你建议，登录后 AI 会结合你的创作者人格与历史作品给更精准建议</>
+                processStage === 'idle' && (
+                  <div className="gw-process-foot">
+                    <p className="gw-foot">
+                      {stage === 'insight'
+                        ? '确认灵感价值后，AI 会继续理解方向与目标。'
+                        : '写下命题后，AI 会先理解方向、目标与价值，再开始设计方案。'}
+                    </p>
+                  </div>
+                )
               )}
-            </p>
+            </div>
+          </section>
 
-            {/* 游客点"我的模式"：紧凑登录引导（不跳页） */}
-            {guestPeek && !isLoggedIn && (
-              <div className="gen-guest mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-2 rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-3 text-center">
-                <span className="text-base">🔒</span>
-                <p className="text-xs text-zinc-400">
-                  登录后 AI 才能结合你的创作者人格、素材库与历史作品给建议
-                </p>
-                <Link
-                  href="/login"
-                  className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3.5 py-1.5 rounded-lg transition"
-                >去登录</Link>
+          {/* ── 右：创作上下文（AI 正在参考）——桌面端常驻，移动端落到主列下方 ── */}
+          <aside className="gw-col gw-col-sticky">
+            <div className="gw-panel gw-context vs-ai-frame anim-rise">
+              <div className="gw-panel-head">
+                <span className="gw-kicker">
+                  <Sparkles size={12} />
+                  AI 正在参考
+                </span>
+              </div>
+
+              <div className="gw-context-list">
+                <div>
+                  <p className="gw-ctx-label">我的风格</p>
+                  <p className={`gw-ctx-value${creatorStatus ? '' : ' is-empty'}`}>
+                    {creatorStatus
+                      ? `AI 理解度 ${creatorStatus.percent}% · ${creatorStatus.level}`
+                      : '登录后 AI 会带上你的风格'}
+                  </p>
+                  {creatorStatus && (
+                    <div className="gw-meter" aria-hidden="true">
+                      <i style={{ width: `${creatorStatus.percent}%` }} />
+                    </div>
+                  )}
+                </div>
+
+                <div className="gw-ctx-sep" />
+
+                <div>
+                  <p className="gw-ctx-label">我的知识</p>
+                  <p className={`gw-ctx-value${planKnowledge.length > 0 ? '' : ' is-empty'}`}>
+                    {planKnowledge.length > 0
+                      ? `本次参考 ${planKnowledge.length} 条已确认知识`
+                      : '暂未用到你的知识库'}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="gw-ctx-label">我的素材</p>
+                  <p className={`gw-ctx-value${recalledMaterials.length > 0 ? '' : ' is-empty'}`}>
+                    {recalledMaterials.length > 0
+                      ? `已召回 ${recalledMaterials.length} 条相关素材`
+                      : '本次没有匹配的素材'}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="gw-ctx-label">当前目标</p>
+                  <p className={`gw-ctx-value${topic.trim() ? '' : ' is-empty'}`}>
+                    {topic.trim() || '还没告诉我你想写什么'}
+                  </p>
+                </div>
+              </div>
+
+              <p className="gw-context-foot">
+                这些信息每步都会重新读取。你用得越多，它参考得越准。
+              </p>
+            </div>
+          </aside>
+
+          {/* ── 分析产出：整幅铺在三栏之下，保证方案卡的可读宽度 ── */}
+          <div className="gw-results">
+            {/* 灵感分析态：AI 评估价值+优化建议+召回素材，用户确认后进入 plan */}
+            {stage === 'insight' && inspirationAnalysis && (
+              <div className="gen-insight-wrapper glass anim-rise">
+                <InspirationAnalysisCard
+                  analysis={inspirationAnalysis}
+                  recalledMaterials={recalledMaterials}
+                  marketReport={marketReport}
+                  marketLoading={marketLoading}
+                  onMarketAnalysis={() => void analyzeMarketOpportunity()}
+                  onStartCreation={startCreationFromInspiration}
+                  onStartCreationFromMarket={startCreationFromMarketGap}
+                  onReset={resetInspiration}
+                  loading={false}
+                />
                 <button
                   type="button"
-                  onClick={() => setGuestPeek(false)}
-                  className="text-xs text-zinc-500 hover:text-zinc-300 transition"
-                >继续用灵感模式</button>
+                  onClick={cancelInspiration}
+                  className="mt-4 text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-800 hover:border-zinc-700 px-4 py-2 rounded-lg transition"
+                >
+                  取消
+                </button>
+              </div>
+            )}
+
+            {/* 灵感分析加载态（独立于 plan 的 analyzing） */}
+            {inspirationLoading && stage !== 'insight' && (
+              <div className="gen-status glass anim-rise">
+                <div className="mx-auto w-12 h-12 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" />
+                <h2 className="text-base font-medium text-white mt-6">正在评估这个灵感</h2>
+                <p className="text-xs text-zinc-500 mt-2">
+                  AI 客观判断价值、差异化与提升方向
+                </p>
+                <button
+                  type="button"
+                  onClick={cancelInspiration}
+                  className="mt-8 text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-800 hover:border-zinc-700 px-4 py-2 rounded-lg transition"
+                >
+                  取消
+                </button>
+              </div>
+            )}
+
+            {/* ── 澄清态：AI 已识别部分信息，就关键缺口提问 ── */}
+            {stage === 'clarify' && clarifyQuestions.length > 0 && (
+              <div className="gen-clarify anim-rise">
+                <ClarifyPanel
+                  topic={analyzedTopic}
+                  questions={clarifyQuestions}
+                  inferred={clarifyInferred}
+                  reason={clarifyReason}
+                  onSubmit={submitClarifications}
+                  onSkip={skipClarification}
+                  onBack={backFromClarify}
+                  loading={clarifyLoading}
+                />
+              </div>
+            )}
+
+            {/* ── 方案态 ── */}
+            {stage === 'plan' && plan && (
+              <div className="gen-plan anim-rise">
+                <PlanPanel
+                  plan={plan}
+                  topic={analyzedTopic}
+                  knowledgeUnits={planKnowledge}
+                  confirmed={!!confirmedPlan}
+                  onConfirm={handleConfirmPlan}
+                  onReanalyze={() => { void analyze() }}
+                  onSolve={handleSolve}
+                  onBack={backToTopic}
+                  onBackToEdit={() => setConfirmedPlan(null)}
+                />
+              </div>
+            )}
+
+            {/* ── Material Library 2.0 Phase 4：素材选择步骤（仅我的模式 / creator 模式出现）── */}
+            {stage === 'materials' && confirmedPlan && effectiveMode !== 'inspiration' && (
+              <div className="gen-plan anim-rise">
+                <MaterialSelector
+                  topic={topic.trim()}
+                  blueprintUsageTag={
+                    (confirmedPlan as unknown as { usage_tag?: string | undefined })
+                      .usage_tag ?? null
+                  }
+                  blueprintContentType={
+                    (confirmedPlan as unknown as { content_type?: string | undefined })
+                      .content_type ?? null
+                  }
+                  accessToken={accessToken ?? ''}
+                  onConfirm={handleConfirmMaterials}
+                  onBack={handleBackFromMaterials}
+                />
               </div>
             )}
           </div>
 
-          {/* 错误提示 */}
-          {error && (
-            <div className="bg-red-500/10 text-red-300 text-sm rounded-xl p-4 border border-red-500/20 text-center">
-              {error}
-            </div>
-          )}
-
-          {/* 主行动：输入态=开始分析 / 方案态=重新分析 / 分析中=禁用 */}
-          <button
-            type="submit"
-            disabled={stage === 'analyzing' || inspirationLoading}
-            className="gen-submit btn-shine w-full py-4 rounded-2xl font-semibold text-base text-white transition disabled:opacity-60"
-          >
-            {stage === 'analyzing'
-              ? 'AI 正在分析…'
-              : stage === 'plan'
-                ? '重新分析'
-                : '开始分析'}
-          </button>
-
-          {/* AI 灵感分析系统：在主行动按钮下方的次行动入口 */}
-          {/* 设计原则：与"开始分析"区分——"开始分析"直接进 plan；"分析灵感"先进 insight 态做价值评估 */}
-          <button
-            type="button"
-            onClick={() => void analyzeInspiration()}
-            disabled={stage === 'analyzing' || inspirationLoading || !topic.trim()}
-            className="w-full py-3 mt-2 rounded-2xl text-sm font-medium text-indigo-200 border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 hover:border-indigo-500/50 transition disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {inspirationLoading ? 'AI 正在分析灵感…' : '✨ 先分析这个灵感值不值得做'}
-          </button>
-          <p className="text-[11px] text-zinc-600 mt-2 text-center">
-            模糊想法 / 标题 / 一句话 / 新闻都行——AI 先评估价值与差异化，再决定要不要做
-          </p>
-        </form>
-
-        {/* ── 灵感分析态：AI 评估价值+优化建议+召回素材，用户确认后进入 plan ── */}
-        {stage === 'insight' && inspirationAnalysis && (
-          <div className="gen-insight-wrapper glass anim-rise">
-            <InspirationAnalysisCard
-              analysis={inspirationAnalysis}
-              recalledMaterials={recalledMaterials}
-              marketReport={marketReport}
-              marketLoading={marketLoading}
-              onMarketAnalysis={() => void analyzeMarketOpportunity()}
-              onStartCreation={startCreationFromInspiration}
-              onReset={resetInspiration}
-              loading={false}
-            />
-            <button
-              type="button"
-              onClick={cancelInspiration}
-              className="mt-4 text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-800 hover:border-zinc-700 px-4 py-2 rounded-lg transition"
-            >
-              取消
-            </button>
-          </div>
-        )}
-
-        {/* 灵感分析加载态（独立于 plan 的 analyzing） */}
-        {inspirationLoading && stage !== 'insight' && (
-          <div className="gen-status glass anim-rise">
-            <div className="mx-auto w-12 h-12 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" />
-            <h2 className="text-base font-medium text-white mt-6">正在评估这个灵感</h2>
-            <p className="text-xs text-zinc-500 mt-2">
-              AI 客观判断价值、差异化与提升方向
-            </p>
-            <button
-              type="button"
-              onClick={cancelInspiration}
-              className="mt-8 text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-800 hover:border-zinc-700 px-4 py-2 rounded-lg transition"
-            >
-              取消
-            </button>
-          </div>
-        )}
-
-        {/* ── 分析态：题目保留在稿纸中，状态卡在下方展开 ── */}
-        {stage === 'analyzing' && (
-          <div className="gen-status glass anim-rise">
-            <div className="mx-auto w-12 h-12 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" />
-            <h2 className="text-base font-medium text-white mt-6">正在为你的题目设计创作方案</h2>
-
-            <ul className="mt-7 space-y-3 text-left max-w-sm mx-auto">
-              {ANALYZING_STEPS.map((label, i) => {
-                const state =
-                  i < analyzeStep ? 'done' : i === analyzeStep ? 'active' : 'pending'
-                return (
-                  <li key={label} className="flex items-center gap-3 text-sm">
-                    <span
-                      className={`shrink-0 w-5 h-5 rounded-full text-[10px] flex items-center justify-center transition-colors duration-300 ${
-                        state === 'done'
-                          ? 'bg-emerald-500/20 text-emerald-300'
-                          : state === 'active'
-                            ? 'bg-indigo-500/20 text-indigo-300'
-                            : 'bg-zinc-800 text-zinc-600'
-                      }`}
-                    >
-                      {state === 'done' ? '✓' : i + 1}
-                    </span>
-                    <span
-                      className={`transition-colors duration-300 ${
-                        state === 'pending' ? 'text-zinc-600' : 'text-zinc-300'
-                      }`}
-                    >
-                      {label}
-                      {state === 'active' && <span className="animate-pulse">…</span>}
-                    </span>
-                  </li>
-                )
-              })}
-            </ul>
-
-            <button
-              type="button"
-              onClick={cancelAnalyze}
-              className="mt-8 text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-800 hover:border-zinc-700 px-4 py-2 rounded-lg transition"
-            >
-              取消分析
-            </button>
-            <p className="text-[11px] text-zinc-600 mt-3">
-              首次分析需要设计完整方案，通常需要 10-40 秒
-            </p>
-          </div>
-        )}
-
-        {/* ── 澄清态：AI 已识别部分信息，就关键缺口提问 ── */}
-        {stage === 'clarify' && clarifyQuestions.length > 0 && (
-          <div className="gen-clarify anim-rise">
-            <ClarifyPanel
-              topic={analyzedTopic}
-              questions={clarifyQuestions}
-              inferred={clarifyInferred}
-              reason={clarifyReason}
-              onSubmit={submitClarifications}
-              onSkip={skipClarification}
-              onBack={backFromClarify}
-              loading={clarifyLoading}
-            />
-          </div>
-        )}
-
-        {/* ── 方案态：题目如作文标题留在页首，方案像正文一样在下方展开 ── */}
-        {stage === 'plan' && plan && (
-          <div className="gen-plan anim-rise">
-            <PlanPanel
-              plan={plan}
-              topic={analyzedTopic}
-              knowledgeUnits={planKnowledge}
-              confirmed={!!confirmedPlan}
-              onConfirm={handleConfirmPlan}
-              onReanalyze={() => { void analyze() }}
-              onSolve={handleSolve}
-              onBack={backToTopic}
-              onBackToEdit={() => setConfirmedPlan(null)}
-            />
-          </div>
-        )}
-
-        {/* ── Material Library 2.0 Phase 4：素材选择步骤（仅我的模式 / creator 模式出现）── */}
-        {stage === 'materials' && confirmedPlan && effectiveMode !== 'inspiration' && (
-          <div className="gen-plan anim-rise">
-            <MaterialSelector
-              topic={topic.trim()}
-              blueprintUsageTag={
-                (confirmedPlan as unknown as { usage_tag?: string | undefined })
-                  .usage_tag ?? null
-              }
-              blueprintContentType={
-                (confirmedPlan as unknown as { content_type?: string | undefined })
-                  .content_type ?? null
-              }
-              accessToken={accessToken ?? ''}
-              onConfirm={handleConfirmMaterials}
-              onBack={handleBackFromMaterials}
-            />
-          </div>
-        )}
+        </div>
 
         {/* ── 创作者访谈弹窗（登录后首次使用触发，7 天内跳过不重弹）── */}
         <InterviewDialog
@@ -1083,9 +1251,6 @@ export default function PromptOptimizerPage() {
           onCompleted={() => interviewTrigger.refresh()}
           onDismiss={() => interviewTrigger.refresh()}
         />
-
-        {/* ── 登录引导弹窗：游客点击生成入口时弹出 ── */}
-        {loginGateOpen && <LoginGate onClose={() => setLoginGateOpen(false)} />}
       </div>
     </div>
   )

@@ -1,135 +1,96 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef } from 'react'
+// ────────────────────────────────────────────────────────────
+// 灵感广场：创作者社区 Feed
+//
+// 相比旧版修掉的问题：
+//   1. 点赞/收藏防重复锁从未 add（只在 finally 里 delete）→ 连点发多个 toggle
+//   2. 失败回退用的是「已乐观更新后的对象」，等于没回退，且计数再错一次
+//   3. 丢弃服务端返回的最新计数 → 本地 ±1 与 DB 长期漂移（"刷新就消失"）
+//   4. 卡片不可点进详情、作者名显示为邮箱前缀、无整卡标题/标签
+//   5. 从详情返回时重新从第一页加载、滚动位置归零
+// ────────────────────────────────────────────────────────────
+
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { supabase } from '@/lib/supabaseClient'
-import ArchivePostCard from '@/components/explore/archive-post-card'
-import type { ArchiveSnapshot } from '@/lib/creative/archive'
+import { RefreshCw } from 'lucide-react'
+import { getValidSession } from '@/lib/supabaseClient'
+import {
+  AiStatus,
+  EmptyState,
+  ErrorState,
+  PageHeader,
+  PageShell,
+  SkeletonList,
+} from '@/components/vision'
+import FeedPostCard from '@/components/community/feed-post-card'
+import { toggleInteraction } from '@/lib/community/postApi'
+import { fetchAuthorCards, type AuthorCard } from '@/lib/community/authorCard'
+import type { CommunityPost } from '@/lib/community/types'
 
-// ────────────────────────────────────────────────────────────
-// 灵感广场：展示所有用户发布的公开灵感，按时间倒序
-// 支持点赞、收藏、评论互动
-// ────────────────────────────────────────────────────────────
+const PAGE_SIZE = 20
+/** 返回广场时恢复滚动与已加载条数（tab 级，刷新即清空） */
+const VIEW_STATE_KEY = 'explore:view-state'
 
-/** 帖子数据结构（与 RPC 返回字段对应） */
-interface Post {
-  id: string
-  user_id: string
-  content: string
-  content_type: string
-  category: string
-  tags: string[]
-  like_count: number
-  comment_count: number
-  save_count: number
-  is_public: boolean
-  created_at: string
-  author_name: string
-  current_user_liked: boolean
-  current_user_saved: boolean
-  image_url: string | null
-  // 创作档案帖（post_type=archive 时 archive 为发布时的只读快照）
-  post_type: string | null
-  archive: ArchiveSnapshot | null
-  source_project_id: string | null
-}
-
-/** 评论数据结构 */
-interface Comment {
-  id: string
-  post_id: string
-  user_id: string
-  content: string
-  created_at: string
-  author_name: string
-}
-
-/** 格式化时间为相对时间（如"3 分钟前"） */
-function timeAgo(dateStr: string): string {
-  const date = new Date(dateStr)
-  const now = new Date()
-  const diff = Math.floor((now.getTime() - date.getTime()) / 1000)
-
-  if (diff < 60) return '刚刚'
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`
-  if (diff < 2592000) return `${Math.floor(diff / 86400)} 天前`
-  return date.toLocaleDateString('zh-CN')
-}
-
-/** 取内容摘要（前 200 字，去除 [图片描述] 标记） */
-function getContentSummary(content: string): string {
-  const cleanContent = content.replace(/\n\n\[图片描述\][\s\S]*$/, '')
-  const text = cleanContent || content
-  return text.length > 200 ? text.slice(0, 200) + '…' : text
-}
-
-/** 从内容中提取图片描述段 */
-function getImageDescription(content: string): string | null {
-  const match = content.match(/\[图片描述\]\s*([\s\S]+)$/)
-  return match ? match[1].trim() : null
-}
+type ViewState = { y: number; count: number }
 
 export default function ExplorePage() {
   const router = useRouter()
-  const [posts, setPosts] = useState<Post[]>([])
+  const [posts, setPosts] = useState<CommunityPost[]>([])
   const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  // 展开评论的帖子 ID
-  const [expandedComments, setExpandedComments] = useState<Set<string>>(new Set())
-  // 评论数据缓存：postId → comments
-  const [commentsByPost, setCommentsByPost] = useState<Record<string, Comment[]>>({})
-  // 评论加载中状态
-  const [commentsLoading, setCommentsLoading] = useState<Set<string>>(new Set())
-  // 评论输入内容
-  const [commentInputs, setCommentInputs] = useState<Record<string, string>>({})
-  // 评论提交中状态
-  const [commentSubmitting, setCommentSubmitting] = useState<Set<string>>(new Set())
-  // 互动操作中状态（防止重复提交）
-  const [interactionBusy, setInteractionBusy] = useState<Set<string>>(new Set())
-  // 当前用户 token（缓存在 state 中避免反复 getSession）
-  const [accessToken, setAccessToken] = useState<string | null>(null)
-  // 用户是否有风格向量（决定标题显示"为你推荐"还是"最新发布"）
-  const [hasStyleVector, setHasStyleVector] = useState(false)
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
-  const [deletingId, setDeletingId] = useState<string | null>(null)
-  // ── 分页状态（P0-2：首批 ≤20 条，触底加载下一页）──
-  const PAGE_SIZE = 20
-  const [hasMore, setHasMore] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
-  // ref 镜像：供 IntersectionObserver 闭包读取最新值，避免 effect 频繁重建
+  const [refreshing, setRefreshing] = useState(false)
+  const [hasMore, setHasMore] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [accessToken, setAccessToken] = useState<string | null>(null)
+  const [viewerId, setViewerId] = useState<string | null>(null)
+  const [viewerName, setViewerName] = useState<string>('')
+  const [busy, setBusy] = useState<Set<string>>(new Set())
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [hasStyleVector, setHasStyleVector] = useState(false)
+  const [authorCards, setAuthorCards] = useState<Record<string, AuthorCard>>({})
+
+  // ── ref 镜像：供 observer / 回调闭包读取最新值，避免 effect 频繁重建 ──
+  const postsRef = useRef<CommunityPost[]>([])
+  const busyRef = useRef<Set<string>>(new Set())
+  const tokenRef = useRef<string | null>(null)
   const offsetRef = useRef(0)
   const hasMoreRef = useRef(true)
   const loadingMoreRef = useRef(false)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const restoredRef = useRef(false)
 
-  /**
-   * 加载帖子列表。
-   * - append=false（默认）：替换列表，重置 offset；用于首屏 / 刷新 / 删除失败回退
-   * - append=true：追加到列表末尾，推进 offset；用于触底加载下一页
-   *
-   * hasMore 判定：返回条数 < limit 即到末尾（与后端 RPC 行为一致）。
-   */
+  useEffect(() => {
+    postsRef.current = posts
+  }, [posts])
+
+  useEffect(() => {
+    tokenRef.current = accessToken
+  }, [accessToken])
+
+  // ── 加载一页 ──
   const loadPosts = useCallback(
-    async (token: string, opts: { append?: boolean } = {}) => {
+    async (
+      token: string,
+      opts: { append?: boolean; limit?: number; restore?: ViewState | null } = {}
+    ) => {
       const append = opts.append === true
-      // 并发保护：触底加载进行中或已无更多时跳过
       if (append && (loadingMoreRef.current || !hasMoreRef.current)) return
 
+      const limit = opts.limit ?? PAGE_SIZE
       const offset = append ? offsetRef.current : 0
       if (append) {
-        setLoadingMore(true)
         loadingMoreRef.current = true
+        setLoadingMore(true)
       }
 
-      // P2-1：路由切换时 abort 旧请求，避免旧响应覆盖新页面数据
       const controller = new AbortController()
       abortRef.current = controller
       try {
         const params = new URLSearchParams({
-          limit: String(PAGE_SIZE),
+          limit: String(limit),
           offset: String(offset),
         })
         const res = await fetch(`/api/posts?${params}`, {
@@ -137,233 +98,129 @@ export default function ExplorePage() {
           signal: controller.signal,
         })
         if (!res.ok) {
-          const data = await res.json().catch(() => null)
+          const data = (await res.json().catch(() => null)) as { error?: string } | null
           setError(data?.error ?? `加载失败（${res.status}）`)
           return
         }
-        const data = await res.json()
-        const newPosts = (data.posts ?? []) as Post[]
-        setPosts((prev) => (append ? [...prev, ...newPosts] : newPosts))
+        const data = (await res.json()) as {
+          posts?: CommunityPost[]
+          hasStyleVector?: boolean
+          viewerId?: string
+        }
+        const newPosts = data.posts ?? []
+
+        setPosts((prev) => {
+          // 去重：offset 分页遇到新帖插入会错位，同 id 不重复入列
+          if (!append) return newPosts
+          const seen = new Set(prev.map((p) => p.id))
+          return [...prev, ...newPosts.filter((p) => !seen.has(p.id))]
+        })
         setHasStyleVector(!!data.hasStyleVector)
+        if (data.viewerId) setViewerId(data.viewerId)
         setError(null)
 
-        // 推进 offset + 更新 hasMore（返回不足一页 = 已到末尾）
-        const nextOffset = offset + newPosts.length
-        offsetRef.current = nextOffset
-        const reachedEnd = newPosts.length < PAGE_SIZE
+        offsetRef.current = offset + newPosts.length
+        const reachedEnd = newPosts.length < limit
         hasMoreRef.current = !reachedEnd
         setHasMore(!reachedEnd)
+
+        // 返回广场时的滚动恢复：等 DOM 渲染完再定位
+        const restore = opts.restore
+        if (restore && !restoredRef.current) {
+          restoredRef.current = true
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              window.scrollTo(0, restore.y)
+            })
+          })
+        }
       } catch (e) {
-        // AbortError 静默：路由切换触发的取消是预期行为
         if (e instanceof Error && e.name === 'AbortError') return
         setError('网络异常，请稍后重试')
       } finally {
         if (append) {
-          setLoadingMore(false)
           loadingMoreRef.current = false
+          setLoadingMore(false)
         }
       }
     },
     []
   )
 
-  // P2-1：组件卸载时 abort 进行中的请求
-  const abortRef = useRef<AbortController | null>(null)
+  // ── 初始化 ──
+  useEffect(() => {
+    async function init() {
+      // 必须走 getValidSession：裸 getSession() 不刷新 token，久留后拿到过期 token 直接 401
+      const session = await getValidSession()
+      if (!session) {
+        router.replace('/login')
+        return
+      }
+      const metaName = session.user.user_metadata?.display_name
+      const emailPrefix = session.user.email?.split('@')[0] ?? ''
+      setAccessToken(session.access_token)
+      setViewerId(session.user.id)
+      setViewerName(
+        typeof metaName === 'string' && metaName.trim() ? metaName.trim() : emailPrefix
+      )
+
+      // 从详情页返回：一次性拉回上次已加载的条数并恢复滚动
+      let restore: ViewState | null = null
+      try {
+        const raw = sessionStorage.getItem(VIEW_STATE_KEY)
+        if (raw) {
+          const parsed = JSON.parse(raw) as ViewState
+          if (typeof parsed?.y === 'number' && parsed.count > 0) {
+            restore = { y: parsed.y, count: Math.min(parsed.count, 200) }
+          }
+          sessionStorage.removeItem(VIEW_STATE_KEY)
+        }
+      } catch {
+        // sessionStorage 不可用（隐私模式）：忽略，按首屏加载
+      }
+
+      setLoading(true)
+      await loadPosts(session.access_token, {
+        limit: restore ? Math.max(PAGE_SIZE, restore.count) : PAGE_SIZE,
+        restore,
+      })
+      setLoading(false)
+    }
+    void init()
+  }, [router, loadPosts])
+
+  // ── 离开页面：记住滚动位置与已加载条数 ──
   useEffect(() => {
     return () => {
       abortRef.current?.abort()
+      try {
+        sessionStorage.setItem(
+          VIEW_STATE_KEY,
+          JSON.stringify({ y: window.scrollY, count: postsRef.current.length })
+        )
+      } catch {
+        // 忽略：记忆失败不影响功能
+      }
     }
   }, [])
 
-  /** 下拉刷新：重新加载（重置 offset 与 hasMore） */
-  async function handleRefresh() {
-    if (refreshing || !accessToken) return
-    setRefreshing(true)
-    // 重置分页状态：刷新等同首次加载
-    offsetRef.current = 0
-    hasMoreRef.current = true
-    setHasMore(true)
-    await loadPosts(accessToken)
-    setRefreshing(false)
-  }
-
-  /** 点赞/收藏 toggle（乐观更新，fire-and-forget 模式提速） */
-  async function handleInteraction(
-    postId: string,
-    type: 'like' | 'save'
-  ) {
-    if (!accessToken) return
-    const key = `${postId}:${type}`
-    if (interactionBusy.has(key)) return
-
-    // 乐观更新：立即更新 UI，不等网络返回
-    const togglePost = (p: Post, revert = false): Post => {
-      const isOn = type === 'like' ? p.current_user_liked : p.current_user_saved
-      const newIsOn = revert ? isOn : !isOn
-      if (type === 'like') {
-        return { ...p, current_user_liked: newIsOn, like_count: p.like_count + (newIsOn ? 1 : -1) }
-      }
-      return { ...p, current_user_saved: newIsOn, save_count: p.save_count + (newIsOn ? 1 : -1) }
+  // ── 作者身份卡：一次补齐本页新出现的作者，之后靠会话缓存 ──
+  // 拿不到就什么都不展示 —— 作者身份是增强信息，失败不许影响 feed 本身。
+  useEffect(() => {
+    if (!accessToken || posts.length === 0) return
+    let cancelled = false
+    void fetchAuthorCards(
+      accessToken,
+      posts.map((p) => p.user_id)
+    ).then((cards) => {
+      if (!cancelled) setAuthorCards(cards)
+    })
+    return () => {
+      cancelled = true
     }
+  }, [posts, accessToken])
 
-    setPosts((prev) => prev.map((p) => (p.id === postId ? togglePost(p) : p)))
-
-    // fire-and-forget：发请求但不阻塞 UI
-    // 用 AbortController 实现快速超时，失败时静默回退
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 5000)
-
-    try {
-      const res = await fetch(`/api/posts/${postId}/interactions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ interactionType: type }),
-        signal: controller.signal,
-      })
-      if (!res.ok) {
-        // 失败回退
-        setPosts((prev) => prev.map((p) => (p.id === postId ? togglePost(p, true) : p)))
-      }
-    } catch {
-      // 网络失败：回退
-      setPosts((prev) => prev.map((p) => (p.id === postId ? togglePost(p, true) : p)))
-    } finally {
-      clearTimeout(timeout)
-      setInteractionBusy((prev) => {
-        const next = new Set(prev)
-        next.delete(key)
-        return next
-      })
-    }
-  }
-
-  /** 切换评论展开/折叠 */
-  async function toggleComments(postId: string) {
-    const isExpanded = expandedComments.has(postId)
-    if (isExpanded) {
-      // 折叠
-      setExpandedComments((prev) => {
-        const next = new Set(prev)
-        next.delete(postId)
-        return next
-      })
-    } else {
-      // 展开 + 加载评论
-      setExpandedComments((prev) => new Set(prev).add(postId))
-      if (!commentsByPost[postId] && accessToken) {
-        setCommentsLoading((prev) => new Set(prev).add(postId))
-        try {
-          const res = await fetch(`/api/posts/${postId}/comments`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          })
-          if (res.ok) {
-            const data = await res.json()
-            setCommentsByPost((prev) => ({
-              ...prev,
-              [postId]: data.comments ?? [],
-            }))
-          }
-        } catch {
-          // 静默失败，评论区显示空
-        } finally {
-          setCommentsLoading((prev) => {
-            const next = new Set(prev)
-            next.delete(postId)
-            return next
-          })
-        }
-      }
-    }
-  }
-
-  /** 提交评论 */
-  async function handleSubmitComment(postId: string) {
-    if (!accessToken) return
-    if (commentSubmitting.has(postId)) return
-    const content = (commentInputs[postId] ?? '').trim()
-    if (!content) return
-
-    setCommentSubmitting((prev) => new Set(prev).add(postId))
-    try {
-      const res = await fetch(`/api/posts/${postId}/comments`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ content }),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => null)
-        setError(data?.error ?? '评论失败')
-        return
-      }
-      const data = await res.json()
-      // 添加到评论列表
-      setCommentsByPost((prev) => ({
-        ...prev,
-        [postId]: [...(prev[postId] ?? []), data.comment],
-      }))
-      // 清空输入框
-      setCommentInputs((prev) => ({ ...prev, [postId]: '' }))
-      // 更新评论计数
-      setPosts((prev) =>
-        prev.map((p) =>
-          p.id === postId
-            ? { ...p, comment_count: p.comment_count + 1 }
-            : p
-        )
-      )
-      setError(null)
-    } catch {
-      setError('网络异常，请稍后重试')
-    } finally {
-      setCommentSubmitting((prev) => {
-        const next = new Set(prev)
-        next.delete(postId)
-        return next
-      })
-    }
-  }
-
-  /** 删除帖子 */
-  async function handleDeletePost(postId: string) {
-    if (!accessToken || deletingId) return
-    if (!confirm('确定删除这条灵感吗？')) return
-
-    setDeletingId(postId)
-    // 乐观删除：立即从列表移除
-    setPosts((prev) => prev.filter((p) => p.id !== postId))
-
-    try {
-      const res = await fetch(`/api/posts/${postId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${accessToken}` },
-      })
-      if (!res.ok) {
-        // 删除失败：重新加载列表恢复数据（重置分页，从头拉）
-        setError('删除失败，已恢复')
-        offsetRef.current = 0
-        hasMoreRef.current = true
-        setHasMore(true)
-        await loadPosts(accessToken)
-      }
-    } catch {
-      setError('网络异常，删除失败')
-      offsetRef.current = 0
-      hasMoreRef.current = true
-      setHasMore(true)
-      await loadPosts(accessToken)
-    } finally {
-      setDeletingId(null)
-    }
-  }
-
-  // ── IntersectionObserver：触底加载下一页（P0-2）──
-  // 依赖 hasMore 而非 posts.length：只在 hasMore 翻转时重建 observer，避免每条新帖都重连
+  // ── 触底加载下一页 ──
   useEffect(() => {
     if (!sentinelRef.current || !hasMore) return
     const observer = new IntersectionObserver(
@@ -372,384 +229,242 @@ export default function ExplorePage() {
           entries[0]?.isIntersecting &&
           !loadingMoreRef.current &&
           hasMoreRef.current &&
-          accessToken
+          tokenRef.current
         ) {
-          void loadPosts(accessToken, { append: true })
+          void loadPosts(tokenRef.current, { append: true })
         }
       },
-      { rootMargin: '200px' }
+      { rootMargin: '300px' }
     )
     observer.observe(sentinelRef.current)
     return () => observer.disconnect()
-  }, [hasMore, accessToken, loadPosts])
+  }, [hasMore, loadPosts])
 
-  useEffect(() => {
-    async function init() {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) {
-        router.replace('/login')
-        return
+  /** 下拉/手动刷新：重置分页后重新加载 */
+  async function handleRefresh() {
+    if (refreshing || !accessToken) return
+    setRefreshing(true)
+    offsetRef.current = 0
+    hasMoreRef.current = true
+    setHasMore(true)
+    await loadPosts(accessToken)
+    setRefreshing(false)
+  }
+
+  /** 点赞 / 收藏：乐观更新 + 服务端权威值校正 + 失败精确回退 */
+  const handleToggle = useCallback(
+    async (postId: string, type: 'like' | 'save') => {
+      const token = tokenRef.current
+      if (!token) return
+      const key = `${postId}:${type}`
+      if (busyRef.current.has(key)) return
+
+      // 点击前的快照：失败时整体还原（旧版用"更新后的对象"回退，等于没回退）
+      const snapshot = postsRef.current.find((p) => p.id === postId)
+      if (!snapshot) return
+
+      busyRef.current.add(key)
+      setBusy(new Set(busyRef.current))
+
+      setPosts((prev) =>
+        prev.map((p) => {
+          if (p.id !== postId) return p
+          if (type === 'like') {
+            const next = !p.current_user_liked
+            return {
+              ...p,
+              current_user_liked: next,
+              like_count: Math.max(0, p.like_count + (next ? 1 : -1)),
+            }
+          }
+          const next = !p.current_user_saved
+          return {
+            ...p,
+            current_user_saved: next,
+            save_count: Math.max(0, p.save_count + (next ? 1 : -1)),
+          }
+        })
+      )
+
+      try {
+        const state = await toggleInteraction(token, postId, type)
+        // 以服务端返回值为准；字段缺失（服务端读回失败）时保留本地乐观值
+        setPosts((prev) =>
+          prev.map((p) =>
+            p.id === postId
+              ? {
+                  ...p,
+                  current_user_liked: state.liked ?? p.current_user_liked,
+                  current_user_saved: state.saved ?? p.current_user_saved,
+                  like_count: state.likeCount ?? p.like_count,
+                  save_count: state.saveCount ?? p.save_count,
+                  comment_count: state.commentCount ?? p.comment_count,
+                }
+              : p
+          )
+        )
+      } catch (e) {
+        setPosts((prev) => prev.map((p) => (p.id === postId ? snapshot : p)))
+        setError(e instanceof Error ? e.message : '操作失败，请重试')
+      } finally {
+        busyRef.current.delete(key)
+        setBusy(new Set(busyRef.current))
       }
-      setAccessToken(session.access_token)
-      setCurrentUserId(session.user.id)
-      setLoading(true)
-      await loadPosts(session.access_token)
-      setLoading(false)
+    },
+    []
+  )
+
+  const handleToggleLike = useCallback(
+    (postId: string) => void handleToggle(postId, 'like'),
+    [handleToggle]
+  )
+  const handleToggleSave = useCallback(
+    (postId: string) => void handleToggle(postId, 'save'),
+    [handleToggle]
+  )
+
+  const handleCommentAdded = useCallback((postId: string) => {
+    setPosts((prev) =>
+      prev.map((p) =>
+        p.id === postId ? { ...p, comment_count: p.comment_count + 1 } : p
+      )
+    )
+  }, [])
+
+  /** 评论被删：直接用服务端返回的权威计数回写（并发下自己 -1 会算错） */
+  const handleCommentDeleted = useCallback(
+    (postId: string, commentCount: number) => {
+      setPosts((prev) =>
+        prev.map((p) => (p.id === postId ? { ...p, comment_count: commentCount } : p))
+      )
+    },
+    []
+  )
+
+  /** 删除自己的帖子 */
+  async function handleDeletePost(postId: string) {
+    if (!accessToken || deletingId) return
+    if (!confirm('确定删除这条灵感吗？')) return
+    setDeletingId(postId)
+    const snapshot = postsRef.current
+    setPosts((prev) => prev.filter((p) => p.id !== postId))
+    try {
+      const res = await fetch(`/api/posts/${postId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null
+        setError(data?.error ?? '删除失败')
+        setPosts(snapshot)
+      }
+    } catch {
+      setError('网络异常，删除失败')
+      setPosts(snapshot)
+    } finally {
+      setDeletingId(null)
     }
-    init()
-  }, [router, loadPosts])
+  }
 
   return (
-    <div className="inner-page gen-stage" data-mode="inspiration">
-      <div className="inner-container">
-        {/* ── 顶部 ── */}
-        <div className="inner-header">
-          <div>
-            <h1 className="inner-header-title">
-              {hasStyleVector ? '为你推荐' : '灵感广场'}
-            </h1>
-            <p className="inner-header-sub">
-              {hasStyleVector
-                ? '基于你的创作风格，为你匹配相似内容'
-                : '发现其他创作者的精彩内容'}
-            </p>
-          </div>
-          <button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className="text-sm text-zinc-400 hover:text-zinc-200 disabled:opacity-40 transition flex items-center gap-1.5"
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className={refreshing ? 'animate-spin' : ''}
+    <PageShell>
+      {/* 定位：这是创作者社区，不是内容列表 */}
+      <PageHeader
+        eyebrow="创作者社区"
+        title={hasStyleVector ? '为你匹配的创作者与想法' : '灵感广场'}
+        description={
+          hasStyleVector
+            ? 'AI 按你的创作风格匹配了这些创作者。看他们的想法，聊两句，再回去创作。'
+            : '这里不是内容列表，而是一群创作者在交换还没成型的想法。看看别人在想什么，也许你的下一篇就在这里。'
+        }
+        actions={
+          <>
+            <Link
+              href="/publish"
+              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500"
             >
-              <path d="M21 2v6h-6" />
-              <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 8" />
-              <path d="M3 22v-6h6" />
-              <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6-2.3L3 16" />
-            </svg>
-            {refreshing ? '刷新中…' : '刷新'}
-          </button>
-        </div>
+              发布灵感
+            </Link>
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.1] px-3.5 py-2.5 text-[13px] font-medium text-zinc-300 transition hover:border-white/20 hover:text-white disabled:opacity-40"
+            >
+              <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+              {refreshing ? '刷新中…' : '刷新'}
+            </button>
+          </>
+        }
+        ai={
+          <AiStatus task="community" active={loading || refreshing} variant="bar" />
+        }
+      />
 
-        {/* ── 错误提示 ── */}
-        {error && (
-          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4 mb-6">
-            <p className="text-sm text-red-400">{error}</p>
-          </div>
-        )}
+      {/* ── 错误提示 ── */}
+      {error && (
+        <ErrorState
+          className="mb-6"
+          message={error}
+          onRetry={() => setError(null)}
+          retryLabel="知道了"
+        />
+      )}
 
-        {/* ── 加载中 ── */}
-        {loading && (
+      {/* ── 加载中 ── */}
+      {loading && <SkeletonList count={3} height={132} />}
+
+      {/* ── 空状态 ── */}
+      {!loading && posts.length === 0 && !error && (
+        <EmptyState
+          title="广场上还没有想法"
+          description="把你正在琢磨的一句话发上来，其他创作者会看到，AI 也会据此认识你的关注点。"
+          actionLabel="发布我的灵感"
+          actionHref="/publish"
+        />
+      )}
+
+        {/* ── Feed ── */}
+        {!loading && posts.length > 0 && (
           <div className="space-y-4">
-            {[0, 1, 2].map((i) => (
-              <div
-                key={i}
-                className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-5 animate-pulse"
-                style={{ height: 120 }}
+            {posts.map((post) => (
+              <FeedPostCard
+                key={post.id}
+                post={post}
+                token={accessToken}
+                viewerId={viewerId}
+                viewerName={viewerName}
+                authorCard={authorCards[post.user_id]}
+                busyLike={busy.has(`${post.id}:like`)}
+                busySave={busy.has(`${post.id}:save`)}
+                deleting={deletingId === post.id}
+                onToggleLike={handleToggleLike}
+                onToggleSave={handleToggleSave}
+                onCommentAdded={handleCommentAdded}
+                onCommentDeleted={handleCommentDeleted}
+                onDelete={(id) => void handleDeletePost(id)}
               />
             ))}
           </div>
         )}
 
-        {/* ── 空状态 ── */}
-        {!loading && posts.length === 0 && !error && (
-          <div className="inner-empty">
-            <p>广场上还没有内容</p>
-            <p className="sub">成为第一个发布灵感的人</p>
-          </div>
-        )}
-
-        {/* ── 帖子列表 ── */}
-        {!loading && posts.length > 0 && (
-          <div className="space-y-4">
-            {posts.map((post) => {
-              // ── 创作档案帖：走专用创作卡片，点击进详情页 ──
-              if (post.post_type === 'archive' && post.archive) {
-                return (
-                  <ArchivePostCard
-                    key={post.id}
-                    id={post.id}
-                    userId={post.user_id}
-                    authorName={post.author_name}
-                    createdAt={post.created_at}
-                    category={post.category}
-                    tags={post.tags ?? []}
-                    likeCount={post.like_count}
-                    commentCount={post.comment_count}
-                    saveCount={post.save_count}
-                    archive={post.archive}
-                    canDelete={currentUserId === post.user_id}
-                    deleting={deletingId === post.id}
-                    onDelete={() => handleDeletePost(post.id)}
-                  />
-                )
-              }
-
-              const summary = getContentSummary(post.content)
-              const imgDesc = post.content_type === 'image' ? getImageDescription(post.content) : null
-              const initial = post.author_name
-                ? post.author_name[0].toUpperCase()
-                : 'U'
-              const isExpanded = expandedComments.has(post.id)
-              const postComments = commentsByPost[post.id] ?? []
-              const commentsAreLoading = commentsLoading.has(post.id)
-              const commentInput = commentInputs[post.id] ?? ''
-              const isSubmittingComment = commentSubmitting.has(post.id)
-
-              return (
-                <div
-                  key={post.id}
-                  className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-5 hover:border-zinc-700 transition"
-                >
-                  {/* ── 卡片头部：作者 + 时间 ── */}
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-8 h-8 rounded-full bg-indigo-500/20 text-indigo-300 flex items-center justify-center text-sm font-medium shrink-0">
-                      {initial}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <Link
-                        href={`/profile/${post.user_id}`}
-                        className="text-sm text-zinc-300 font-medium hover:text-indigo-400 transition"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        {post.author_name || '未知用户'}
-                      </Link>
-                      <span className="text-xs text-zinc-600 ml-2">
-                        {timeAgo(post.created_at)}
-                      </span>
-                    </div>
-                    <span className="text-xs px-2.5 py-1 rounded-lg bg-zinc-800 text-zinc-400 shrink-0">
-                      {post.category}
-                    </span>
-                    {/* 删除按钮（仅自己的帖子显示） */}
-                    {currentUserId === post.user_id && (
-                      <button
-                        onClick={() => handleDeletePost(post.id)}
-                        disabled={deletingId === post.id}
-                        className="ml-auto text-xs text-zinc-600 hover:text-red-400 disabled:opacity-40 transition"
-                        title="删除"
-                      >
-                        {deletingId === post.id ? '删除中…' : '删除'}
-                      </button>
-                    )}
-                  </div>
-
-                  {/* ── 内容摘要 ── */}
-                  <p className="text-sm text-zinc-300 leading-relaxed mb-4">
-                    {summary}
-                  </p>
-
-                  {/* ── 图片缩略图 ── */}
-                  {post.image_url && (
-                    <div className="mb-4">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={post.image_url}
-                        alt="帖子图片"
-                        className="w-full max-h-80 object-cover rounded-xl border border-zinc-800"
-                      />
-                    </div>
-                  )}
-
-                  {/* ── 图片描述（图片帖显示标记）── */}
-                  {imgDesc && (
-                    <div className="bg-zinc-800/40 border border-zinc-700/50 rounded-lg px-4 py-3 mb-4">
-                      <p className="text-xs text-zinc-500 mb-1">📷 图片描述</p>
-                      <p className="text-xs text-zinc-400 leading-relaxed line-clamp-2">
-                        {imgDesc.slice(0, 100)}{imgDesc.length > 100 ? '…' : ''}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* ── 标签 ── */}
-                  {post.tags && post.tags.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mb-4">
-                      {post.tags.map((tag, i) => (
-                        <span
-                          key={i}
-                          className="text-xs px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
-                        >
-                          #{tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* ── 互动按钮 ── */}
-                  <div className="flex items-center gap-6 pt-1">
-                    {/* 点赞 */}
-                    <button
-                      onClick={() => handleInteraction(post.id, 'like')}
-                      disabled={interactionBusy.has(`${post.id}:like`)}
-                      className={`flex items-center gap-1.5 text-xs transition disabled:opacity-40 disabled:cursor-not-allowed ${
-                        post.current_user_liked
-                          ? 'text-red-400'
-                          : 'text-zinc-500 hover:text-red-400'
-                      }`}
-                    >
-                      <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill={post.current_user_liked ? 'currentColor' : 'none'}
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                      </svg>
-                      {post.like_count}
-                    </button>
-
-                    {/* 评论 */}
-                    <button
-                      onClick={() => toggleComments(post.id)}
-                      className={`flex items-center gap-1.5 text-xs transition ${
-                        isExpanded
-                          ? 'text-indigo-400'
-                          : 'text-zinc-500 hover:text-indigo-400'
-                      }`}
-                    >
-                      <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-                      </svg>
-                      {post.comment_count}
-                    </button>
-
-                    {/* 收藏 */}
-                    <button
-                      onClick={() => handleInteraction(post.id, 'save')}
-                      disabled={interactionBusy.has(`${post.id}:save`)}
-                      className={`flex items-center gap-1.5 text-xs transition disabled:opacity-40 disabled:cursor-not-allowed ${
-                        post.current_user_saved
-                          ? 'text-amber-400'
-                          : 'text-zinc-500 hover:text-amber-400'
-                      }`}
-                    >
-                      <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill={post.current_user_saved ? 'currentColor' : 'none'}
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-                      </svg>
-                      {post.save_count}
-                    </button>
-                  </div>
-
-                  {/* ── 评论区（展开时显示）── */}
-                  {isExpanded && (
-                    <div className="mt-4 pt-4 border-t border-zinc-800">
-                      {/* 已有评论列表 */}
-                      {commentsAreLoading ? (
-                        <p className="text-xs text-zinc-600 py-2">加载评论中…</p>
-                      ) : postComments.length === 0 ? (
-                        <p className="text-xs text-zinc-600 py-2">还没有评论，来评论一下吧</p>
-                      ) : (
-                        <div className="space-y-3 mb-4">
-                          {postComments.map((comment) => (
-                            <div key={comment.id} className="flex gap-2.5">
-                              <div className="w-6 h-6 rounded-full bg-zinc-700 text-zinc-300 flex items-center justify-center text-[10px] font-medium shrink-0">
-                                {comment.author_name
-                                  ? comment.author_name[0].toUpperCase()
-                                  : 'U'}
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <span className="text-xs text-zinc-400 font-medium">
-                                  {comment.author_name || '未知用户'}
-                                </span>
-                                <span className="text-xs text-zinc-600 ml-2">
-                                  {timeAgo(comment.created_at)}
-                                </span>
-                                <p className="text-xs text-zinc-300 mt-1 leading-relaxed">
-                                  {comment.content}
-                                </p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* 评论输入框 */}
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={commentInput}
-                          onChange={(e) =>
-                            setCommentInputs((prev) => ({
-                              ...prev,
-                              [post.id]: e.target.value,
-                            }))
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && !e.shiftKey) {
-                              e.preventDefault()
-                              handleSubmitComment(post.id)
-                            }
-                          }}
-                          placeholder="写下你的评论…"
-                          className="flex-1 bg-zinc-800/60 border border-zinc-700 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-indigo-500 transition"
-                        />
-                        <button
-                          onClick={() => handleSubmitComment(post.id)}
-                          disabled={isSubmittingComment || !commentInput.trim()}
-                          className="px-4 py-2 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition shrink-0"
-                        >
-                          {isSubmittingComment ? '发送中…' : '评论'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
-
-        {/* ── 触底哨兵：进入视口触发加载下一页（P0-2）── */}
+        {/* ── 触底哨兵 ── */}
         {!loading && hasMore && (
           <div
             ref={sentinelRef}
             className="flex items-center justify-center py-6"
           >
             {loadingMore && (
-              <span className="animate-pulse text-sm text-zinc-500">
-                加载更多…
-              </span>
+              <span className="animate-pulse text-sm text-zinc-500">加载更多…</span>
             )}
           </div>
         )}
 
-        {/* ── 已加载全部提示 ── */}
+        {/* ── 已加载全部 ── */}
         {!loading && !hasMore && posts.length > 0 && (
           <div className="flex items-center justify-center py-6">
-            <span className="text-xs text-zinc-600">没有更多了</span>
+            <span className="text-xs text-zinc-600">已经看到最后一条了</span>
           </div>
         )}
-      </div>
-    </div>
+    </PageShell>
   )
 }
