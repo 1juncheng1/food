@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { supabase } from '@/lib/supabaseClient'
+import { supabase, describeAuthError } from '@/lib/supabaseClient'
 import { useAuth } from '@/components/auth-provider'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -50,7 +50,9 @@ export default function LoginPage() {
     })
 
     if (error) {
-      setError(error.message)
+      // 原始 message 常是 "Failed to fetch" 这类英文传输错误：网络不通时用户会以为
+      // 账号出问题。统一翻译成人话，并明确指向网络。
+      setError(describeAuthError(error))
       setLoading(false)
       return
     }

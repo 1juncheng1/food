@@ -1,4 +1,12 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import {
+  authenticateToken,
+  extractBearerToken as extractBearerFromRequest,
+  type AuthResult,
+} from '@/lib/apiAuth'
+
+/** 成功分支类型，供可选鉴权路由复用（保持从 storage 一处导入） */
+export type { AuthOk } from '@/lib/apiAuth'
 
 // ────────────────────────────────────────────────────────────
 // 公共存储 + AI 工具函数：图片上传、视觉描述、文本嵌入
@@ -81,6 +89,69 @@ export async function cleanupFile(supabase: SupabaseClient, fileName: string): P
   } catch {
     // 清理失败无需阻断主流程
   }
+}
+
+// ────────────────────────────────────────────────────────────
+// 头像：复用 media 桶（不再新建桶，省一次迁移 + 一套 RLS 策略）
+//
+// 约束：storage.objects 的策略是 (storage.foldername(name))[1] = auth.uid()::text，
+// 即**路径第一段必须是用户 ID**。头像路径固定为 <userId>/avatar-<ts>.<ext>。
+// ────────────────────────────────────────────────────────────
+
+const AVATAR_MAX_SIZE = 2 * 1024 * 1024
+
+/** 头像校验：与帖子图片同白名单，但尺寸上限更小（头像不需要 5MB） */
+export function validateAvatarFile(
+  file: unknown
+): { ext: string } | { error: ValidationError } {
+  if (!(file instanceof File)) return { error: 'no_file' }
+  if (file.size === 0 || file.size > AVATAR_MAX_SIZE) return { error: 'too_large' }
+  const ext = ALLOWED_IMAGE_TYPES[file.type]
+  if (!ext) return { error: 'invalid_type' }
+  return { ext }
+}
+
+/** 上传头像，返回公开 URL */
+export async function uploadAvatarToStorage(
+  supabase: SupabaseClient,
+  file: File,
+  userId: string,
+  ext: string
+): Promise<UploadResult | null> {
+  const fileName = `${userId}/avatar-${Date.now()}.${ext}`
+  const arrayBuffer = await file.arrayBuffer()
+  const { error } = await supabase.storage
+    .from('media')
+    .upload(fileName, Buffer.from(arrayBuffer), {
+      contentType: file.type,
+      upsert: false,
+    })
+  if (error) {
+    console.error('头像上传错误:', error)
+    return null
+  }
+  const { data } = supabase.storage.from('media').getPublicUrl(fileName)
+  if (!data?.publicUrl) return null
+  return { imageUrl: data.publicUrl, fileName }
+}
+
+/**
+ * 从 media 桶的公开 URL 反解对象路径，用于删除被替换掉的旧头像。
+ * 只接受「第一段 = userId」的路径 —— 否则一个伪造的 URL 就能删掉别人的文件。
+ */
+export function mediaPathFromUrl(
+  url: string | null | undefined,
+  userId: string
+): string | null {
+  if (!url) return null
+  const marker = '/storage/v1/object/public/media/'
+  const idx = url.indexOf(marker)
+  if (idx < 0) return null
+  const path = decodeURIComponent(url.slice(idx + marker.length).split('?')[0] ?? '')
+  if (!path) return null
+  const first = path.split('/')[0]
+  if (first !== userId) return null
+  return path
 }
 
 /**
@@ -180,36 +251,21 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
 
 /**
  * 从 Bearer token 创建带用户上下文的 Supabase 客户端并验证身份。
- * 复用 supabaseServer 的模式，但返回 supabase client + userId。
- * 返回 null 表示未登录或 token 无效。
+ *
+ * 返回 AuthResult 而非 null：调用方必须这样用
+ *   const auth = await authenticateWithToken(token)
+ *   if (!auth.ok) return auth.response   // 401=未登录/过期；503=网络故障（不得踢用户）
+ * 早期版本一律返回 null，调用方统一兜 401「登录已过期」，于是 Supabase 网络不通时
+ * 已登录用户被整站踢到 /login，而 /login 又因同一条网络打不通——死结。
  */
 export async function authenticateWithToken(
-  token: string
-): Promise<{ supabase: SupabaseClient; userId: string; email: string | null } | null> {
-  if (!token) return null
-
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-    global: {
-      headers: { Authorization: `Bearer ${token}` },
-    },
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  })
-
-  const { data: { user }, error } = await supabase.auth.getUser(token)
-  if (error || !user) return null
-
-  // 一并返回 email：注销等破坏性操作需要用它做密码二次确认
-  return { supabase, userId: user.id, email: user.email ?? null }
+  token: string,
+  noTokenMessage?: string
+): Promise<AuthResult> {
+  return authenticateToken(token, noTokenMessage)
 }
 
-/** 从 Request 的 Authorization 头提取 Bearer token */
+/** 从 Request 的 Authorization 头提取 Bearer token（转发自统一鉴权层） */
 export function extractBearerToken(req: Request): string {
-  const authHeader = req.headers.get('authorization') ?? ''
-  return authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
+  return extractBearerFromRequest(req)
 }

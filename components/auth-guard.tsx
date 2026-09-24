@@ -1,61 +1,57 @@
 'use client'
 
 import { useEffect } from 'react'
-import { useRouter, usePathname } from 'next/navigation'
+import { useRouter } from 'next/navigation'
 import { useAuth } from '@/components/auth-provider'
 
 // ────────────────────────────────────────────────────────────
 // 鉴权守卫：(main) 路由组的统一前端鉴权
 // 未登录时跳转 /login，鉴权期间显示加载态，避免页面内容闪现
 //
-// 白名单路径（PUBLIC_PATHS）：未登录也可访问，不触发跳转。
-//   /generate：游客可浏览生成页了解产品，但点击生成入口时
-//   弹出登录引导弹窗（LoginGate），不进入生成流程。
-//   后端 API 全部强制鉴权，前端拦不住时 401 兜底。
+// 本路由组**不设白名单**：(main) 下每一个页面都是功能页，
+// 未登录一律回 /login，登录入口统一放在首页（/）。
+//
+// 为什么一个口子都不留：游客态没有用户维度，会让积分计费、
+// 素材归属、作品落库全部失去落点；而留着 /generate 这种"可浏览"页面，
+// 等于把游客模式悄悄留在产品里——用户能看见按钮，却点不动。
+// 后端 API 亦全部强制鉴权，前端拦不住时由 401 兜底。
 // ────────────────────────────────────────────────────────────
-
-/** 未登录即可访问的 (main) 路由前缀集合（精确匹配或前缀匹配） */
-const PUBLIC_PATHS: ReadonlyArray<string> = [
-  '/generate', // 灵感场生成页：游客可浏览，生成入口弹出登录引导
-]
-
-function isPublicPath(pathname: string | null): boolean {
-  if (!pathname) return false
-  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'))
-}
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const { session, loading } = useAuth()
   const router = useRouter()
-  const pathname = usePathname()
-  const isPublic = isPublicPath(pathname)
 
   useEffect(() => {
-    // 白名单路径：不做登录跳转
-    if (isPublic) return
     if (!loading && !session) {
       router.replace('/login')
     }
-  }, [loading, session, router, isPublic])
+  }, [loading, session, router])
 
-  // 鉴权中：显示加载骨架，不渲染子页面内容
+  // 鉴权中：显示加载态，不渲染子页面内容
+  // 注意：外层 main 已按侧边栏宽度设置 margin，这里不要再加 ml，否则内容会被推偏
   if (loading) {
     return (
-      <div className="flex-1 ml-[220px] min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-zinc-600 text-sm">加载中…</div>
+      <div className="w-full min-h-screen flex items-center justify-center">
+        <div className="flex items-center gap-2.5 text-[13px] text-indigo-200/90">
+          <span className="inline-flex items-center gap-[3px]">
+            <i className="vs-ai-dot" />
+            <i className="vs-ai-dot" />
+            <i className="vs-ai-dot" />
+          </span>
+          <span>正在准备你的创作空间…</span>
+        </div>
       </div>
     )
   }
 
-  // 未登录且非白名单：不渲染页面内容（跳转由 useEffect 处理）
-  if (!session && !isPublic) {
+  // 未登录：不渲染页面内容（跳转由 useEffect 处理）
+  if (!session) {
     return (
-      <div className="flex-1 ml-[220px] min-h-screen flex items-center justify-center">
-        <div className="text-zinc-600 text-sm">正在跳转登录…</div>
+      <div className="w-full min-h-screen flex items-center justify-center">
+        <div className="text-zinc-500 text-sm">正在跳转登录…</div>
       </div>
     )
   }
 
-  // 已登录，或白名单路径下的游客：正常渲染
   return <>{children}</>
 }

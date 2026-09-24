@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { PageHeader, PageShell } from '@/components/vision'
 import {
   InterviewDialog,
 } from '@/components/creative/interview-dialog'
@@ -206,16 +207,16 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="inner-page">
-      <div className="inner-container">
-        {/* 页面标题 */}
-        <div className="mb-8">
-          <h1 className="inner-header-title">设置</h1>
-          <p className="inner-header-sub">管理你的风格卡、隐私和数据</p>
-        </div>
+    <PageShell width="narrow">
+      {/* 定位：设置不是管理后台，而是「AI 从哪里认识你」 */}
+      <PageHeader
+        eyebrow="AI 认识你的入口"
+        title="设置"
+        description="这里的每一处都影响 AI 怎样理解你。尤其是创作者访谈——它直接决定 AI 判断你意图时的依据。"
+      />
 
         {/* ── 账号信息（昵称） ── */}
-        <section className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-6 mb-6">
+        <section className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
           <h2 className="text-sm font-medium text-zinc-200 mb-6">账号信息</h2>
 
           <div className="mb-6">
@@ -249,7 +250,7 @@ export default function SettingsPage() {
         </section>
 
         {/* ── 创作者访谈（Creator Understanding Engine）── */}
-        <section className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-6 mb-6">
+        <section className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-medium text-zinc-200">创作者访谈</h2>
             {!declLoading && !isDeclarationEmpty(declaration) && (
@@ -315,7 +316,7 @@ export default function SettingsPage() {
         </section>
 
         {/* ── 隐私设置 ── */}
-        <section className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-6 mb-6">
+        <section className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
           <h2 className="text-sm font-medium text-zinc-200 mb-6">隐私设置</h2>
 
           <div className="flex items-center justify-between">
@@ -341,7 +342,7 @@ export default function SettingsPage() {
         </section>
 
         {/* ── 数据导出 ── */}
-        <section className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-6">
+        <section className="rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
           <h2 className="text-sm font-medium text-zinc-200 mb-6">数据导出</h2>
 
           <div className="flex items-center justify-between">
@@ -452,7 +453,6 @@ export default function SettingsPage() {
             </DialogContent>
           </Dialog>
         </section>
-      </div>
-    </div>
+    </PageShell>
   )
 }

@@ -2,7 +2,13 @@
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
-import { supabase, refreshSessionOnce, getValidSession } from '@/lib/supabaseClient'
+import {
+  supabase,
+  refreshSessionDetailed,
+  getValidSession,
+  isAuthTransportError,
+  isCredentialInvalid,
+} from '@/lib/supabaseClient'
 import { setStorageOwner } from '@/lib/storageOwner'
 
 type AuthContextType = {
@@ -33,12 +39,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // token 可能只是过期了（JWT 默认 1h 有效期），先尝试 refresh 而非直接 signOut。
           // 直接 signOut 会清 localStorage，与并发执行的 getValidSession() 竞态，
           // 导致页面级 API 拿到旧 token 请求 → 401 "用户验证失败"。
+          //
           // ① 网络不通时 getUser 同样失败，但那不等于会话失效。
           //    此时若往下走到 signOut 清掉本地会话，网络恢复后用户仍要重新登录（误踢）。
-          const errText = typeof error === 'object' && 'message' in error
-            ? String(error.message ?? '')
-            : ''
-          if (error instanceof TypeError || /fetch|network|timeout/i.test(errText)) {
+          if (isAuthTransportError(error)) {
             setStorageOwner(session.user.id)
             setSession(session)
             setLoading(false)
@@ -47,18 +51,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
           // ② 复用与 getValidSession() 相同的那一次刷新：两者各自发起会互相作废
           //    对方的 refresh_token，并发时必有一方拿到 "Invalid Refresh Token"。
-          const refreshed = await refreshSessionOnce()
-          if (!refreshed) {
-            // refresh 也失败（refresh token 被吊销/过期）→ 确实是僵尸 session，清除
+          const { session: refreshed, error: refreshErr } = await refreshSessionDetailed()
+          if (refreshed) {
+            // refresh 成功 → 用新 session 继续（不 signOut）
+            setStorageOwner(refreshed.user.id)
+            setSession(refreshed)
+            setLoading(false)
+            return
+          }
+
+          // refresh 也失败：只有**凭证确实失效**才清会话。
+          // 服务端 5xx、项目暂停、限流等可用性问题一律保留会话——清掉之后用户
+          // 既登不上（同一条链路还是不通）又回不去，比"带着旧 token 继续用"更糟。
+          if (isCredentialInvalid(refreshErr) || isCredentialInvalid(error)) {
             await supabase.auth.signOut({ scope: 'local' })
             setStorageOwner(null)
             setSession(null)
             setLoading(false)
             return
           }
-          // refresh 成功 → 用新 session 继续（不 signOut）
-          setStorageOwner(refreshed.user.id)
-          setSession(refreshed)
+
+          // 非凭证类失败：保留本地会话，等网络恢复后自然可用
+          console.warn('[auth] 会话验活失败（非凭证问题，保留登录态）:', String((error as { message?: string })?.message ?? error))
+          setStorageOwner(session.user.id)
+          setSession(session)
           setLoading(false)
           return
         }

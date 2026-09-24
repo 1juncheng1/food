@@ -7,31 +7,24 @@
 // ============================================================
 
 import { NextResponse } from 'next/server'
-import { createServerClient } from '@/lib/supabaseServer'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { authenticateRequest, type AuthResult } from '@/lib/apiAuth'
 import { fetchCreatorStyleProfile } from '@/lib/creative/styleProfileRepo'
 import { computeCreatorUnderstanding } from '@/lib/creative/creatorStatus'
 
 export const dynamic = 'force-dynamic'
 
-/** 与 style-profile 同口径的 Bearer 鉴权（本路由强制登录） */
-async function authenticate(req: Request) {
-  const authHeader = req.headers.get('authorization') ?? ''
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
-  if (!token) return null
-
-  const supabase = createServerClient(token)
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser(token)
-  if (error || !user) return null
-
-  return { supabase, userId: user.id }
+/**
+ * 鉴权统一走 lib/apiAuth：网络故障 → 503「网络异常」（已登录用户不得踢），
+ * 凭证失效 → 401。旧的内联 getUser + 一律返回 null 会把网络抖动伪装成"未登录"。
+ */
+async function authenticate(req: Request): Promise<AuthResult> {
+  return authenticateRequest(req)
 }
 
 /** head count：只取 count 不取行，代价最低 */
 async function countRows(
-  supabase: ReturnType<typeof createServerClient>,
+  supabase: SupabaseClient,
   table: string,
   userId: string
 ): Promise<number> {
@@ -48,9 +41,7 @@ async function countRows(
 
 export async function GET(req: Request) {
   const auth = await authenticate(req)
-  if (!auth) {
-    return NextResponse.json({ error: '请先登录' }, { status: 401 })
-  }
+  if (!auth.ok) return auth.response
 
   const { supabase, userId } = auth
 

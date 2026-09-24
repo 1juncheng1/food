@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { supabase } from '@/lib/supabaseClient'
+import { supabase, describeAuthError, isAuthTransportError } from '@/lib/supabaseClient'
 import { useAuth } from '@/components/auth-provider'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -64,6 +64,12 @@ export default function RegisterPage() {
     setLoading(false)
 
     if (error) {
+      // 网络不通时 signUp 直接失败（"Failed to fetch"）：必须明确告诉用户是网络问题，
+      // 否则会被误解成"邮件发送失败"而反复重试
+      if (isAuthTransportError(error)) {
+        setError(describeAuthError(error))
+        return
+      }
       if (error.code === 'rate_limit_exceeded' || /rate limit/i.test(error.message)) {
         setError('请求过于频繁,请稍后再试')
         return
@@ -128,7 +134,7 @@ export default function RegisterPage() {
       } else if (error.code === 'invalid_otp' || /invalid/i.test(error.message)) {
         setError('验证码错误')
       } else {
-        setError(error.message)
+        setError(describeAuthError(error))
       }
       return
     }
@@ -147,7 +153,9 @@ export default function RegisterPage() {
     setResending(false)
 
     if (error) {
-      if (error.code === 'rate_limit_exceeded' || /rate limit/i.test(error.message)) {
+      if (isAuthTransportError(error)) {
+        setError(describeAuthError(error))
+      } else if (error.code === 'rate_limit_exceeded' || /rate limit/i.test(error.message)) {
         setError('请求过于频繁,请稍后再试')
       } else {
         setError('邮件发送失败,请稍后重试')

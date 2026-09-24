@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { createServerClient } from '@/lib/supabaseServer'
+import { authenticateRequest, type AuthResult } from '@/lib/apiAuth'
 import { parseDiagnosis } from '@/lib/creative/diagnosis'
 import { recordVersionSignal } from '@/lib/creative/styleLearning'
 import { trackEvent } from '@/lib/creative/interest/eventTracker'
@@ -40,19 +40,12 @@ interface RpcResult {
  * 从 Authorization 头提取 Bearer token，验证用户身份。
  * 项目 session 存 localStorage，前端需显式把 access_token 传上来。
  */
-async function authenticate(req: Request) {
-  const authHeader = req.headers.get('authorization') ?? ''
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
-  if (!token) return null
-
-  const supabase = createServerClient(token)
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser(token)
-  if (error || !user) return null
-
-  return { supabase, userId: user.id }
+/**
+ * 鉴权统一走 lib/apiAuth：网络故障 → 503「网络异常」（已登录用户不得踢），
+ * 凭证失效 → 401。旧的内联 getUser + 一律返回 null 会把网络抖动伪装成"未登录"。
+ */
+async function authenticate(req: Request): Promise<AuthResult> {
+  return authenticateRequest(req)
 }
 
 export async function POST(req: Request) {
@@ -61,9 +54,7 @@ export async function POST(req: Request) {
 
     // ── 验证用户身份（从 Authorization 头读取 token）──
     const auth = await authenticate(req)
-    if (!auth) {
-      return NextResponse.json({ error: '请先登录' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
 
     // ── 入参校验（快速失败；submit_feedback 函数内还有兜底校验）──
     const feedbackType = body.feedbackType as FeedbackType
@@ -166,9 +157,7 @@ export async function GET(req: Request) {
     }
 
     const auth = await authenticate(req)
-    if (!auth) {
-      return NextResponse.json({ error: '请先登录' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
 
     const { data: history, error } = await auth.supabase
       .from('generation_history')

@@ -34,9 +34,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: '请先登录' }, { status: 401 })
     }
     const auth = await authenticateWithToken(token)
-    if (!auth) {
-      return NextResponse.json({ error: '登录已过期' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
     const { supabase, userId } = auth
 
     // 风格卡：Creator Model / DNA 报告列（9.5/9.6）优先；未迁移环境自动降级旧列

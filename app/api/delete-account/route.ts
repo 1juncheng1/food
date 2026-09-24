@@ -26,9 +26,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: '请先登录' }, { status: 401 })
     }
     const auth = await authenticateWithToken(token)
-    if (!auth) {
-      return NextResponse.json({ error: '登录已过期' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
 
     // ── 限流：不可逆操作，1 次/小时 ──
     const rl = rateLimit(`delete-account:${auth.userId}`, 1, 60 * 60_000)

@@ -19,6 +19,17 @@ vi.mock('@/lib/supabaseClient', () => ({
       signOut: mockSignOut,
     },
   },
+  // ⚠️ page.tsx 还从本模块 import 了这两个函数，mock 工厂必须一并导出。
+  // 缺失时它们是 undefined，handleSendCode 一进错误分支就抛
+  // "isAuthTransportError is not a function"，异常发生在 async 函数里未被捕获，
+  // 表现为「错误文案不渲染 + resend 从未调用」，看起来像产品 bug，实为 mock 缺失。
+  // （成功路径不调用它们，所以只有成功用例会通过——这个伪装很有迷惑性。）
+  isAuthTransportError: (e: unknown) =>
+    /fetch failed|failed to fetch|network|timeout|ENOTFOUND|ECONNRESET|ETIMEDOUT|ECONNREFUSED/i.test(
+      (e as { message?: string } | null)?.message ?? ''
+    ),
+  describeAuthError: (e: unknown) =>
+    `网络异常:${(e as { message?: string } | null)?.message ?? ''}`,
 }))
 
 // 注册页已加已登录守卫(useAuth),默认未登录
