@@ -1,8 +1,10 @@
-# 项目结构化摘要（新会话必读）
+# 兴趣引擎专线摘要（CIP / WF0–WF11）
 
-> 最后更新：2026-09-18
-> 本文档是「Creator Interest Profile 创作者兴趣模型」功能线的唯一接力文档。
-> 新任务开始时**优先读本文件**，再读 `lib/creative/interest/` 源码。
+> ⚠️ **本文件不再是全局接力入口。** 新会话请先读 [`CURRENT.md`](./CURRENT.md)（全局能力全景、
+> 待办与铁律），本文件只覆盖「Creator Interest Profile 创作者兴趣模型」这一条功能线。
+>
+> 最后更新：2026-09-18（内容未同步 2026-09-24 之后的进展，读时注意时效性）
+> 读本文件后，再读 `lib/creative/interest/` 源码。
 
 ---
 
@@ -64,7 +66,7 @@
 | `naming.ts` | batchNameClusters：LLM 新簇命名（label/summary/keywords/slug） |
 | `interestRepo.ts` | 三表读写；**finishBuild 用 upsert 写画像（曾因 update 新用户 0 行导致永久降级，已修）** |
 | `builder.ts` | `runBuild` 14 步流水线（见 §4.4） |
-| `backfill.ts` | runBackfill：projects→work_generate、feedback→like/dislike、post_interactions→post_like/save |
+| `backfill.ts` | runBackfill：projects→work_generate、feedback→like/dislike、post_interactions→post_like/save、**posts(source_project_id)→work_publish（刻意不 join 项目表，保住孤儿发布证据）** |
 | `fallbackTemplates.ts` | 冷启动 7 分类模板池（从旧 /api/inspirations 搬迁，诚实降级不伪装个性化） |
 | `candidates.ts` | Candidate 接口 + hardFilter + S1/S3/S5 取数（S5 已限 1 张、文案改新角度、带 projectId） |
 | `suggestionSynthesizer.ts` | S2 ci_market（service role + 应用端相似度）+ S4 exploration（DeepSeek 生成 2 方向） |
@@ -287,7 +289,7 @@ UI 全链路（TRAE 浏览器，qq 账号）：生成测试作品"埋点验证�
 2. `app/(main)/generate/page.tsx` — isLoggedIn 判定前同样验活（防两 effect 竞态放行游客）
 3. 服务端 API 本就全量强制鉴权（Bearer + getUser），无需改动
 E2E：注入假 token → 刷新 → 自动清场回游客态 ✅；tsc 0 / eslint 0 ✅
-注意：`/generate` 是唯一游客白名单页（LoginGate 弹窗拦截创作入口）；用户侧退出登录仍是 global scope（他端全踢），是否改 local 待产品决策
+注意（后续变更）：游客模式已下线——`/generate` 白名单取消，`(main)` 下所有页面强制登录，LoginGate 组件已删除，登录入口统一收在首页 `/`；后端可选鉴权的 4 个接口（analyze-feedback / work-tags / problem-solve / inspirations）也改为强制鉴权。用户侧退出登录仍是 global scope（他端全踢），是否改 local 待产品决策
 
 ### 5.2 操作注意事项（踩过的坑）
 - **Supabase SQL Editor 中 `auth.uid()` 返回 NULL**（postgres 超级角色无登录上下文）。查表不要带 `where user_id = auth.uid()`，或先 `select auth.uid();` 确认；用具体 uuid 过滤

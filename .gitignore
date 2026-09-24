@@ -23,6 +23,10 @@
 # misc
 .DS_Store
 *.pem
+desktop.ini
+
+# vitest 报告产物（本地生成，不入库）
+.vitest-report.json
 
 # debug
 npm-debug.log*
