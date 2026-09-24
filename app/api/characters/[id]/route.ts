@@ -27,7 +27,7 @@ export async function PATCH(
     const token = extractBearerToken(req)
     if (!token) return NextResponse.json({ error: '请先登录' }, { status: 401 })
     const auth = await authenticateWithToken(token)
-    if (!auth) return NextResponse.json({ error: '登录已过期' }, { status: 401 })
+    if (!auth.ok) return auth.response
     const { supabase, userId } = auth
     const { id } = await params
     if (!id) return NextResponse.json({ error: '缺少角色 ID' }, { status: 400 })
@@ -75,7 +75,7 @@ export async function DELETE(
     const token = extractBearerToken(req)
     if (!token) return NextResponse.json({ error: '请先登录' }, { status: 401 })
     const auth = await authenticateWithToken(token)
-    if (!auth) return NextResponse.json({ error: '登录已过期' }, { status: 401 })
+    if (!auth.ok) return auth.response
     const { supabase, userId } = auth
     const { id } = await params
     if (!id) return NextResponse.json({ error: '缺少角色 ID' }, { status: 400 })

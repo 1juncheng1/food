@@ -4,6 +4,8 @@ import { rateLimit } from '@/lib/rateLimit'
 import { fetchCreatorStyleProfile } from '@/lib/creative/styleProfileRepo'
 import { parseCreatorReport } from '@/lib/creative/creatorReport'
 import { callDeepSeekChat, stripJsonFence } from '@/lib/llm'
+// 与服务端共用同一句充值文案（Phase 4）
+import { INSUFFICIENT_POINTS_MESSAGE } from '@/lib/balance'
 
 export const maxDuration = 45
 export const dynamic = 'force-dynamic'
@@ -20,7 +22,7 @@ export async function POST(req: Request) {
     const token = extractBearerToken(req)
     if (!token) return NextResponse.json({ error: '请先登录' }, { status: 401 })
     const auth = await authenticateWithToken(token)
-    if (!auth) return NextResponse.json({ error: '登录已过期' }, { status: 401 })
+    if (!auth.ok) return auth.response
     const { supabase, userId } = auth
 
     // 限流：每次草稿都是一次 LLM 调用
@@ -70,6 +72,14 @@ export async function POST(req: Request) {
       temperature: 0.6,
       max_tokens: 400,
       jsonMode: true,
+      // 计费（Phase 4）：余额不足直接返回 insufficient_points，不消耗上游 token
+      billing: {
+        supabase,
+        userId,
+        ability: 'chat',
+        refId: `self-draft:${crypto.randomUUID()}`,
+        description: '角色草稿生成',
+      },
       messages: [
         {
           role: 'system',
@@ -86,6 +96,14 @@ export async function POST(req: Request) {
     })
 
     if (!llmRes.ok) {
+      // 积分不足不是"服务器出错"，不能报 500 让用户反复重试：
+      // 必须指到充值，否则用户只会一遍遍点、永远不知道卡在哪。
+      if (llmRes.error === 'insufficient_points') {
+        return NextResponse.json(
+          { error: INSUFFICIENT_POINTS_MESSAGE, code: 'insufficient_points' },
+          { status: 402 }
+        )
+      }
       console.error('self-draft LLM 失败:', llmRes.error)
       return NextResponse.json({ error: '草稿生成失败，请稍后重试' }, { status: 500 })
     }
