@@ -17,6 +17,7 @@
 // ============================================================
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Candidate } from './candidates'
 
 export interface SuggestionRow {
   id: string
@@ -43,7 +44,12 @@ export interface SuggestionRow {
 export interface SuggestionInsertInput {
   clusterCode: string
   slot: 'core_gap' | 'evidence_followup' | 'exploration' | 'continuation'
-  source: 'own_inspiration' | 'ci_market' | 'saved_material' | 'exploration' | 'active_project'
+  /**
+   * 直接复用 Candidate['source'] 而非再抄一份枚举。
+   * 此前这里独立抄写了 5 个字面量，新增候选源时容易漏改此处而只在运行期
+   * 被 CHECK 约束打回（P1 加 creator_knowledge 时就撞上了）。
+   */
+  source: Candidate['source']
   title: string
   description: string
   topic: string

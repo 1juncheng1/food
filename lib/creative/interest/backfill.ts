@@ -6,6 +6,7 @@
 //   2. creative_projects             → work_finalize（status=finalized 的）
 //   3. generation_feedback           → feedback_like / feedback_dislike / work_edit / work_regenerate
 //   4. post_interactions             → post_like / post_save / post_style_resonate
+//   5. posts(source_project_id)      → work_publish（含孤儿引用，刻意不 join 项目表）
 //
 // 幂等键前缀 backfill:，与实时流 live: 互不冲突，可重复执行。
 // embedding 复用存量向量列；无向量的跳过，build 时补算。
@@ -19,6 +20,7 @@ export interface BackfillStats {
   projects: number
   feedback: number
   interactions: number
+  publish: number
   eventsInserted: number
   errors: number
 }
@@ -27,7 +29,14 @@ export async function runBackfill(
   supabase: SupabaseClient,
   userId: string
 ): Promise<BackfillStats> {
-  const stats: BackfillStats = { projects: 0, feedback: 0, interactions: 0, eventsInserted: 0, errors: 0 }
+  const stats: BackfillStats = {
+    projects: 0,
+    feedback: 0,
+    interactions: 0,
+    publish: 0,
+    eventsInserted: 0,
+    errors: 0,
+  }
 
   // ──────────────── 1. creative_projects + 首版本 generation_history → work_generate + work_finalize ────────────────
   //
@@ -180,6 +189,55 @@ export async function runBackfill(
           post_excerpt: cleanTopicExcerpt(post?.excerpt as string | undefined),
         },
         occurredAt: it.created_at as string,
+      })
+      if (r.ok) stats.eventsInserted++
+    }
+  }
+
+  // ──────────────── 4. posts(source_project_id) → work_publish ────────────────
+  //
+  // 关键设计：**刻意不 join creative_projects**。
+  // 项目被删后 source_project_id 就成了孤儿引用，发布证据随之丢失——
+  // 实测就有用户明明发布过、却被算成从未发布（见 CURRENT.md §5.4）。
+  // 用 join 会安静地把这批证据过滤掉，而它们恰恰是最需要救回来的。
+  // 事件只承诺「发布这件事发生过」，不承诺被引用的项目此刻还存在。
+  //
+  // 幂等键是 (post, post_id, work_publish)，重复执行不会重复计票。
+  // 新增发布由 from-project route 实时入流，两者不冲突。
+  const { data: publishedPosts, error: pubErr } = await supabase
+    .from('posts')
+    .select(
+      'id, title, excerpt, category, tags, post_type, style_vector, source_project_id, created_at'
+    )
+    .eq('user_id', userId)
+    .not('source_project_id', 'is', null)
+    .order('created_at', { ascending: true })
+
+  if (pubErr) {
+    console.error('[backfill] 拉取发布记录失败:', pubErr)
+    stats.errors++
+  } else if (publishedPosts) {
+    stats.publish = publishedPosts.length
+    for (const post of publishedPosts) {
+      const r = await trackEvent(supabase, userId, {
+        type: 'work_publish',
+        targetType: 'post',
+        targetId: post.id as string,
+        projectId: post.source_project_id as string,
+        category: (post.category as string) || null,
+        embedding: Array.isArray(post.style_vector)
+          ? (post.style_vector as number[])
+          : null,
+        topicExcerpt:
+          (post.title as string) ||
+          cleanTopicExcerpt(post.excerpt as string | undefined) ||
+          null,
+        payload: {
+          post_type: (post.post_type as string) || 'work',
+          tags: Array.isArray(post.tags) ? post.tags : [],
+          backfill: true,
+        },
+        occurredAt: post.created_at as string,
       })
       if (r.ok) stats.eventsInserted++
     }

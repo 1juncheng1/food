@@ -27,6 +27,7 @@ import {
   getOwnInspirationCandidates,
   getSavedMaterialCandidates,
   getActiveProjectCandidates,
+  getKnowledgeCandidates,
   hardFilter,
   type Candidate,
 } from './candidates'
@@ -34,6 +35,7 @@ import {
   getMarketCandidates,
   getExplorationCandidates,
   buildExplorationSeeds,
+  type ExplorationSeed,
 } from './suggestionSynthesizer'
 import { scoreCandidate } from './ranking'
 import {
@@ -42,6 +44,8 @@ import {
   type SuggestionInsertInput,
 } from './suggestionRepo'
 import { generateAiReasons } from './reasonAi'
+import { buildEvidenceFacts, accumulateFact, type FactCounts } from './evidenceFacts'
+import { loadStyleHints, filterByAvoid } from './styleHints'
 import { tagOverlapFor } from './tagVector'
 import type { ClusterView } from './profileAssembly'
 import type { InterestLayer, TrendDirection } from './types'
@@ -81,12 +85,8 @@ interface RefillCluster {
   layer: InterestLayer
 }
 
-/** 单簇真实行为事实（AI 理由的红线输入：只放真实计数） */
-interface ClusterFacts {
-  create: number
-  finalize: number
-  save: number
-}
+/** 单簇真实行为事实（AI 理由的红线输入：只放真实计数）。P1：3 类 → 7 类 */
+type ClusterFacts = FactCounts
 
 interface ActiveClusterRow {
   id: string
@@ -182,6 +182,34 @@ function toClusterView(row: ActiveClusterRow, nowIso: string): ClusterView {
   }
 }
 
+// ── 新作品种子（P0 数据闭环）──
+
+/**
+ * 把「上次 build 之后新完成的作品主题」转成探索种子。
+ *
+ * 为什么必须单独走这条路：refill 的设计是复用上次 build 落库的簇造卡，
+ * 而新作品还没被聚类（它连一次 build 都没触发过），簇里根本没有它。
+ * 只靠簇种子补货，造出来的仍是旧方向——用户刚写完一篇，推荐却毫无反应。
+ *
+ * 种子标记 fresh=true，S4 prompt 会据此要求"产出承接它的下一个问题"，
+ * 而不是复述该主题（复述等于把用户刚写过的东西再推一遍）。
+ */
+export function toFreshWorkSeeds(topics: string[]): ExplorationSeed[] {
+  const out: ExplorationSeed[] = []
+  for (const raw of topics) {
+    const label = raw.trim().slice(0, 40)
+    if (!label) continue
+    if (out.some((s) => s.label === label)) continue
+    out.push({
+      label,
+      summary: `用户刚完成/采纳了这个方向：「${label}」。请给出它的下一个可写问题——承接它的上下文继续深挖，不要复述它。`,
+      keywords: [],
+      fresh: true,
+    })
+  }
+  return out
+}
+
 // ── 文本去重（refill 没有候选向量列可依赖，用标题 bigram 近似）──
 
 function bigrams(s: string): Set<string> {
@@ -271,11 +299,9 @@ async function loadClusterFacts(
   for (const r of data as Array<{ cluster_id?: string | null; event_type?: string }>) {
     const cid = r.cluster_id
     if (!cid) continue
-    if (!out.has(cid)) out.set(cid, { create: 0, finalize: 0, save: 0 })
-    const f = out.get(cid)!
-    if (r.event_type === 'work_generate') f.create += 1
-    else if (r.event_type === 'work_finalize') f.finalize += 1
-    else if (r.event_type === 'material_save') f.save += 1
+    if (!out.has(cid)) out.set(cid, {})
+    // 七类口径与 builder 共用 accumulateFact，避免两处各写一遍后漂移
+    accumulateFact(out.get(cid)!, r.event_type)
   }
   return out
 }
@@ -288,9 +314,12 @@ function buildInsertInput(
   facts: Map<string, ClusterFacts>,
   now: Date
 ): SuggestionInsertInput {
-  // 簇匹配：只用 embedding 余弦兜底（refill 无 forceBind / projectId 直连的上下文）
-  let matched: RefillCluster | null = null
-  if (cand.embedding && cand.embedding.length === 1024) {
+  // 簇匹配：先用候选自带的确定性 cluster_code（S6 知识单元无向量，只能靠它），
+  // 再用 embedding 余弦兜底（refill 无 forceBind / projectId 直连的上下文）
+  let matched: RefillCluster | null = cand.forceClusterCode
+    ? clusters.find((c) => c.code === cand.forceClusterCode) ?? null
+    : null
+  if (!matched && cand.embedding && cand.embedding.length === 1024) {
     let bestSim = 0.5
     for (const c of clusters) {
       if (!c.centroid?.length) continue
@@ -321,12 +350,7 @@ function buildInsertInput(
 
   // 事实包：只放真实计数；无匹配簇/无计数 → facts 为空 → AI 理由自动走模板（红线）
   const f = matched ? facts.get(matched.clusterId) : undefined
-  const factList: Array<{ type: string; count: number; cluster_label: string }> = []
-  if (matched && f) {
-    if (f.create > 0) factList.push({ type: 'create', count: f.create, cluster_label: matched.label })
-    if (f.finalize > 0) factList.push({ type: 'finalize', count: f.finalize, cluster_label: matched.label })
-    if (f.save > 0) factList.push({ type: 'save', count: f.save, cluster_label: matched.label })
-  }
+  const factList = matched && f ? buildEvidenceFacts(f, matched.label) : []
 
   const evidence: Record<string, unknown> = matched
     ? {
@@ -393,13 +417,23 @@ async function attachAiReasons(
 
 // ── 主入口 ──
 
+export interface RefillOptions {
+  /**
+   * 上次 build 之后新完成的作品主题（P0 闭环）。
+   * 非空时会作为**最优先**种子喂给 S4——这些主题还没进画像簇，
+   * 不显式注入的话新作品对推荐等于不存在。
+   */
+  freshWorkTopics?: string[]
+}
+
 /**
  * 轻量补货：复用上次 build 的簇造一批新卡，**追加**到 active 队列。
  * 任何失败都返回 { added: 0, reason }，绝不抛出（调用方是 fire-and-forget）。
  */
 export async function refillSuggestions(
   supabase: SupabaseClient,
-  userId: string
+  userId: string,
+  opts?: RefillOptions
 ): Promise<RefillResult> {
   const startedAt = Date.now()
 
@@ -432,21 +466,38 @@ export async function refillSuggestions(
     const topCentroid =
       clusters.find((c) => c.layer === 'core')?.centroid ?? clusters[0]?.centroid ?? null
 
-    const [s1, s2, s3, s4, s5] = await Promise.all([
+    // 新作品种子排在最前：S4 prompt 要求"覆盖不同输入方向"，
+    // 排在前面的种子在 LLM 输出里占位更稳（后段种子常被合并省略）。
+    const freshSeeds = opts?.freshWorkTopics?.length ? toFreshWorkSeeds(opts.freshWorkTopics) : []
+    const allSeeds = freshSeeds.length ? [...freshSeeds, ...seeds] : seeds
+
+    // P1 S7：与 builder 同口径的风格提示（null → prompt 完全不变）
+    const styleHints = await loadStyleHints(supabase, userId)
+
+    const [s1, s2, s3, s4, s5, s6] = await Promise.all([
       getOwnInspirationCandidates(supabase, userId),
       getMarketCandidates(topCentroid, 4),
       getSavedMaterialCandidates(supabase, userId),
-      getExplorationCandidates(seeds, nonCoreLabels, { count: REFILL_BATCH_SIZE }),
+      getExplorationCandidates(allSeeds, nonCoreLabels, {
+        count: REFILL_BATCH_SIZE,
+        styleHints,
+      }),
       getActiveProjectCandidates(supabase, userId),
+      getKnowledgeCandidates(
+        supabase,
+        userId,
+        views.map((v) => ({ code: v.code, label: v.label, keywords: v.keywords }))
+      ),
     ])
 
-    const all: Candidate[] = [...s1, ...s2, ...s3, ...s4, ...s5]
+    const all: Candidate[] = [...s1, ...s2, ...s3, ...s4, ...s5, ...s6]
     if (!all.length) return { added: 0, reason: 'no_candidate' }
 
     // 已写过 / 已点 ✕ 的主题向量过滤
     const { written, dismissed } = await loadFilterEmbeddings(supabase, userId)
     // 队列内去重传空数组：refill 不 supersede，在库卡仍要保留，改用标题文本去重
-    let filtered = hardFilter(all, written, dismissed, [])
+    // P1 S7：硬禁忌过滤（与 builder 同口径，放在 hardFilter 之后）
+    let filtered = filterByAvoid(hardFilter(all, written, dismissed, []), styleHints)
 
     const active = await getActiveSuggestions(supabase, userId, 50)
     filtered = dedupeByText(filtered, active.map((r) => r.title))

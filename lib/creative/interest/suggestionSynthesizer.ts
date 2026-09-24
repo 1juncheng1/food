@@ -18,6 +18,7 @@ import { getServiceClient } from '../../ci/store'
 import { ciItemToExternalTrend } from '../../ci/protocol'
 import type { CIPlatform } from '../../ci/types'
 import { cosineSimilarity } from './vectorMath'
+import { formatStyleHintsForPrompt, type StyleHints } from './styleHints'
 import type { Candidate } from './candidates'
 import { cleanTopicExcerpt } from './normalize'
 import { llmTimeoutSignal } from '@/lib/llm'
@@ -125,6 +126,12 @@ export interface ExplorationSeed {
   keywords: string[]
   /** WF11 P1：该种子由两个兴趣簇融合而成（跨簇探索），LLM 需产出跨界选题并回射 seed_type */
   cross?: boolean
+  /**
+   * P0：该种子来自用户刚完成/刚采纳的作品主题，而非画像簇。
+   * 它还没被聚类进画像（build 未跑），但必须立刻影响推荐——
+   * 否则"刚写完一篇"这件事在推荐侧等于没发生过。
+   */
+  fresh?: boolean
 }
 
 /** buildExplorationSeeds 的最小入参：ClusterView 中与种子构造相关的字段子集 */
@@ -225,7 +232,12 @@ const EXPLORATION_DEFAULT_COUNT = 2
  * 系统提示词按目标条数参数化（WF11 P1：2 → 16 批量供给）。
  * hasCross=true 时追加跨簇融合的输出约束并要求回射 seed_type。
  */
-function buildSystemPrompt(count: number, hasCross: boolean): string {
+function buildSystemPrompt(
+  count: number,
+  hasCross: boolean,
+  hasFresh: boolean,
+  styleLine: string
+): string {
   const lines = [
     `你是创作者兴趣探索分析师。给你用户的多个核心兴趣方向，生成 ${count} 个相邻但不重叠的探索方向。`,
     '硬性要求：',
@@ -240,6 +252,19 @@ function buildSystemPrompt(count: number, hasCross: boolean): string {
     lines.push(
       '7. 输入中标注 [融合方向] 的种子是两个方向的交叉点：必须至少为它产出 1 个真正融合两者的选题',
     )
+  }
+  if (hasFresh) {
+    lines.push(
+      '8. 输入中标注 [最新作品] 的种子是用户刚写完或刚采纳、还没被系统消化的主题：' +
+        '必须为每条这样的种子至少产出 1 个"下一步"选题——承接它的上下文继续深挖' +
+        '（它的反面、它的下一步、它没回答的那个问题），绝不能直接复述该主题本身',
+    )
+  }
+  if (styleLine) {
+    // S7 风格适配：只做软引导（往偏好方向靠）+ 硬禁忌（命中即作废）。
+    // 措辞刻意限定为"表达偏好"而非"必须写什么"——偏好是风格维度，
+    // 若被模型读成题材硬约束，探索会退化成对既有偏好的复读。
+    lines.push(`${lines.length + 1}. ${styleLine}。在合适处体现偏好元素；任何回避项都不得出现在输出中。`)
   }
   lines.push(
     '',
@@ -267,7 +292,7 @@ function buildSystemPrompt(count: number, hasCross: boolean): string {
 export async function getExplorationCandidates(
   seeds: ExplorationSeed[],
   existingClusterLabels: string[] = [],
-  opts?: { count?: number }
+  opts?: { count?: number; styleHints?: StyleHints | null }
 ): Promise<Candidate[]> {
   // 目标产出条数 = 调用方显式传入值，缺省 2（旧行为）；非正整数防御为默认值
   const count = opts && Number.isInteger(opts.count) && (opts.count as number) > 0
@@ -281,12 +306,17 @@ export async function getExplorationCandidates(
 
   // 输入中是否含跨簇融合种子：决定 prompt 是否追加融合约束
   const hasCrossSeed = seeds.some((s) => s.cross === true)
+  // 是否含"刚完成的作品"种子：决定 prompt 是否追加承接约束（第 8 条）
+  const hasFreshSeed = seeds.some((s) => s.fresh === true)
+  // S7 风格适配：无风格数据时为空串，prompt 完全不变（未建模用户零影响）
+  const styleLine = formatStyleHintsForPrompt(opts?.styleHints ?? null)
 
   const seedsText = seeds
     .map((s, i) => {
       const kw = s.keywords.length ? ` 关键词：${s.keywords.slice(0, 4).join('、')}` : ''
-      // 融合种子加显式前缀，供系统提示词第 7 条引用
-      const tag = s.cross ? '[融合方向] ' : ''
+      // 融合种子加显式前缀，供系统提示词第 7 条引用；
+      // 新作品种子加 [最新作品] 前缀，供第 8 条引用（两者互斥，融合优先不冲突）
+      const tag = s.cross ? '[融合方向] ' : s.fresh ? '[最新作品] ' : ''
       return `[${i + 1}] ${tag}方向：${s.label}。摘要：${s.summary}${kw}`
     })
     .join('\n')
@@ -313,7 +343,10 @@ export async function getExplorationCandidates(
       body: JSON.stringify({
         model: 'deepseek-chat',
         messages: [
-          { role: 'system', content: buildSystemPrompt(count, hasCrossSeed) },
+          {
+            role: 'system',
+            content: buildSystemPrompt(count, hasCrossSeed, hasFreshSeed, styleLine),
+          },
           { role: 'user', content: userContent },
         ],
         temperature: 0.6,

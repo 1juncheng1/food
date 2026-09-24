@@ -11,12 +11,13 @@
 // ============================================================
 
 import { llmTimeoutSignal } from '@/lib/llm'
+import { factToText } from './evidenceFacts'
 
 export interface AiReasonInput {
   title: string
   /** 所配簇 label；null = 无匹配簇（探索卡等），直接模板不送 AI */
   clusterLabel: string | null
-  /** evidence.facts 事实数组（create/finalize/save 计数） */
+  /** evidence.facts 事实数组（七类行为计数，见 evidenceFacts.ts） */
   facts: Array<Record<string, unknown>>
   /** evidence.gap_reason */
   gapReason: string | null
@@ -104,13 +105,8 @@ export async function generateAiReasons(items: AiReasonInput[]): Promise<AiReaso
   const itemsText = eligibleIdx
     .map((i, seq) => {
       const it = items[i]
-      const factsText = it.facts
-        .map((f) => {
-          const type =
-            f.type === 'create' ? '生成' : f.type === 'finalize' ? '定稿' : f.type === 'save' ? '收藏' : String(f.type)
-          return `${type} ${f.count ?? 0} 篇`
-        })
-        .join('，')
+      // P1：七类事实统一走 factToText（与模板理由同一口径，避免两处翻译漂移）
+      const factsText = it.facts.map((f) => factToText(f)).join('，')
       const gap = it.gapReason ? `；缺口：${it.gapReason}` : ''
       return `[${seq + 1}] 选题：《${it.title}》 方向：${it.clusterLabel ?? '探索'}。用户真实行为：${
         factsText || '暂无直接行为'
@@ -214,12 +210,14 @@ export function buildReasonText(s: {
   const parts: string[] = []
   const clusterLabel = (facts[0]?.cluster_label as string) ?? '该方向'
   const createCount = facts.find((f) => f.type === 'create')?.count as number | undefined
-  const finalizeCount = facts.find((f) => f.type === 'finalize')?.count as number | undefined
-  const saveCount = facts.find((f) => f.type === 'save')?.count as number | undefined
 
+  // P1：create 仍是唯一的"带方向名"主干句（理由的可信度锚点）；
+  // 其余六类沿用同一量词短语追加，不再逐个 if——新增事实类型无需改这里。
   if (createCount) parts.push(`最近 30 天生成 ${createCount} 篇「${clusterLabel}」相关内容`)
-  if (finalizeCount) parts.push(`定稿 ${finalizeCount} 篇`)
-  if (saveCount) parts.push(`收藏 ${saveCount} 条相关案例`)
+  for (const f of facts) {
+    if (f.type === 'create') continue
+    parts.push(factToText(f))
+  }
 
   const gapReason = s.evidence?.gap_reason as string | undefined
   if (gapReason) parts.push(gapReason)

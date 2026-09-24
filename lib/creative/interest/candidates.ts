@@ -5,9 +5,21 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { cosineSimilarity } from './vectorMath'
+import {
+  isUnitInjectable,
+  normalizeKnowledgeUnit,
+  type CreatorKnowledgeUnit,
+} from '../knowledgeUnit'
 
 export interface Candidate {
-  source: 'own_inspiration' | 'ci_market' | 'saved_material' | 'exploration' | 'active_project'
+  source:
+    | 'own_inspiration'
+    | 'ci_market'
+    | 'saved_material'
+    | 'exploration'
+    | 'active_project'
+    /** P1：creator_knowledge（用户已确认的跨素材知识单元）驱动的选题 */
+    | 'creator_knowledge'
   slot: 'core_gap' | 'evidence_followup' | 'exploration' | 'continuation'
   title: string
   description: string
@@ -30,6 +42,18 @@ export interface Candidate {
    * 不落库（SuggestionInsertInput 不含此字段），cross 卡即便带 label 也不绑簇。
    */
   seedLabel?: string
+  /**
+   * P1：显式指定所属簇（cluster_code），作为簇匹配的最后一级。
+   *
+   * 存在理由：creator_knowledge 表没有 embedding 列，S6 候选拿不到向量，
+   * 既有的"embedding 余弦兜底"对它永远失效 → 卡会落到无簇分支，facts 为空、
+   * AI 理由走模板、推荐说不出"为什么是你"。知识单元自带 domain_scope
+   * （与簇 keywords 同源的受控词表），可以靠文本重叠直接命中簇。
+   *
+   * 与 seedLabel 的区别：seedLabel 由 LLM 回射、可能改写而命中失败；
+   * 这是确定性匹配，命中即生效。
+   */
+  forceClusterCode?: string | null
 }
 
 const WRITTEN_THRESHOLD = 0.85
@@ -160,6 +184,104 @@ export async function getSavedMaterialCandidates(
     })
   }
   return out.slice(0, 2)
+}
+
+// ── S6: 已确认的知识单元（Creator Knowledge System → 推荐选题）──
+//
+// 为什么必须补这一路：creator_knowledge 是用户亲手确认过的跨素材知识，
+// 信息密度远高于"又浏览了一次"，但它此前在推荐侧零引用——用户沉淀的知识
+// 从来没变成过选题。这是"已建未接"最典型的一处。
+//
+// 设计取舍：
+//   1. 只取 isUnitInjectable 的单元（status=已确认 且 confidence≥0.6）。
+//      候选态的 AI 归纳未经用户确认，拿它去生成推荐等于替用户做主——
+//      与 knowledgeUnit.ts「候选不进 Prompt 注入」同一条授权链。
+//   2. 不调 LLM。知识单元本身就是可引用的完整命题（claim 写成句子），
+//      直接转成选题卡即可；为"再润色一下"多花一次 LLM 不划算，
+//      而且会把确定性事实包变成不确定的生成文本。
+//   3. 无 embedding 可用，因此靠 domain_scope × 簇 keywords 的文本重叠
+//      命中簇（forceClusterCode），保证卡能带上真实行为事实。
+
+/** 簇的文本标签（S6 匹配用最小集） */
+export interface KnowledgeClusterHint {
+  code: string
+  label: string
+  keywords: string[]
+}
+
+/** S6 最多产出条数：与 S1(3)/S3(2) 同量级，避免知识库大的用户刷屏 */
+const KNOWLEDGE_CANDIDATE_LIMIT = 3
+
+/**
+ * domain_scope × 簇文本的确定性匹配。
+ * 双向包含（scope ⊇ kw 或 kw ⊇ scope）而非全等：受控词表存在粒度差异
+ * （簇关键词"AI 创业" vs scope"AI"），全等会把大量有效命中判丢。
+ */
+export function matchKnowledgeCluster(
+  domainScope: string[],
+  clusters: KnowledgeClusterHint[]
+): string | null {
+  if (!domainScope.length) return null
+  for (const c of clusters) {
+    const terms = [c.label, ...c.keywords].filter(Boolean)
+    for (const scope of domainScope) {
+      for (const t of terms) {
+        if (!t) continue
+        if (scope === t || scope.includes(t) || t.includes(scope)) return c.code
+      }
+    }
+  }
+  return null
+}
+
+export async function getKnowledgeCandidates(
+  supabase: SupabaseClient,
+  userId: string,
+  clusters: KnowledgeClusterHint[] = []
+): Promise<Candidate[]> {
+  const { data, error } = await supabase
+    .from('creator_knowledge')
+    // source_item_ids 必须选：normalizeCandidateUnit 要求 ≥2 个独立来源才承认这是
+    // "跨素材归纳"而非单条素材的复制（MIN_SOURCES_FOR_UNIT），漏选会让全部单元被判空
+    .select('id, user_id, concept, claim, kind, domain_scope, confidence, source_item_ids, source_count, status, created_at, updated_at, confirmed_at')
+    .eq('user_id', userId)
+    .eq('status', '已确认')
+    .order('confidence', { ascending: false })
+    .limit(30)
+
+  if (error) {
+    // 表未迁移（42703/42P01）是真实存在的部署状态，静默降级不刷错误日志
+    console.warn('[interest] 知识单元读取失败，跳过 S6:', error.message)
+    return []
+  }
+  if (!data?.length) return []
+
+  const units = (data as unknown[])
+    .map(normalizeKnowledgeUnit)
+    .filter((u): u is CreatorKnowledgeUnit => !!u && isUnitInjectable(u))
+    // 跨素材来源越多越可信：同等置信度下优先"归纳自更多素材"的单元
+    .sort((a, b) => b.confidence - a.confidence || b.sourceCount - a.sourceCount)
+    .slice(0, KNOWLEDGE_CANDIDATE_LIMIT)
+
+  const out: Candidate[] = []
+  for (const u of units) {
+    const claim = u.claim.slice(0, 100)
+    out.push({
+      source: 'creator_knowledge',
+      slot: 'evidence_followup',
+      title: u.concept.slice(0, 40),
+      // 诚实口径：这是用户自己确认过的知识，不是算法"猜你喜欢"
+      description: `你确认过的知识：${claim}`.slice(0, 120),
+      topic: u.claim.slice(0, 200),
+      formHint: '其他',
+      embedding: null,
+      clusterCode: matchKnowledgeCluster(u.domainScope, clusters),
+      forceClusterCode: matchKnowledgeCluster(u.domainScope, clusters),
+      contentValue: Math.max(0, Math.min(1, u.confidence)),
+      marketRefs: null,
+    })
+  }
+  return out
 }
 
 // ── S5: 当前创作目标延续 ──

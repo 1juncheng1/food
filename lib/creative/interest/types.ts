@@ -7,13 +7,18 @@
 //   扩枚举时两边一起改（应用层枚举为主，CHECK 仅兜底）。
 // ============================================================
 
-/** 用户行为事件类型（21 种，权重见 config.EVENT_REGISTRY） */
+/** 用户行为事件类型（22 种，权重见 config.EVENT_REGISTRY） */
 export type CreatorEventType =
   // 作品生命周期
   | 'work_generate'
   | 'work_finalize'
   | 'work_unfinalize'
   | 'work_delete'
+  // 发布到广场：作品生命周期的终点，也是创作意图最强的表达。
+  // G2（2026-09-24）新增——此前发布只体现在 posts.source_project_id 上，
+  // 从未进入事实流，导致「发布意愿」只能靠反查 posts 得知（且会因子项目被删
+  // 丢失证据）。入流后发布成为一等信号，画像与指标都能直接消费事件流。
+  | 'work_publish'
   // 作品反馈
   | 'feedback_like'
   | 'feedback_dislike'

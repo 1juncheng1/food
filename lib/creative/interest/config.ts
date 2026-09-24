@@ -51,6 +51,10 @@ export const EVENT_REGISTRY: Record<CreatorEventType, EventRegistryEntry> = {
   work_finalize: { weight: 3.0, effect: 'contribute', interpret: 'no', autoEmbedding: false },
   work_unfinalize: { weight: 0, effect: 'withdraw', interpret: 'no', autoEmbedding: false },
   work_delete: { weight: -0.5, effect: 'negative', interpret: 'no', autoEmbedding: false },
+  // 发布 = 作品生命周期的终点，也是最强意图：用户不仅完成了作品，还愿意公开它。
+  // 权重高于 work_finalize(3.0)：定稿是「我认可」，发布是「我愿意让世界看到」。
+  // interpret='yes'：发布是低频高价值信号，值得做原因分析（为什么愿意发这个）。
+  work_publish: { weight: 4.0, effect: 'contribute', interpret: 'yes', autoEmbedding: false },
 
   feedback_like: { weight: 1.0, effect: 'contribute', interpret: 'no', autoEmbedding: false },
   feedback_dislike: { weight: -0.3, effect: 'negative', interpret: 'no', autoEmbedding: false },
@@ -190,6 +194,37 @@ export const FIRST_BUILD_MIN_EVENTS = 5
 export const INTERPRET_BATCH_SIZE = 20
 export const INTERPRET_WINDOW_DAYS = 90
 
+// ── P0 数据闭环：重建触发判定（rebuildTrigger 消费）──
+//
+// 旧触发面的两个断点，是"新增/删除作品后推荐没变化"的直接根因：
+//   1) 触发判定只写在 /api/inspirations 里，Feed 端点（用户真正长时间停留的地方）
+//      完全没有重建判定——它只有"库存 ≤8"这一个补货触发点；
+//   2) 唯一生效的脏事件阈值是 5，而一篇作品只产生 1~3 条事件（work_generate
+//      + 可能的 finalize），日常创作永远够不着；画像 1h 过期又是远水。
+//
+// 因此给"作品级行为"开一条独立低阈值通道：1 条即触发。用户亲手产出/亲手删除
+// 的内容是最高价值信号，它必须比"又浏览了两次"更快地反映到推荐队列。
+export const REBUILD_HIGH_SIGNAL_TYPES: ReadonlyArray<CreatorEventType> = [
+  'work_generate',
+  'work_finalize',
+  'work_unfinalize',
+  'work_delete',
+  'recommend_adopt',
+]
+/** 高信号事件触发重建的最小条数（1 = 一篇作品的增删立即反映到队列） */
+export const REBUILD_HIGH_SIGNAL_MIN = 1
+
+/**
+ * 可作为「新作品种子」的事件类型。
+ * 刻意排除 work_delete：删除是减分信号，若拿被删主题去当探索种子，
+ * 等于用户刚表示不要、系统反而生成更多同主题推荐卡。
+ */
+export const REBUILD_SEED_EVENT_TYPES: ReadonlyArray<CreatorEventType> = ['work_generate', 'recommend_adopt']
+/** 新作品种子最多取几条主题（控制 S4 prompt 长度与 LLM 成本） */
+export const REBUILD_FRESH_TOPIC_LIMIT = 3
+/** 触发判定时扫描的最近事件条数上限（倒序取最新，够判定用，避免全表扫） */
+export const REBUILD_SCAN_EVENT_LIMIT = 500
+
 // ── WF12 MVP：Feed 轻量补货（refill）与热点补位 ──
 //
 // build 与 refill 的分工，是"无限流不断供"的核心：
@@ -218,6 +253,15 @@ export const REFILL_FACTS_WINDOW_DAYS = 90
 
 /** 每页 Feed 最多补入的全局热点卡数（仅在个性化卡不足 limit 时补位，不挤占个性化） */
 export const FEED_TRENDING_INJECT_MAX = 2
+
+/**
+ * Feed 首屏最多前置几张「本轮新作品驱动生成」的卡。
+ *
+ * 为什么需要前置：补货只往队列尾部追加，而 Feed 按 score 排序取首页，
+ * 新卡大概率掉出首屏——用户写完一篇再回 Feed，看到的仍是同一批旧卡，
+ * 闭环在体感上等于没发生。首屏前置这几张，翻页仍走原游标，不受影响。
+ */
+export const FEED_FRESH_INJECT_MAX = 3
 
 // ── 趋势参数（M2 trends 消费） ──
 export const TRENDS_EWMA_ALPHA = 0.5 // 新窗口权重

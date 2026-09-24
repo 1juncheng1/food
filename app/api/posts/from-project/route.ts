@@ -7,11 +7,13 @@ import {
   generateEmbedding,
 } from '@/lib/storage'
 import { parseVector, updateUserStyleVector } from '@/lib/styleVector'
+import { invalidatePostsBaseCache } from '@/lib/postsCache'
 import {
   archiveFeedText,
   buildArchiveSnapshot,
   type ArchiveSnapshot,
 } from '@/lib/creative/archive'
+import { trackEvent } from '@/lib/creative/interest/eventTracker'
 
 export const maxDuration = 60
 export const dynamic = 'force-dynamic'
@@ -49,9 +51,7 @@ export async function POST(req: Request) {
     const token = extractBearerToken(req)
     if (!token) return NextResponse.json({ error: '请先登录' }, { status: 401 })
     const auth = await authenticateWithToken(token)
-    if (!auth) {
-      return NextResponse.json({ error: '登录已过期，请重新登录' }, { status: 401 })
-    }
+    if (!auth.ok) return auth.response
     const { supabase, userId } = auth
 
     const rl = rateLimit(`posts-from-project:${userId}`, 5, 60_000)
@@ -243,6 +243,31 @@ export async function POST(req: Request) {
     if (embedding) {
       void updateUserStyleVector(supabase, userId, embedding).catch(() => {})
     }
+
+    // ── 发布事件入流（G2 数据底座）──
+    // 在此之前「发布」只体现在 posts.source_project_id 上，从未进入 creator_events：
+    // 兴趣画像看不到用户愿意公开什么，发布意愿也只能靠反查 posts 得知
+    // （且项目被删后会丢证据）。入流后发布成为一等信号，画像、发布意愿指标、
+    // 后续的作品表现诊断都能直接消费事件流。
+    // trackEvent 内部吞掉所有异常，发布结果不受影响。
+    void trackEvent(supabase, userId, {
+      type: 'work_publish',
+      targetType: 'post',
+      targetId: inserted.id as string,
+      projectId,
+      category,
+      embedding: embedding ?? null,
+      topicExcerpt: title,
+      payload: {
+        post_type: postType,
+        mode,
+        version_count: finalVersionNumber ?? 1,
+        ...(userTags.length ? { tags: userTags } : {}),
+      },
+    })
+
+    // 新帖必须立刻出现在广场：失效公共列表缓存（否则最长 60s 后才可见）
+    invalidatePostsBaseCache()
 
     return NextResponse.json({
       success: true,

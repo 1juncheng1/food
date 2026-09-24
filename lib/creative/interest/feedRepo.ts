@@ -220,6 +220,40 @@ export async function getFeedPage(
 }
 
 /**
+ * 取「本轮新生成」的推荐卡（created_at 晚于给定时间点）。
+ *
+ * P0 闭环：补货只往队列尾部追加，而 Feed 首页按 score 排序取前 N 张——
+ * 新卡几乎必然掉出首屏，于是"刚写完一篇 → 回 Feed 看到新方向"这条链在体感上
+ * 从未发生。这里把本轮新卡单独取出，由 route 层前置到首屏。
+ *
+ * 分界点用「上次 build 已消费的事件时间」而非"最近 5 分钟"：
+ * 前者语义就是"系统还没消化过的那批行为催生出来的卡"，与触发判定同源。
+ */
+export async function loadFreshSuggestions(
+  supabase: SupabaseClient,
+  userId: string,
+  sinceIso: string,
+  limit: number
+): Promise<SuggestionRow[]> {
+  const { data, error } = await supabase
+    .from('interest_suggestions')
+    .select(
+      'id, cluster_code, slot, source, title, description, topic, form_hint, score, score_breakdown, evidence, market_refs, core_question, why_recommend, creation_angle, related_knowledge, reason_source'
+    )
+    .eq('user_id', userId)
+    .eq('status', 'active')
+    .gt('created_at', sinceIso)
+    .order('score', { ascending: false })
+    .order('id', { ascending: true })
+    .limit(Math.max(1, limit))
+  if (error) {
+    console.error('[feed] 查询本轮新卡失败:', error.message)
+    return []
+  }
+  return (data ?? []) as unknown as SuggestionRow[]
+}
+
+/**
  * 查当日已出卡数（recommend_impression 事件按 target_id 去重）。
  *
  * 日上限的正确口径：FEED_DAILY_CAP 要限制的是"用户当天看了多少张"，

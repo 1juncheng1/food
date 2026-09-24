@@ -41,9 +41,18 @@ import {
 import { ageDays, needsInterpret, effectiveWeight } from './weights'
 import { cosineSimilarity, parseVectorColumn } from './vectorMath'
 import type { EngineEvent, InterestLayer, TagDims, TrendDirection } from './types'
-import { hardFilter, getOwnInspirationCandidates, getSavedMaterialCandidates, getActiveProjectCandidates, type Candidate } from './candidates'
+import {
+  hardFilter,
+  getOwnInspirationCandidates,
+  getSavedMaterialCandidates,
+  getActiveProjectCandidates,
+  getKnowledgeCandidates,
+  type Candidate,
+} from './candidates'
 import { getMarketCandidates, getExplorationCandidates, buildExplorationSeeds } from './suggestionSynthesizer'
 import { scoreCandidate } from './ranking'
+import { buildEvidenceFacts, accumulateFact, type FactCounts } from './evidenceFacts'
+import { loadStyleHints, filterByAvoid } from './styleHints'
 import { insertSuggestions, supersedeOldBuild, type SuggestionInsertInput } from './suggestionRepo'
 import { buildFirstWorkSeedCard } from './firstWorkSeed'
 
@@ -249,6 +258,8 @@ export async function runBuild(
       createCount: number
       finalizeCount: number
       saveCount: number
+      /** P1：七类行为事实计数（create/finalize/save/edit/adopt/analyze/search） */
+      factCounts: FactCounts
       projectIds: string[]
       tagDims: TagDims | null
       tagEmbedding: number[] | null
@@ -381,6 +392,9 @@ export async function runBuild(
       const createCount = c.members.filter((m) => m.type === 'work_generate').length
       const finalizeCount = c.members.filter((m) => m.type === 'work_finalize').length
       const saveCount = c.members.filter((m) => m.type === 'material_save').length
+      // P1：七类事实一次遍历累加（与 refill 共用 accumulateFact 口径，避免两处漂移）
+      const factCounts: FactCounts = {}
+      for (const m of c.members) accumulateFact(factCounts, m.type)
       clusterData.push({
         clusterId: clusterView.clusterId,
         centroid: c.centroid,
@@ -395,6 +409,7 @@ export async function runBuild(
         createCount,
         finalizeCount,
         saveCount,
+        factCounts,
         projectIds: [...new Set(c.members.map((m) => m.projectId).filter((x): x is string => !!x))],
         tagDims: tagInfo?.tagDims ?? null,
         tagEmbedding: tagInfo?.tagEmbedding ?? null,
@@ -454,12 +469,24 @@ export async function runBuild(
     // 新用户/回填场景 S4 不再缺席；跨簇 combo 不占 6 个单簇名额。
     const { seeds: explorationSeeds, nonCoreLabels, seedClusters } = buildExplorationSeeds(clusterViews)
 
-    const [s1, s2, s3, s4raw, s5] = await Promise.all([
+    // P1 S7：风格提示需先于 S4 拿到（要写进 prompt）。新用户返回 null，prompt 完全不变。
+    const styleHints = await loadStyleHints(supabase, userId)
+
+    const [s1, s2, s3, s4raw, s5, s6] = await Promise.all([
       getOwnInspirationCandidates(supabase, userId),
       getMarketCandidates(topCoreCentroid, 4),
       getSavedMaterialCandidates(supabase, userId),
-      getExplorationCandidates(explorationSeeds, nonCoreLabels, { count: EXPLORATION_BATCH_SIZE }),
+      getExplorationCandidates(explorationSeeds, nonCoreLabels, {
+        count: EXPLORATION_BATCH_SIZE,
+        styleHints,
+      }),
       getActiveProjectCandidates(supabase, userId),
+      // P1：S6 知识候选源（走 user token，creator_knowledge 有 select_own RLS）
+      getKnowledgeCandidates(
+        supabase,
+        userId,
+        clusterViews.map((v) => ({ code: v.code, label: v.label, keywords: v.keywords }))
+      ),
     ])
 
     // S4 探索卡的簇关联策略（WF11 P1 扩批后必须覆盖多种子，否则 16 张卡只有 1 张有簇事实）：
@@ -490,7 +517,7 @@ export async function runBuild(
       return cand
     })
 
-    const allCandidates: Candidate[] = [...s1, ...s2, ...s3, ...s4, ...s5]
+    const allCandidates: Candidate[] = [...s1, ...s2, ...s3, ...s4, ...s5, ...s6]
 
     // hardFilter：用最近 30 天 work_generate 事件 embedding 过滤"已写过"候选
     const thirtyDaysAgo = new Date()
@@ -522,7 +549,12 @@ export async function runBuild(
       .filter((e): e is number[] => !!e)
 
     // 队列已 supersede 在 14 步开始处做；此处 active 队列视为空
-    const filtered = hardFilter(allCandidates, writtenEmbeddings, dismissedEmbeddings, [])
+    // P1 S7：硬禁忌过滤放在 hardFilter 之后——两者语义不同（前者是"写过/点过✕"，
+    // 后者是"用户明确说不要的元素"），合并进一个函数会让口径互相污染
+    const filtered = filterByAvoid(
+      hardFilter(allCandidates, writtenEmbeddings, dismissedEmbeddings, []),
+      styleHints
+    )
 
     // ── 步骤 14: 五因子打分 + 落 interest_suggestions 队列 ──
     await supersedeOldBuild(supabase, userId)
@@ -546,6 +578,12 @@ export async function runBuild(
 
       if (!matchedCluster && cand.projectId) {
         matchedCluster = clusterData.find((cd) => cd.projectIds.includes(cand.projectId!)) ?? null
+      }
+
+      // P1 第 4 级：候选自带 cluster_code（S6 知识单元靠 domain_scope 文本命中）
+      // 没有 embedding 的候选若少了这一级，永远落不到簇上 → facts 空 → 理由模板化
+      if (!matchedCluster && cand.forceClusterCode) {
+        matchedCluster = clusterData.find((cd) => cd.code === cand.forceClusterCode) ?? null
       }
 
       if (!matchedCluster && cand.embedding && cand.embedding.length === 1024) {
@@ -586,11 +624,9 @@ export async function runBuild(
         ? {
           cluster_label: matchedCluster.label,
           cluster_code: matchedCluster.code,
-          facts: [
-            { type: 'create', count: matchedCluster.createCount, cluster_label: matchedCluster.label },
-            ...(matchedCluster.finalizeCount > 0 ? [{ type: 'finalize', count: matchedCluster.finalizeCount, cluster_label: matchedCluster.label }] : []),
-            ...(matchedCluster.saveCount > 0 ? [{ type: 'save', count: matchedCluster.saveCount, cluster_label: matchedCluster.label }] : []),
-          ],
+          // P1：从 3 类（create/finalize/save）扩到 7 类——改稿/采纳/分析/搜索
+          // 同样是"为什么推荐它"的硬事实，此前被丢弃导致理由只能复述生成数
+          facts: buildEvidenceFacts(matchedCluster.factCounts, matchedCluster.label),
           gap_reason: cand.slot === 'core_gap' ? `你在「${matchedCluster.label}」关注但还未写过` : null,
           source: cand.source,
           matched_similarity: semanticSim,
