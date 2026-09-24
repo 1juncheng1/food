@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import "./vision.css";
 import { AuthProvider } from "@/components/auth-provider";
 import { AuroraBackground } from "@/components/aurora";
 
@@ -15,8 +16,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "视界",
-  description: "粘贴你喜欢的解说文案，AI 学习你的语气和节奏，生成同风格的新解说稿。",
+  title: "视界 Vision · 让AI越来越懂你的创作伙伴",
+  description:
+    "视界是一个越来越懂你的 AI 创作伙伴。它理解你的灵感、知识与表达方式，陪伴你把模糊想法变成有依据、有观点、可以真正发布的作品。",
   icons: {
     icon: [{ url: "/logo.png", sizes: "any", type: "image/png" }],
     apple: [{ url: "/logo.png", sizes: "any", type: "image/png" }],

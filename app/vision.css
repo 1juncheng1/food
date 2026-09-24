@@ -1,0 +1,179 @@
+/* ══════════════════════════════════════════════════════════════
+   VS Design System —— 全站统一视觉层
+   新增文件，不修改 globals.css 内任何既有规则（避免破坏三套历史样式）
+   只提供 .vs-* 前缀的原子样式 + 动效，其余一律用 Tailwind 工具类
+   ══════════════════════════════════════════════════════════════ */
+
+:root {
+  --vs-surface: rgba(255, 255, 255, 0.03);
+  --vs-surface-hover: rgba(255, 255, 255, 0.055);
+  --vs-border: rgba(255, 255, 255, 0.08);
+  --vs-border-hover: rgba(255, 255, 255, 0.16);
+  --vs-radius: 18px;
+}
+
+/* ── 骨架屏：柔和扫光，替代裸露的 animate-pulse ── */
+.vs-skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.vs-skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.07),
+    transparent
+  );
+  transform: translateX(-100%);
+  animation: vs-shimmer 1.7s ease-in-out infinite;
+}
+
+@keyframes vs-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* ── AI 呼吸点：三点点阵，表达"AI 正在想" ── */
+.vs-ai-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: vs-breathe 1.5s ease-in-out infinite;
+}
+
+.vs-ai-dot:nth-child(2) {
+  animation-delay: 0.18s;
+}
+
+.vs-ai-dot:nth-child(3) {
+  animation-delay: 0.36s;
+}
+
+@keyframes vs-breathe {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.75);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ── AI 区域细渐变描边（克制，不做霓虹灯） ── */
+.vs-ai-frame {
+  position: relative;
+}
+
+.vs-ai-frame::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    rgba(99, 102, 241, 0.5),
+    rgba(139, 92, 246, 0.16),
+    rgba(16, 185, 129, 0.3)
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* ── 顶部细进度条（AI 分步推进时的不确定进度） ── */
+.vs-bar-track {
+  position: relative;
+  height: 2px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.vs-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 32%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #6366f1, #8b5cf6, #10b981);
+  animation: vs-bar 2.4s ease-in-out infinite;
+}
+
+@keyframes vs-bar {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+/* ── 入场动效：所有区块统一轻微上浮 ── */
+.vs-rise {
+  animation: vs-rise 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes vs-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── 卡片悬停：极克制的抬升 ── */
+.vs-lift {
+  transition:
+    border-color 0.22s ease,
+    background-color 0.22s ease,
+    transform 0.22s ease;
+}
+
+.vs-lift:hover {
+  transform: translateY(-2px);
+}
+
+/* ── 分隔线 ── */
+.vs-divider {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.09),
+    rgba(255, 255, 255, 0.02)
+  );
+}
+
+/* ── 无障碍：减少动效 ── */
+@media (prefers-reduced-motion: reduce) {
+  .vs-skeleton::after,
+  .vs-ai-dot,
+  .vs-bar,
+  .vs-rise {
+    animation: none !important;
+  }
+
+  .vs-lift:hover {
+    transform: none;
+  }
+}
