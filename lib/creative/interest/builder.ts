@@ -15,8 +15,19 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { generateEmbedding } from '@/lib/storage'
-import { CLUSTER_INHERIT_SIMILARITY, CLUSTER_MIN_MEMBERS, MAX_ACTIVE_CLUSTERS, EXPLORATION_BATCH_SIZE, AI_REASON_TOP_N } from './config'
-import { scoreClusters, type ScoredCluster } from './scoring'
+import {
+  CLUSTER_INHERIT_SIMILARITY,
+  CLUSTER_MIN_MEMBERS,
+  MAX_ACTIVE_CLUSTERS,
+  EXPLORATION_BATCH_SIZE,
+  AI_REASON_TOP_N,
+  BUILD_FRESH_WORK_SEED_LIMIT,
+  CLUSTER_MATCH_MIN_SIMILARITY,
+  RULE_VERSION,
+  ALGO_VERSION,
+  EMBEDDING_MODEL,
+} from './config'
+import { scoreClusters, hasWorkLevelSignal, type ScoredCluster } from './scoring'
 import { decideLayer, detectBurst } from './layering'
 import { windowScores, trendDirection, ewma } from './trends'
 import { clusterConfidence } from './confidence'
@@ -43,24 +54,85 @@ import { cosineSimilarity, parseVectorColumn } from './vectorMath'
 import type { EngineEvent, InterestLayer, TagDims, TrendDirection } from './types'
 import {
   hardFilter,
+  embedCandidates,
   getOwnInspirationCandidates,
   getSavedMaterialCandidates,
   getActiveProjectCandidates,
   getKnowledgeCandidates,
   type Candidate,
 } from './candidates'
-import { getMarketCandidates, getExplorationCandidates, buildExplorationSeeds } from './suggestionSynthesizer'
-import { scoreCandidate } from './ranking'
+import { getMarketCandidates, getExplorationCandidates, buildExplorationSeeds, toFreshWorkSeeds } from './suggestionSynthesizer'
+import {
+  scoreCandidate,
+  recentBehaviorCentroid,
+  recentSimilarityOf,
+  tasteFactorFor,
+  type TasteEntry,
+} from './ranking'
 import { buildEvidenceFacts, accumulateFact, type FactCounts } from './evidenceFacts'
 import { loadStyleHints, filterByAvoid } from './styleHints'
-import { insertSuggestions, supersedeOldBuild, type SuggestionInsertInput } from './suggestionRepo'
+import {
+  insertSuggestions,
+  supersedeExceptBuild,
+  supersedeOldBuild,
+  type SuggestionInsertInput,
+} from './suggestionRepo'
 import { buildFirstWorkSeedCard } from './firstWorkSeed'
+
+// ──────────────────────────────────────────────────────────
+// 评分 v3：口味惩罚（✕ 原因 → 簇 → 乘子）
+// 实现已迁入 tasteModel.ts（rescore 读路径也要用，避免 builder↔rescore 循环依赖）；
+// 这里重新导出以保证既有 import 路径不变。
+// ──────────────────────────────────────────────────────────
+
+export { buildTasteMap } from './tasteModel'
+import { buildTasteMap } from './tasteModel'
+import { buildRankingFeatures } from './rescore'
+
+/** build 侧适配：EngineEvent[] → buildTasteMap（只取 dismiss 事件） */
+function buildTastePenalty(events: EngineEvent[], now: Date): Map<string, TasteEntry> {
+  return buildTasteMap(
+    events
+      .filter((e) => e.type === 'recommend_dismiss')
+      .map((e) => ({
+        occurredAt: e.occurredAt,
+        payload: (e as EngineEvent & { _payload?: Record<string, unknown> | null })._payload ?? null,
+      })),
+    now
+  )
+}
 
 export interface BuildResult {
   buildId: string
   status: 'done' | 'failed' | 'duplicate'
   clusterCount: number
   eventCount: number
+}
+
+/**
+ * 零簇 build 落库的空画像。
+ *
+ * 必须带上 algo/rule/embedding 三个版本号，而不只是 build_id：
+ * 重建判定会拿 interest_profile.rule_version 与当前 RULE_VERSION 比对，
+ * 画像里没有版本号 = 判为"落后于当前评分公式"→ 每次进页都再触发一次全量重建。
+ *
+ * 原先这里只写 build_id 就够了（判定只看 build_id 与 updated_at），
+ * 加了规则版本变更后必须同步版本号，否则零簇分支变成复发重建的成本炸弹。
+ */
+function emptyProfileFor(buildId: string, updatedAt: string): Record<string, unknown> {
+  return {
+    schema_version: 1,
+    updated_at: updatedAt,
+    build_id: buildId,
+    algo_version: ALGO_VERSION,
+    rule_version: RULE_VERSION,
+    embedding_model: EMBEDDING_MODEL,
+    core: [],
+    exploration: [],
+    temporary: [],
+    domains: {},
+    behavior_reason_summary: { window_days: 90, mix: {} },
+  }
 }
 
 export async function runBuild(
@@ -94,7 +166,9 @@ export async function runBuild(
     if (!events.length) {
       // 账本零事件（全新用户）：写空画像让冷启动判定成立。全时间窗口径下本分支
       // 对有数据的用户不可达（fetchEvents 无时间过滤），不存在空画像覆盖风险
-      await finishBuild(supabase, userId, buildId, { from_event_id: null, to_event_id: null, count: 0 }, { schema_version: 1, updated_at: now.toISOString(), build_id: buildId, core: [], exploration: [], temporary: [], domains: {}, behavior_reason_summary: { window_days: 90, mix: {} } })
+      // 空画像必须带上规则版本号：重建判定会比对 interest_profile.rule_version，
+      // 缺失会被判为"画像落后于当前评分公式"→ 每次进页都再触发一次全量重建。
+      await finishBuild(supabase, userId, buildId, { from_event_id: null, to_event_id: null, count: 0 }, emptyProfileFor(buildId, now.toISOString()))
       return { buildId, status: 'done', clusterCount: 0, eventCount: 0 }
     }
 
@@ -135,28 +209,73 @@ export async function runBuild(
     // ── 步骤 5 + 6: 撤回裁决 + 评分 + 聚类（纯函数，一步到位） ──
     const allScored: ScoredCluster[] = scoreClusters(events, now)
 
-    // 簇质量门槛：单成员簇只是孤立行为，不构成"兴趣方向"，不落库不进画像；
-    // 全量重算时事件不丢，后续有同类事件自然达到门槛成簇。
+    // 簇质量门槛：单成员簇只是孤立行为，不构成"兴趣方向"——**作品级强信号除外**。
+    // 跨领域创作者「N 篇作品 N 个方向」，每簇只有 1 个成员；若无差别按 MIN_MEMBERS
+    // 滤掉，画像只剩一两个方向，造卡只能围着它反复改写（"刷来刷去都是这几张"），
+    // 且绝大多数卡拿不到簇 → 语义匹配与在线重排对它们全部失效。
+    // 含 work_generate/work_finalize/work_publish 的簇，1 个成员也承认；
+    // 曝光/点击等弱信号仍须凑够 MIN_MEMBERS（误点一下不该变成一个兴趣方向）。
     // 再按 weight 截断 Top N，防止主题极度分散时簇表膨胀。
+    // 负簇不享受例外：weight=0 且 isNegative 的簇是"用户明确不想要"的方向
+    // （✕/删除/踩 压过了正向），拿它去造卡等于把被拒绝的东西换个说法再推一遍。
+    // 所以例外通道的口径是「非负 + 含作品级信号」，不是「含作品级信号」。
     const scored: ScoredCluster[] = allScored
-      .filter((c) => c.eventCount >= CLUSTER_MIN_MEMBERS)
+      .filter(
+        (c) => c.eventCount >= CLUSTER_MIN_MEMBERS || (!c.isNegative && hasWorkLevelSignal(c))
+      )
       .sort((a, b) => b.weight - a.weight)
       .slice(0, MAX_ACTIVE_CLUSTERS)
 
+    // ── 步骤 6.5：捞回「被聚类门槛挡在画像之外的新作品」──
+    // 一篇全新方向的作品形成单成员簇，被 CLUSTER_MIN_MEMBERS=2 滤掉：它既不进画像、
+    // 也不在 clusterViews 里，于是 buildExplorationSeeds 造卡时根本看不到它 ——
+    // 用户写完一篇新方向，推荐队列纹丝不动（"新增作品不影响推荐"的直接根因）。
+    // 这里把这类最新作品主题捞回来当 S4 探索种子（fresh=true），
+    // 让"刚写完的那篇"在本次 build 内就参与造卡，而不是等它攒够第 2 篇同主题。
+    // 已被任何入选簇吸收的作品不重复当种子（那部分方向已由簇种子表达）。
+    const absorbedEventIds = new Set<string>()
+    for (const c of scored) {
+      for (const m of c.members) absorbedEventIds.add(m.id)
+    }
+    const freshWorkTopics: string[] = []
+    // events 已按 occurred_at 正序（fetchEvents 倒序取后 reverse），倒着遍历 = 最新优先
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i]
+      if (e.type !== 'work_generate' && e.type !== 'recommend_adopt') continue
+      if (absorbedEventIds.has(e.id)) continue
+      const t = ((e as EngineEvent & { _topic?: string })._topic ?? '').trim()
+      if (!t || freshWorkTopics.includes(t)) continue
+      freshWorkTopics.push(t)
+      if (freshWorkTopics.length >= BUILD_FRESH_WORK_SEED_LIMIT) break
+    }
+
     if (!scored.length) {
-      // 全窗口评分后仍无簇 = 兴趣被真实撤空（如删除全部作品）或事件全部过期。
-      // 必须同时做两件事，否则删除后旧推荐卡永远 active（"推荐不变"的直接根因）：
-      //   ① supersede 旧推荐卡队列 → 队列空让 /api/inspirations 诚实降级"平台推荐选题"
-      //   ② 落空画像（build_id 存在 → hasProfile=true）防止每次进页重复触发 full build
-      // 全时间窗口径下本分支结果可信，不存在"窗口截断导致的假空"。
-      await supersedeOldBuild(supabase, userId)
+      // 全窗口评分后仍无簇，两种成因必须分开处理，不能共用"清空队列"这一个动作：
+      //
+      //   ① 真的没有任何正向信号（作品全删且被撤回裁决作废、或事件全过期）
+      //      → allScored 里没有非负簇。此时才清空队列，让 /api/inspirations
+      //        诚实降级为"平台推荐选题"；否则删除后旧卡永远 active
+      //        —— 那正是"推荐不变"的直接根因。
+      //
+      //   ② 有正向信号但没凑够 CLUSTER_MIN_MEMBERS —— 跨领域创作者的常态：
+      //      N 篇作品 N 个方向，每簇只有 1 个成员，全被门槛滤掉。兴趣真实存在，
+      //      清空等于把用户打回 0 推荐；更糟的是紧接着写入的空画像带当前
+      //      RULE_VERSION，既不满足 first_build 也不满足 rule_upgrade，
+      //      用户被锁死到攒够脏事件为止。
+      //      生产实锤：258 事件 / 207 次曝光的用户队列归零且长期不再重建。
+      //
+      // 判据取"是否存在非负簇"而不是 scored.length，就是为了把 ② 从清空里摘出来。
+      const hasPositiveSignal = allScored.some((c) => !c.isNegative && c.eventCount >= 1)
+      if (!hasPositiveSignal) {
+        await supersedeOldBuild(supabase, userId)
+      }
 
       // 行为B（首篇即时反馈）：无成簇但存在孤立的非负子簇（典型：用户只创作了 1 篇，
       // 单成员簇被 CLUSTER_MIN_MEMBERS=2 滤掉）→ 产 1 张相邻方向探索引导卡，
       // 让第 1 篇创作后即有个性化反馈。事件被真实撤空/全过期时 allScored 为空，函数返回 0。
       await buildFirstWorkSeedCard(supabase, userId, buildId, allScored, now)
 
-      await finishBuild(supabase, userId, buildId, { from_event_id: events[0].id, to_event_id: events[events.length - 1].id, count: events.length }, { schema_version: 1, updated_at: now.toISOString(), build_id: buildId, core: [], exploration: [], temporary: [], domains: {}, behavior_reason_summary: { window_days: 90, mix: {} } })
+      await finishBuild(supabase, userId, buildId, { from_event_id: events[0].id, to_event_id: events[events.length - 1].id, count: events.length }, emptyProfileFor(buildId, now.toISOString()))
       return { buildId, status: 'done', clusterCount: 0, eventCount: events.length }
     }
 
@@ -360,7 +479,14 @@ export async function runBuild(
         label,
         summary,
         centroid: c.centroid,
-        tag_dims: tagInfo?.tagDims ?? null,
+        // 标签抽取失败时必须写"空标签"而不是 null。
+        // interest_clusters.tag_dims 是 NOT NULL，写 null 会让 commitClusters
+        // 整批失败 → 整个 build 崩掉 → 队列得不到更新。实测就是这样炸的：
+        //   「null value in column "tag_dims" ... violates not-null constraint」
+        // 而本文件步骤 7.5 的设计意图本来就写着「抽取失败/无 key → 空标签 →
+        // 评分兜底 1，build 不阻塞」。空标签与 null 在下游等价（都走兜底 1），
+        // 但空标签不会拖垮整次重建——AI 抽标签是可选增强，不该有否决权。
+        tag_dims: tagInfo?.tagDims ?? emptyTagDims(),
         tag_embedding: tagInfo?.tagEmbedding ?? null,
         layer: layerDecision.layer,
         previous_layer: inh?.previousLayer ?? null,
@@ -469,6 +595,13 @@ export async function runBuild(
     // 新用户/回填场景 S4 不再缺席；跨簇 combo 不占 6 个单簇名额。
     const { seeds: explorationSeeds, nonCoreLabels, seedClusters } = buildExplorationSeeds(clusterViews)
 
+    // 新作品种子排在最前：S4 prompt 要求"覆盖不同输入方向"，
+    // 排在前面的种子在 LLM 输出里占位更稳（后段种子常被合并省略）。
+    const freshSeeds = toFreshWorkSeeds(freshWorkTopics)
+    const allExplorationSeeds = freshSeeds.length
+      ? [...freshSeeds, ...explorationSeeds]
+      : explorationSeeds
+
     // P1 S7：风格提示需先于 S4 拿到（要写进 prompt）。新用户返回 null，prompt 完全不变。
     const styleHints = await loadStyleHints(supabase, userId)
 
@@ -476,7 +609,7 @@ export async function runBuild(
       getOwnInspirationCandidates(supabase, userId),
       getMarketCandidates(topCoreCentroid, 4),
       getSavedMaterialCandidates(supabase, userId),
-      getExplorationCandidates(explorationSeeds, nonCoreLabels, {
+      getExplorationCandidates(allExplorationSeeds, nonCoreLabels, {
         count: EXPLORATION_BATCH_SIZE,
         styleHints,
       }),
@@ -489,6 +622,25 @@ export async function runBuild(
       ),
     ])
 
+    // ── 步骤 13.2（评分 v3）：三个新维度的输入 ──
+    // recency：用户"这两周在做什么"的方向质心。v2 里"近期"只有
+    // daysSinceLastInCluster（这个簇最近有没有动静），候选本身贴不贴近期创作
+    // 完全没有被度量 —— 这是"推荐永远在复述历史作品"的根因。
+    const recentCentroid = recentBehaviorCentroid(clusterData, now)
+
+    // knowledge：直接把已取回的 S6 知识卡投影到簇，不再多查一次库
+    // （S6 卡的 forceClusterCode 就是 domain_scope × 簇文本的确定性匹配结果）
+    const knowledgeByCluster = new Map<string, number>()
+    for (const k of s6) {
+      const code = k.forceClusterCode ?? k.clusterCode
+      if (!code) continue
+      const prev = knowledgeByCluster.get(code) ?? 0
+      if (k.contentValue > prev) knowledgeByCluster.set(code, k.contentValue)
+    }
+    const hasKnowledge = s6.length > 0
+
+    const tasteByCluster = buildTastePenalty(events, now)
+
     // S4 探索卡的簇关联策略（WF11 P1 扩批后必须覆盖多种子，否则 16 张卡只有 1 张有簇事实）：
     //   1. 首张【单簇】卡升级 core_gap：同核新角度，强制绑定最强种子簇（保留 WF10 行为）
     //   2. 其余单簇卡：LLM 回射的 seed_label 精确命中某个入选种子簇 → 绑该簇（slot 仍 exploration）。
@@ -497,7 +649,10 @@ export async function runBuild(
     // 注意：必须绑定到展开后的新对象——步骤 14 用同一引用查 forceBind（WeakMap）。
     const forceBind = new WeakMap<Candidate, { clusterId: string }>()
     const firstSingleIdx = s4raw.findIndex((c) => !c.crossSeed)
-    const bindTarget = firstSingleIdx >= 0 ? seedClusters[0] : null
+    // 有 fresh 种子时首张单簇卡大概率来自新作品主题（它不属于任何簇），
+    // 此时不能把它强制绑到最强簇 —— 那会凭空造出"你在「X」关注但还没写过"的假事实。
+    // 这类卡保持 no_cluster，由 seed_label 精确匹配兜底（命中不上就无簇，比编造诚实）。
+    const bindTarget = firstSingleIdx >= 0 && !freshSeeds.length ? seedClusters[0] : null
     const s4: Candidate[] = s4raw.map((cand, i) => {
       if (cand.crossSeed) return cand
       if (i === firstSingleIdx && bindTarget) {
@@ -518,6 +673,15 @@ export async function runBuild(
     })
 
     const allCandidates: Candidate[] = [...s1, ...s2, ...s3, ...s4, ...s5, ...s6]
+
+    // ── 步骤 13.5：候选向量化 ──
+    // S4（LLM 生成）与 S6（知识单元）的候选 embedding 恒为 null，S2 也不落
+    // ci_items 的原始向量；而队列里绝大多数卡来自 S4。无向量的候选会同时让
+    // hardFilter 三重查重、候选→簇匹配、以及语义/近期行为/标签命中三个评分
+    // 子项全部失效——在补上这一步之前，排序链路对绝大多数卡是断的。
+    // 实测（bge-m3，25 张存量卡）：补上后簇匹配命中 0% → 48%/96%，
+    // "已✕"过滤每次砍掉约 3 张，"已写过"与队列内查重误杀 0~1 张——不会清空队列。
+    await embedCandidates(allCandidates, (t) => generateEmbedding(t))
 
     // hardFilter：用最近 30 天 work_generate 事件 embedding 过滤"已写过"候选
     const thirtyDaysAgo = new Date()
@@ -557,8 +721,14 @@ export async function runBuild(
     )
 
     // ── 步骤 14: 五因子打分 + 落 interest_suggestions 队列 ──
-    await supersedeOldBuild(supabase, userId)
-
+    //
+    // 顺序红线：**绝不在落库前清空旧队列**。
+    // 旧实现是「先 supersedeOldBuild 再 insert」——只要本轮候选被过滤空
+    // （重度用户删作品后兴趣塌方、或 hardFilter 把候选全判成"写过/✕过"），
+    // 或落库失败，用户队列就被抹成 0 张。生产实测：某用户上一轮还有 14 张卡，
+    // 下一个 build 产出 0 张，队列直接清零 → 首页一条推荐都没有，而他累计
+    // 207 次曝光。旧代码自己都留了 warn 承认这点（"可能下次 build 恢复"）。
+    // 改为：没有候选 → 直接收尾，旧队列原样保留（旧卡再差也胜过没有推荐）。
     if (!filtered.length) {
       await finishBuild(supabase, userId, buildId, { from_event_id: events[0].id, to_event_id: events[events.length - 1].id, count: events.length }, profile)
       return { buildId, status: 'done', clusterCount: clusterViews.length, eventCount: events.length }
@@ -587,7 +757,7 @@ export async function runBuild(
       }
 
       if (!matchedCluster && cand.embedding && cand.embedding.length === 1024) {
-        let bestSim = 0.5 // 阈值：低于此视为不匹配
+        let bestSim = CLUSTER_MATCH_MIN_SIMILARITY
         for (const cd of clusterData) {
           if (!cd.centroid?.length) continue
           const sim = cosineSimilarity(cand.embedding, cd.centroid)
@@ -609,12 +779,26 @@ export async function runBuild(
           ? Math.round(cosineSimilarity(cand.embedding, matchedCluster.centroid) * 1000) / 1000
           : null
 
+      // RULE v5：这两个值必须抽成变量——打分要吃，落重排特征也要吃。
+      // 在线重排（rescore.ts）会用同一套值重算，此处若记错，读时会算出另一个分。
+      const tagOverlap = tagOverlapFor(cand.embedding, matchedCluster?.tagEmbedding)
+      const knowledgeScore: number | null = hasKnowledge
+        ? knowledgeByCluster.get(matchedCluster?.code ?? 'no_cluster') ?? 0
+        : null
+
       const scored = scoreCandidate({
         candidate: cand,
         semanticSimilarity: semanticSim,
         trend: matchedCluster?.trend ?? null,
         daysSinceLastInCluster,
-        tagOverlapRatio: tagOverlapFor(cand.embedding, matchedCluster?.tagEmbedding),
+        tagOverlapRatio: tagOverlap,
+        // v3：近期创作行为（null → 该维权重按比例重分配给其余维度）
+        recentSimilarity: recentSimilarityOf(cand.embedding, recentCentroid),
+        // v3：知识资产覆盖度（用户无知识单元 → null，不是 0：没有知识库不该被扣分）
+        knowledgeScore,
+        tasteFactor: matchedCluster
+          ? tasteFactorFor(tasteByCluster.get(matchedCluster.code), cand.slot)
+          : 1,
       })
 
       // evidence 事实包（推荐解释用，M5 升级）
@@ -651,6 +835,14 @@ export async function runBuild(
         scoreBreakdown: scored.breakdown,
         evidence,
         marketRefs: cand.marketRefs ? { refs: cand.marketRefs } : null,
+        // RULE v5：落「卡片固有特征」，让这张卡此后的每一天都能被在线重排。
+        // score 只是"此刻"的答案，features 才是"永远"的输入。
+        embedding: cand.embedding,
+        rankingFeatures: buildRankingFeatures({
+          quality: cand.contentValue,
+          tagOverlap,
+          knowledge: knowledgeScore,
+        }),
       }
     })
 
@@ -686,7 +878,14 @@ export async function runBuild(
 
     const insertedCount = await insertSuggestions(supabase, userId, buildId, itemsToInsert)
     if (insertedCount === 0) {
-      console.warn('[interest] build 完成但推荐卡未落库，旧队列已 supersede（可能下次 build 恢复）')
+      // 新卡一张都没落进去 → 绝不动旧队列（见步骤 14 的顺序红线）。
+      // 旧实现走到这里时队列已经被清空了，用户只能干等到下一次 build。
+      console.warn('[interest] build 完成但推荐卡未落库，保留旧队列不清空')
+    } else {
+      // 先落新卡、再按 build_id 清理旧批次：任意时刻用户手里都还有卡。
+      // 代价是极小时间窗内新旧两批同时 active（毫秒级，且都是有效卡），
+      // 换来的是"永不出现 0 推荐"——这个交换值。
+      await supersedeExceptBuild(supabase, userId, buildId)
     }
 
     await finishBuild(supabase, userId, buildId, { from_event_id: events[0].id, to_event_id: events[events.length - 1].id, count: events.length }, profile)

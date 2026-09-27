@@ -10,12 +10,14 @@
 import { describe, expect, it } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
+  FALLBACK_QUICK_AMOUNTS,
   cancelOrder,
   createRechargeOrder,
   estimatePoints,
   fetchRechargeConfig,
   markOrderPaid,
   normalizeOrder,
+  parseQuickAmounts,
   validateAmount,
 } from './recharge'
 
@@ -238,5 +240,89 @@ describe('fetchRechargeConfig：收款码与价格口径', () => {
     const cfg = await fetchRechargeConfig(c)
     expect(cfg.payment.qrImageUrl).toBeNull()
     expect(cfg.payment.instruction).toBeTruthy()
+  })
+
+  it('下发快捷档位与支付通道（需求 §4：充值规则不许写死在前端）', async () => {
+    // fetchRechargeConfig 对 payment_settings 查两次（收款码 / 快捷档位），
+    // 这里按调用序号分别返回
+    let call = 0
+    const c = fakeClient({
+      maybeSingle: async () => {
+        call += 1
+        return call === 1
+          ? { data: { method: '微信', qr_image_url: 'https://example.com/qr.png' }, error: null }
+          : { data: { quick_amounts: [10, 50] }, error: null }
+      },
+    })
+    const cfg = await fetchRechargeConfig(c)
+    expect(cfg.quickAmounts).toEqual([10, 50])
+    expect(cfg.provider).toMatchObject({ id: 'MANUAL', autoConfirm: false })
+  })
+
+  it('迁移 0020 未执行（quick_amounts 列不存在）→ 回落默认档位，收款码照常可用', async () => {
+    let call = 0
+    const c = fakeClient({
+      maybeSingle: async () => {
+        call += 1
+        return call === 1
+          ? { data: { method: '微信', qr_image_url: 'https://example.com/qr.png' }, error: null }
+          : {
+              data: null,
+              error: { code: '42703', message: 'column payment_settings.quick_amounts does not exist' },
+            }
+      },
+    })
+    const cfg = await fetchRechargeConfig(c)
+    expect(cfg.quickAmounts).toEqual(FALLBACK_QUICK_AMOUNTS)
+    expect(cfg.payment.qrImageUrl).toBe('https://example.com/qr.png')
+  })
+})
+
+describe('parseQuickAmounts：快捷档位解析', () => {
+  it('PostgREST 直接给数组', () => {
+    expect(parseQuickAmounts([5, 10, 20, 50, 100])).toEqual([5, 10, 20, 50, 100])
+  })
+
+  it('numeric[] 以字符串形式返回（{5,10,20}）', () => {
+    expect(parseQuickAmounts('{5,10,20}')).toEqual([5, 10, 20])
+  })
+
+  it('脏数据剔除：0 / 负数 / 非数字 / 重复值', () => {
+    expect(parseQuickAmounts([10, 0, -5, 'abc', 10, 20])).toEqual([10, 20])
+  })
+
+  it('null / undefined / 空串 → 空数组（调用方回落默认档位）', () => {
+    expect(parseQuickAmounts(null)).toEqual([])
+    expect(parseQuickAmounts(undefined)).toEqual([])
+    expect(parseQuickAmounts('')).toEqual([])
+  })
+
+  it('乱序输入按金额升序输出', () => {
+    expect(parseQuickAmounts([100, 5, 20])).toEqual([5, 20, 100])
+  })
+})
+
+describe('normalizeOrder：支付通道回落（需求 §18）', () => {
+  it('provider 缺失 → MANUAL', () => {
+    const o = normalizeOrder({
+      id: 'o1',
+      order_no: 'RC1',
+      user_id: 'u1',
+      requested_amount: 10,
+      status: 'PENDING',
+    })
+    expect(o?.provider).toBe('MANUAL')
+  })
+
+  it('provider 是未知值 → MANUAL（保守方向：宁可人工确认，也不自动加积分）', () => {
+    const o = normalizeOrder({
+      id: 'o1',
+      order_no: 'RC1',
+      user_id: 'u1',
+      requested_amount: 10,
+      status: 'PENDING',
+      provider: 'SOME_FUTURE_PROVIDER',
+    })
+    expect(o?.provider).toBe('MANUAL')
   })
 })

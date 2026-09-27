@@ -12,7 +12,7 @@
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabaseServer'
 import { authFailureResponse } from '@/lib/apiAuth'
-import { getProfile, findRunningBuild, fetchActiveClusters } from '@/lib/creative/interest/interestRepo'
+import { getProfile, findRunningBuild } from '@/lib/creative/interest/interestRepo'
 import { buildReasonText } from '@/lib/creative/interest/reasonAi'
 import {
   getGlobalTrending,
@@ -22,6 +22,7 @@ import {
 } from '@/lib/ci/globalTrending'
 import { refillSuggestions, topUpQueue } from '@/lib/creative/interest/refill'
 import { evaluateRebuild } from '@/lib/creative/interest/rebuildTrigger'
+import { loadRescoreContext, type RescoreContext } from '@/lib/creative/interest/rescore'
 import { runBuild } from '@/lib/creative/interest/builder'
 import { FEED_TRENDING_INJECT_MAX, FEED_FRESH_INJECT_MAX } from '@/lib/creative/interest/config'
 import {
@@ -33,9 +34,11 @@ import {
   FEED_TOPUP_THRESHOLD,
 } from '@/lib/creative/interest/feedRepo'
 import type { SuggestionRow } from '@/lib/creative/interest/suggestionRepo'
+import { afterResponse } from '@/lib/afterResponse'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 10
+// 后台补货/首建（afterResponse）需要实例存活窗口；请求本身仍在秒级返回
+export const maxDuration = 60
 
 interface FeedCard {
   rec_id: string
@@ -94,28 +97,19 @@ function mapSuggestionToCard(r: SuggestionRow): FeedCard {
 }
 
 /**
- * 取用户核心兴趣向量：core 簇中权重最高者的质心，退化到任一有质心的簇。
+ * 取用户核心兴趣向量（热点补位时的交叉召回用）。
  *
- * 只在热点补位时调用（缺卡才发生，低频路径），且全程吞错——拿不到向量
- * 只让补位退回"全网热点"，不影响 Feed 主流程。
+ * 直接吃在线重排上下文里的簇：那份数据本来就要为在线重排拉一次，
+ * 再单独查一遍 interest_clusters 等于每次 Feed 请求多一次 1024 维大向量传输。
+ * 拿不到向量只让补位退回"全网热点"，不影响 Feed 主流程。
  */
-async function loadCoreInterestVector(
-  supabase: Parameters<typeof fetchActiveClusters>[0],
-  userId: string
-): Promise<number[] | null> {
-  try {
-    const rows = await fetchActiveClusters(supabase, userId)
-    const withCentroid = rows.filter(
-      (r) => Array.isArray(r.centroid) && (r.centroid as unknown[]).length === 1024
-    )
-    if (!withCentroid.length) return null
-    // fetchActiveClusters 已按 weight DESC 排序，core 取首条即可
-    const core = withCentroid.find((r) => r.layer === 'core')
-    return (core ?? withCentroid[0]).centroid as number[]
-  } catch (e) {
-    console.warn('[feed] 核心兴趣向量读取失败:', e instanceof Error ? e.message : String(e))
-    return null
-  }
+function coreInterestVector(ctx: RescoreContext | null): number[] | null {
+  if (!ctx) return null
+  const usable = [...ctx.clusters.values()].filter((c) => c.centroid?.length === 1024)
+  if (!usable.length) return null
+  // Map 保留查询时的 weight DESC 顺序，core 取首条即可
+  const core = usable.find((c) => c.layer === 'core')
+  return (core ?? usable[0]).centroid ?? null
 }
 
 export async function GET(req: Request) {
@@ -214,12 +208,23 @@ export async function GET(req: Request) {
         typeof (profile as Record<string, unknown> | null)?.updated_at === 'string'
           ? ((profile as Record<string, unknown>).updated_at as string)
           : null,
+      // 画像生成时的评分公式版本。缺失也算过期（早于版本化之前生成）
+      profileRuleVersion:
+        typeof (profile as Record<string, unknown> | null)?.rule_version === 'string'
+          ? ((profile as Record<string, unknown>).rule_version as string)
+          : null,
     })
 
     if (!building && rebuild.needed) {
-      if (rebuild.reason === 'first_build') {
+      if (rebuild.reason === 'first_build' || rebuild.reason === 'rule_upgrade') {
+        // rule_upgrade 与首建同路：必须完整重建，不能退到下面的 refill。
+        // refill 只是追加新卡，会让"旧公式卡 + 新公式卡同队列排序"更深；
+        // runBuild 会 supersede 旧卡，队列口径重新统一。代价是队列被清空一次，
+        // 但这是**一次性迁移**（重建后画像打上当前 RULE_VERSION，不再命中），
+        // 且队列空的路径刚刚修过会自行补货，不会变成黑屏。
         // 无画像 = 没有队列可清，完整 build 是唯一出路
-        void runBuild(supabase, userId, 'full').catch(() => {})
+        // afterResponse：void 的后台 build 在 serverless 上会被响应后的冻结掐断
+        afterResponse(() => runBuild(supabase, userId, 'full').catch(() => {}))
         building = true
       } else {
         // 同步 await 而非 fire-and-forget：让"刚写完一篇"这件事在本请求内就产出新卡，
@@ -230,14 +235,19 @@ export async function GET(req: Request) {
         })
         // refill 不可行（从未成功 build / 无活跃簇 / 失败）→ 回退既有补货入口
         if (r.reason === 'no_build' || r.reason === 'no_cluster' || r.reason === 'failed') {
-          void topUpQueue(supabase, userId).catch(() => {})
+          afterResponse(() => topUpQueue(supabase, userId).catch(() => {}))
           building = true
         }
       }
     }
 
+    // ── RULE v5：装载「当下的画像」，把队列排序从"build 时刻"拉到"此刻" ──
+    // 动机与口径见 lib/creative/interest/rescore.ts 顶部；这里只负责取上下文。
+    // 失败返回 null → 队列按库 score 排序（等价于改动前的行为），不报错。
+    const rescore = await loadRescoreContext(supabase, userId)
+
     // ── 读 Feed 页 ──
-    const page = await getFeedPage(supabase, userId, { cursor, limit })
+    const page = await getFeedPage(supabase, userId, { cursor, limit, rescore })
 
     // ── 本轮新卡前置（仅首屏）──
     // 补货往队尾追加 + 首页按 score 取前 N 张 = 新卡掉出首屏，闭环在体感上等于没发生。
@@ -248,7 +258,8 @@ export async function GET(req: Request) {
         supabase,
         userId,
         rebuild.sinceIso,
-        FEED_FRESH_INJECT_MAX
+        FEED_FRESH_INJECT_MAX,
+        { rescore }
       )
     }
     const freshIds = new Set(freshRows.map((r) => r.id))
@@ -256,6 +267,20 @@ export async function GET(req: Request) {
     // ── 队列空但有画像（build 刚 supersede 或尚未建完）→ 全局热点补 ──
     if (page.cards.length === 0 && page.remaining === 0) {
       const trending = await getGlobalTrending(limit)
+      // 当日热点为空 → 懒触发一次摄取（与下方「热点补位」分支同口径）。
+      // 缺这一步，兜底流在当日尚未摄取时会永远返回空。
+      if (!trending.length) {
+        void ingestGlobalTrending().catch(() => {})
+      }
+      // 队列空必须在这里触发补货。
+      //
+      // 原实现在本分支直接 return，把后面的「库存 ≤ 阈值 → topUpQueue」判定
+      // 整个跳过了——于是「0 张卡」是一个吸收态：补货永远不会发生，
+      // 用户刷新多少次都还是 0 张。对只有画像没有卡的用户，Feed 等于永久空白。
+      if (!building) {
+        afterResponse(() => topUpQueue(supabase, userId).catch(() => {}))
+        building = true
+      }
       const cards: FeedCard[] = trending.map((t) => ({
         rec_id: `trending-${t.title}`,
         title: t.title,
@@ -289,7 +314,7 @@ export async function GET(req: Request) {
       // 旧实现直接 runBuild，而 runBuild 第一步就 supersede 清空队列 —— 用户正在
       // 翻的游标当场失效，重建的 20-150s 里翻页只能撞到降级热点（"刷到哪就没了"根因）。
       // topUpQueue 内部在 refill 不可行时才回退 runBuild。
-      void topUpQueue(supabase, userId).catch(() => {})
+      afterResponse(() => topUpQueue(supabase, userId).catch(() => {}))
     }
 
     // ── 热点补位：个性化卡不足一页时，用当日全网热点补齐短板 ──
@@ -303,7 +328,7 @@ export async function GET(req: Request) {
       const need = Math.min(limit - cards.length, FEED_TRENDING_INJECT_MAX)
       // 「兴趣 × 热点」交叉：先用 core 兴趣向量在当日热点池里召回最相关的方向；
       // 召回为空（无向量 / 当日未摄取 / 全池低于相似度阈值）才回退"全网热点按时间倒序"。
-      const interestVector = await loadCoreInterestVector(supabase, userId)
+      const interestVector = coreInterestVector(rescore)
       let trending: GlobalTrendingCard[] = []
       if (interestVector) {
         trending = await getPersonalizedTrending(interestVector, need + 2)

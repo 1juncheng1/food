@@ -236,22 +236,22 @@ export default function InspirationFeedPage() {
 
   if (loading) {
     return (
-      <div className="h-[100dvh] overflow-y-auto snap-y snap-mandatory bg-zinc-950">
+      <div className="h-[100dvh] overflow-y-auto snap-y snap-mandatory bg-[var(--vs-void)]">
         {[0, 1, 2].map((i) => (
           <div
             key={i}
             className="snap-start flex min-h-[100dvh] items-center justify-center px-4 py-8"
           >
-            <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6">
-              <div className="mb-3 h-5 w-20 rounded-full bg-zinc-800 feed-skeleton" />
-              <div className="h-6 w-3/4 rounded bg-zinc-800 feed-skeleton" />
-              <div className="mt-3 h-4 w-full rounded bg-zinc-800/70 feed-skeleton" />
-              <div className="mt-2 h-4 w-5/6 rounded bg-zinc-800/70 feed-skeleton" />
-              <div className="mt-4 h-4 w-2/3 rounded bg-zinc-800/50 feed-skeleton" />
-              <div className="mt-4 h-4 w-1/2 rounded bg-zinc-800/40 feed-skeleton" />
+            <div className="vs-frame w-full max-w-lg p-6">
+              <div className="mb-3 h-5 w-20 rounded-full bg-[var(--vs-void-2)] feed-skeleton" />
+              <div className="h-6 w-3/4 rounded bg-[var(--vs-void-2)] feed-skeleton" />
+              <div className="vs-skeleton mt-3 h-4 w-full" />
+              <div className="vs-skeleton mt-2 h-4 w-5/6" />
+              <div className="vs-skeleton mt-4 h-4 w-2/3" />
+              <div className="vs-skeleton mt-4 h-4 w-1/2" />
               <div className="mt-5 flex items-center justify-between">
-                <div className="h-4 w-20 rounded bg-zinc-800/60 feed-skeleton" />
-                <div className="h-4 w-24 rounded bg-zinc-800/60 feed-skeleton" />
+                <div className="vs-skeleton h-4 w-20" />
+                <div className="vs-skeleton h-4 w-24" />
               </div>
             </div>
           </div>
@@ -290,19 +290,48 @@ export default function InspirationFeedPage() {
     )
   }
 
+  // 有画像但这一刻取不到卡（补货进行中 / 兜底热点当日尚未摄取）。
+  //
+  // 这一支原本不存在：上面只挡了「刷完了(noMore)」和「出错」，剩下
+  // cards=0 && noMore=false 会落到主渲染——一个空的 snap-mandatory 容器，
+  // 用户看到的就是纯黑屏：没有提示、没有重试入口、也不知道该等还是该走。
+  // 这不是"刷完了"，也不是错误，必须单独给一个"正在准备"的状态。
+  if (cards.length === 0) {
+    return (
+      <div className="feed-end flex h-[100dvh] items-center justify-center px-6">
+        <EmptyState
+          title={building ? 'AI 正在为你准备选题' : '选题正在路上'}
+          description={
+            building
+              ? '正在根据你的创作方向生成新的灵感，稍等几秒后刷新一次。'
+              : '暂时没有可展示的选题，稍等几秒刷新一次就好。'
+          }
+          actionLabel="刷新试试"
+          onAction={() => {
+            setError(null)
+            setLoading(true)
+            void loadPage(null, true)
+          }}
+          secondaryLabel="回到创作机会"
+          secondaryHref="/dashboard"
+        />
+      </div>
+    )
+  }
+
   return (
     <>
       {/* 重建提示：用固定浮层而非流内元素——容器是 snap-mandatory，
           插入非 snap-start 的流内节点会打乱整屏吸附 */}
       {building && (
         <div className="pointer-events-none fixed left-1/2 top-4 z-50 -translate-x-1/2">
-          <div className="flex items-center gap-2 rounded-full border border-zinc-700 bg-zinc-900/90 px-3 py-1.5 text-xs text-zinc-300 backdrop-blur-sm">
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+          <div className="vs-verdict backdrop-blur-sm">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--vs-beam)]" />
             AI 正在根据你最新的创作重新理解方向
           </div>
         </div>
       )}
-      <div className="h-[100dvh] overflow-y-auto snap-y snap-mandatory bg-zinc-950">
+      <div className="h-[100dvh] overflow-y-auto snap-y snap-mandatory bg-[var(--vs-void)]">
       {cards.map((card) => {
         const view = pickInspirationView(card as InspirationApiRow)
         const isTrending = card.rec_id.startsWith('trending-')
@@ -318,22 +347,22 @@ export default function InspirationFeedPage() {
           >
             <div
               onClick={() => handleClick(card)}
-              className="feed-card clickable w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-900/80 p-6 backdrop-blur-sm transition-all duration-300 hover:border-zinc-600 hover:bg-zinc-800/80 hover:scale-[1.02] cursor-pointer"
+              className="feed-card clickable w-full max-w-lg vs-frame p-6 backdrop-blur-sm transition-all duration-300 hover:border-[var(--vs-line-2)] hover:scale-[1.02] cursor-pointer"
             >
               {/* 标签行 */}
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 {card.fresh && (
-                  <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-300">
+                  <span className="vs-verdict">
                     承接你的新作品
                   </span>
                 )}
                 {isCross && (
-                  <span className="rounded-full bg-purple-500/20 px-2 py-0.5 text-xs font-medium text-purple-300">
+                  <span className="vs-verdict">
                     跨界灵感
                   </span>
                 )}
                 {isTrending ? (
-                  <span className="rounded-full bg-blue-500/20 px-2 py-0.5 text-xs font-medium text-blue-300">
+                  <span className="vs-verdict">
                     大众热点
                   </span>
                 ) : view.reasonSource === 'ai' ? (
@@ -341,64 +370,64 @@ export default function InspirationFeedPage() {
                     基于你的创作行为
                   </span>
                 ) : (
-                  <span className="rounded-full bg-zinc-700/50 px-2 py-0.5 text-xs font-medium text-zinc-400">
+                  <span className="vs-verdict">
                     热门选题
                   </span>
                 )}
               </div>
 
               {/* 标题 */}
-              <h3 className="text-xl font-semibold leading-tight text-zinc-100">
+              <h3 className="text-xl font-semibold leading-tight text-[var(--vs-ink)]">
                 {view.title}
               </h3>
 
               {/* 描述 */}
-              <p className="mt-2 text-sm leading-relaxed text-zinc-400">
+              <p className="mt-2 text-sm leading-relaxed text-[var(--vs-ink-3)]">
                 {card.description}
               </p>
 
               {/* 核心问题（仅 AI 卡） */}
               {view.coreQuestion && (
-                <p className="mt-3 text-sm text-zinc-300">
-                  <span className="text-zinc-500">核心问题：</span>
+                <p className="mt-3 text-[14px] text-[var(--vs-ink-2)]">
+                  <span className="text-[var(--vs-ink-4)]">核心问题：</span>
                   {view.coreQuestion}
                 </p>
               )}
 
               {/* 为什么适合你 */}
-              <p className="mt-3 text-sm text-zinc-300">
-                <span className="text-zinc-500">为什么适合你：</span>
-                <span className={view.reasonSource === 'ai' ? '' : 'text-zinc-400'}>
+              <p className="mt-3 text-[14px] text-[var(--vs-ink-2)]">
+                <span className="text-[var(--vs-ink-4)]">为什么适合你：</span>
+                <span className={view.reasonSource === 'ai' ? '' : 'text-[var(--vs-ink-3)]'}>
                   {view.whyForYou}
                 </span>
               </p>
 
               {/* 可以怎么创作 */}
               {view.creationAngle && (
-                <p className="mt-2 text-sm text-zinc-300">
-                  <span className="text-zinc-500">可以怎么创作：</span>
+                <p className="mt-2 text-[14px] text-[var(--vs-ink-2)]">
+                  <span className="text-[var(--vs-ink-4)]">可以怎么创作：</span>
                   {view.creationAngle}
                 </p>
               )}
 
               {/* 关联素材 */}
               {view.relatedKnowledge.length > 0 && (
-                <p className="mt-2 text-xs text-zinc-400">
-                  <span className="text-zinc-500">关联你的素材：</span>
+                <p className="mt-2 text-xs text-[var(--vs-ink-3)]">
+                  <span className="text-[var(--vs-ink-4)]">关联你的素材：</span>
                   {view.relatedKnowledge.join(' · ')}
                 </p>
               )}
 
               {/* 操作行 */}
               <div className="mt-5 flex items-center justify-between">
-                <span className="text-sm font-medium text-zinc-200">
+                <span className="text-[14px] font-medium text-[var(--vs-ink)]">
                   开始创作 →
                 </span>
                 <button
                   onClick={(e) => handleDismiss(card, e)}
                   title="不再推荐这类主题"
                   aria-label="不再推荐这类主题"
-                  className="text-sm text-zinc-500 transition hover:text-red-400"
+                  className="vs-link-danger"
                 >
                   不感兴趣 ✕
                 </button>
@@ -412,7 +441,7 @@ export default function InspirationFeedPage() {
       {!noMore && (
         <div ref={sentinelRef} className="flex min-h-[100px] items-center justify-center">
           {loadingMore && (
-            <span className="animate-pulse text-sm text-zinc-500">加载更多选题…</span>
+            <span className="animate-pulse vs-note">加载更多选题…</span>
           )}
         </div>
       )}
@@ -437,7 +466,7 @@ export default function InspirationFeedPage() {
               setError(null)
               void loadPage(cursorRef.current)
             }}
-            className="text-sm text-zinc-400 hover:text-zinc-200"
+            className="text-sm text-[var(--vs-ink-3)] hover:text-[var(--vs-ink)]"
           >
             加载失败，点击重试
           </button>

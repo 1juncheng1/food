@@ -12,7 +12,9 @@
 // ============================================================
 
 import { NextResponse } from 'next/server'
+import { withAiDeadline } from '@/lib/aiDeadline'
 import { authenticateWithToken, type AuthOk } from '@/lib/storage'
+import { guardRateLimit } from '@/lib/rateLimit'
 import { analyzeFeedback } from '@/lib/creative/feedbackAnalyzer'
 import { normalizeFeedbackAnalysis, type FeedbackAnalysis } from '@/lib/creative/workAgent'
 
@@ -31,7 +33,12 @@ function str(v: unknown, max: number): string {
   return typeof v === 'string' ? v.trim().slice(0, max) : ''
 }
 
-export async function POST(req: Request) {
+// 下面的 30 必须等于本文件的 maxDuration。
+// feedbackAnalyzer 内部有 3 次重试，而整条请求只有 25s AI 预算——
+// 意味着实际上只有第 1 次尝试能跑完，之后会被主动放弃。
+// 这是有意的取舍：放弃 = 不发起 = 不预扣，绝不会产生"退不回的扣费"。
+// 想让重试真正生效，应调高本路由的 maxDuration。见 lib/aiDeadline.ts
+async function handlePost(req: Request) {
   try {
     const body = (await req.json().catch(() => ({}))) as RequestBody
     const freeText = str(body.freeText, 2000)
@@ -51,6 +58,10 @@ export async function POST(req: Request) {
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
     const auth = await authenticateWithToken(token, '请先登录后再使用反馈分析')
     if (!auth.ok) return auth.response
+
+    // 限流（跨实例）：一次付费 LLM 调用，且正文可达 10 万字（输入 token 很贵）
+    const limited = await guardRateLimit(auth.userId, 'analyze-feedback', 5, 60_000)
+    if (limited) return limited
 
     const generationId = str(body.generationId, 200)
     const topic = str(body.topic, 500)
@@ -109,6 +120,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '服务器内部错误' }, { status: 500 })
   }
 }
+
+export const POST = withAiDeadline(30, handlePost)
 
 // ── GET：查询某作品版本的反馈历史 ──
 export async function GET(req: Request) {

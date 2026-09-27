@@ -13,7 +13,7 @@ import {
   TrendingUp,
   X,
 } from 'lucide-react'
-import { supabase } from '@/lib/supabaseClient'
+import { getValidSession } from '@/lib/supabaseClient'
 import { CATEGORIES } from '@/lib/constants'
 import { pickInspirationView } from '@/lib/creative/interest/inspirationView'
 import { getWorks, deleteWork, type GeneratedWork } from '@/lib/works'
@@ -36,15 +36,19 @@ import {
   SurfaceCard,
   TagChip,
 } from '@/components/vision'
+import {
+  InterviewDialog,
+  useInterviewTrigger,
+} from '@/components/creative/interview-dialog'
 
 /** 推荐卡内的一行「标签 → 内容」，保证四段信息结构一致 */
 function InsightRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex gap-2.5">
-      <dt className="w-[88px] shrink-0 pt-[1px] text-[12px] text-zinc-500">
+      <dt className="w-[88px] shrink-0 pt-[1px] vs-note">
         {label}
       </dt>
-      <dd className="min-w-0 flex-1 text-[13px] leading-relaxed text-zinc-300">
+      <dd className="min-w-0 flex-1 text-[13px] leading-relaxed text-[var(--vs-ink-2)]">
         {children}
       </dd>
     </div>
@@ -70,6 +74,18 @@ const TREND_LABEL: Record<string, string> = {
   dormant: '暂时沉寂',
 }
 
+/**
+ * ✕ 不感兴趣的原因（code 与 config.DISMISS_REASON_CODES 一一对应，文案属 UI 层）。
+ * 区分"方向不对"与"已经写过"是这套选项存在的唯一理由：前者要换方向，后者要换角度。
+ */
+const DISMISS_REASONS: { code: string; label: string }[] = [
+  { code: 'not_my_direction', label: '不符合我的方向' },
+  { code: 'already_created', label: '已经创作过' },
+  { code: 'not_interesting', label: '不感兴趣' },
+  { code: 'too_hard', label: '难度不合适' },
+  { code: 'not_my_voice', label: '不符合我的表达方式' },
+]
+
 /** 灵感推荐数据结构（rec_id 仅个性化卡有，模板卡缺失；五字段为 WF6 AI 理由，旧卡为 null） */
 interface Inspiration {
   title: string
@@ -91,17 +107,27 @@ export default function DashboardPage() {
   const [works, setWorks] = useState<GeneratedWork[]>([])
   const [worksLoading, setWorksLoading] = useState(true)
   const [filter, setFilter] = useState('全部')
+  // 登录态（访谈触发用）：游客可进本页，token 为空时 hook 自然不触发
+  const [interviewToken, setInterviewToken] = useState<string | null>(null)
+  const interviewTrigger = useInterviewTrigger(
+    interviewToken !== null,
+    interviewToken
+  )
   const [inspirations, setInspirations] = useState<Inspiration[]>([])
   const [inspLoading, setInspLoading] = useState(true)
   // 行为D：服务端有在途 build（首篇创作后画像重建中）时展示分析中提示，
   // 配合既有 20s 补拉轮询，build 完成后本标记随下次响应自动消失、换成个性化卡
   const [inspBuilding, setInspBuilding] = useState(false)
+  // ✕ 原因浮层当前展开的卡片（rec_id；null=未展开）
+  const [dismissFor, setDismissFor] = useState<string | null>(null)
   // 「AI 正在理解你」区域数据源：兴趣画像（只读展示，失败静默降级为"还在认识你"）
   const [profile, setProfile] = useState<InterestProfile | null>(null)
   const [profileLoading, setProfileLoading] = useState(true)
   // 灵感推荐自动补拉：build 是 fire-and-forget（30-60s），首次进页若未个性化
   // （新用户首建中/画像重建中），需轮询补拉让卡片在当前页面自动刷新，而非要求手动二次刷新
   const inspTokenRef = useRef<string | null>(null)
+  // 最近一次拿到的推荐状态版本（服务端 state_version）。删除作品时作为"队列是否已更新"的基线
+  const inspStateVersionRef = useRef<string | null>(null)
   const inspDoneRef = useRef(false)
   const inspRetryRef = useRef(0)
   const inspTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -117,14 +143,16 @@ export default function DashboardPage() {
   }, [filter])
 
   // WF1 推荐反馈上报：曝光/点击/✕。失败静默不重试，绝不影响主流程。
-  const reportRecEvent = useCallback(async (type: 'impression' | 'click' | 'dismiss', recId: string, keepalive = false) => {
+  // reason 仅 ✕ 使用：把"为什么不要"记进事件流，作为 Taste Model 的原料
+  // （不参与兴趣权重，只用于后续理解这位创作者不要什么）。
+  const reportRecEvent = useCallback(async (type: 'impression' | 'click' | 'dismiss', recId: string, keepalive = false, reason?: string) => {
     const token = inspTokenRef.current
     if (!token || !recId) return
     try {
       await fetch('/api/inspirations/events', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ type, rec_id: recId }),
+        body: JSON.stringify({ type, rec_id: recId, ...(reason ? { reason } : {}) }),
         keepalive,
       })
     } catch {
@@ -132,9 +160,11 @@ export default function DashboardPage() {
     }
   }, [])
 
-  // 返回 null=请求失败/无数据；否则返回个性化标记、build 在途标记与本次拉到的卡片列表。
-  // items 一并返回：删除作品后的补拉需要对比"删除前快照"判断队列是否已更新。
-  const loadInspirations = useCallback(async (): Promise<{ personalized: boolean; building: boolean; items: Inspiration[] } | null> => {
+  // 返回 null=请求失败/无数据；否则返回个性化标记、build 在途标记、本次卡片列表与状态版本。
+  // stateVersion 是服务端回传的「队列当前对应到哪个用户状态」锚点：
+  // 判断队列有没有跟上用户最新的创作行为，应该比它，而不是比对卡片内容——
+  // 卡片顺序会随日种子小幅轮换，内容比对会把"换了顺序"误判成"队列已更新"。
+  const loadInspirations = useCallback(async (): Promise<{ personalized: boolean; building: boolean; items: Inspiration[]; stateVersion: string | null } | null> => {
     const token = inspTokenRef.current
     try {
       const res = await fetch('/api/inspirations', {
@@ -146,13 +176,15 @@ export default function DashboardPage() {
           const items = data.inspirations as Inspiration[]
           setInspirations(items)
           setInspBuilding(data.building === true)
+          const stateVersion = typeof data.state_version === 'string' ? data.state_version : null
+          inspStateVersionRef.current = stateVersion
           // WF1：个性化卡逐张上报曝光（按天幂等，重复刷新被服务端吞掉）
           if (data.personalized === true) {
             items.forEach((it) => {
               if (it.rec_id) void reportRecEvent('impression', it.rec_id)
             })
           }
-          return { personalized: data.personalized === true, building: data.building === true, items }
+          return { personalized: data.personalized === true, building: data.building === true, items, stateVersion }
         }
       }
     } catch {
@@ -179,26 +211,26 @@ export default function DashboardPage() {
     inspTimerRef.current = setTimeout(attempt, 10_000)
   }, [loadInspirations])
 
-  // 删除作品后的推荐补拉：轮询直到返回内容与删除前快照不同（拿到重建后的新队列）
+  // 删除作品后的推荐补拉：轮询直到「状态版本」前进（队列已重建到删除之后）
   // 或达上限。不能只看 personalized 标记——删除前后它都是 true（旧队列在 build 完成
-  // 前仍是 active 卡），必须对比内容本身。20s × 6 次 = 120s，覆盖增量重建 30-60s 完成窗口。
-  const scheduleInspRefreshAfterDelete = useCallback(() => {
-    const before = JSON.stringify(inspirations)
+  // 前仍是 active 卡）。20s × 6 次 = 120s，覆盖增量重建 30-60s 完成窗口。
+  const scheduleInspRefreshAfterDelete = useCallback((beforeVersion: string | null) => {
     let attempts = 0
     function attempt() {
       if (attempts >= 6) return
       attempts += 1
       void loadInspirations().then((r) => {
-        // r=null（请求失败）或内容未变（build 尚未完成/删除确实不影响推荐）→ 继续轮询；
-        // 内容已变化（拿到重建后的新队列）→ 停止
-        if (!r || JSON.stringify(r.items) === before) {
+        // r=null（请求失败）或版本未前进（build 尚未完成）→ 继续轮询；
+        // 版本前进（队列已消费到删除事件之后）→ 停止
+        const moved = !!r?.stateVersion && r.stateVersion !== beforeVersion
+        if (!r || !moved) {
           inspRefreshTimerRef.current = setTimeout(attempt, 20_000)
         }
       })
     }
     if (inspRefreshTimerRef.current) clearTimeout(inspRefreshTimerRef.current)
     inspRefreshTimerRef.current = setTimeout(attempt, 20_000)
-  }, [loadInspirations, inspirations])
+  }, [loadInspirations])
 
   // 兴趣画像：只用于「AI 正在理解你」展示，失败不影响任何主流程
   const loadProfile = useCallback(async () => {
@@ -253,7 +285,11 @@ export default function DashboardPage() {
     async function init() {
       // 游客可进入（AuthGuard 白名单 + 首页「立即开始」直达）：
       // 作品列表走 localStorage 与登录态无关；灵感区无 token 时接口降级为平台推荐
-      const { data: { session } } = await supabase.auth.getSession()
+      // 一律 getValidSession()：裸调 getSession() 只读 localStorage 缓存、不刷新，
+      // 停留过久后拿到过期 token → 删除/推荐接口 401 且前端静默（铁律）
+      const session = await getValidSession()
+      // 访谈触发只在拿到真实 token 后才可能激活（游客恒为 null）
+      setInterviewToken(session?.access_token ?? null)
       setWorks(getWorks())
       setWorksLoading(false)
 
@@ -311,7 +347,9 @@ export default function DashboardPage() {
     // 登录用户同步硬删除服务端记录，避免"幽灵作品"永久污染兴趣画像；
     // 任何失败都不回滚本地删除（与既有"本地为准"的宽松行为一致）
     try {
-      const { data: { session } } = await supabase.auth.getSession()
+      // 删除是画像撤回的关键路径：过期 token 会让服务端删除静默失败，
+      // 作品在云端永久残留并继续影响推荐（"删了作品推荐不变"的隐藏根因）
+      const session = await getValidSession()
       if (!session?.access_token) return
       // 项目作品必须走项目级删除：本地 id 是 uuid ≠ 服务端版本行 id（{projectId}::vN），
       // 旧路径 DELETE /works/{uuid} 必然 404 且版本行受 409 保护，云端永远删不掉；
@@ -325,8 +363,9 @@ export default function DashboardPage() {
       })
       if (res.ok) {
         // 服务端删除已触发增量重建（约 30-60s 完成）：轮询补拉直到推荐内容
-        // 反映删除结果（或达 120s 上限），无需用户手动刷新
-        scheduleInspRefreshAfterDelete()
+        // 反映删除结果（或达 120s 上限），无需用户手动刷新。
+        // 传入删除前的状态版本作为基线：版本前进才算队列真的跟上来了。
+        scheduleInspRefreshAfterDelete(inspStateVersionRef.current)
       } else {
         // 404=服务端无此行（老数据/游客补登录的幽灵）；409/其他=真实失败，仅记日志
         console.warn('作品服务端删除失败:', res.status)
@@ -336,12 +375,23 @@ export default function DashboardPage() {
     }
   }
 
-  // WF1：✕ 不感兴趣——卡片立即离场（乐观更新），服务端记 -1.5 负反馈并触发
-  // 增量重建，下次进页该主题的推荐显著减少
+  // ✕ 不感兴趣：先问一句为什么，再让卡片离场。
+  // 旧实现只记一条 -1.5，AI 无从区分"方向不对"与"已经写过"——
+  // 两者对下一次推荐的指导完全相反（前者要换方向，后者要换角度）。
+  // 原因不阻塞：用户可直接点"就是不想看"，此时与旧行为完全一致。
   function handleDismissInsp(ins: Inspiration, e: React.MouseEvent) {
     e.stopPropagation()
-    if (!ins.rec_id) return
-    void reportRecEvent('dismiss', ins.rec_id)
+    const recId = ins.rec_id
+    if (!recId) return
+    setDismissFor((prev) => (prev === recId ? null : recId))
+  }
+
+  function confirmDismiss(ins: Inspiration, reason?: string, e?: React.MouseEvent) {
+    e?.stopPropagation()
+    const recId = ins.rec_id
+    if (!recId) return
+    void reportRecEvent('dismiss', recId, false, reason)
+    setDismissFor(null)
     setInspirations((prev) => prev.filter((x) => x.rec_id !== ins.rec_id))
   }
 
@@ -369,7 +419,7 @@ export default function DashboardPage() {
         actions={
           <Link
             href="/generate"
-            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500"
+            className="vs-btn vs-btn-primary"
           >
             <PenLine size={15} />
             开始创作
@@ -397,11 +447,14 @@ export default function DashboardPage() {
             value: profileLoading ? '—' : coreLabels.length,
           },
           {
-            label: 'AI 对你的理解度',
+            // 口径说明：这里展示的是「兴趣画像建模完整度」，不是全局理解度。
+            // 全局理解度（六路聚合）由 /api/creative/creator-status 提供 ——
+            // 两者分母不同，混用会让用户在同一产品里看到两个互相矛盾的百分比。
+            label: '兴趣建模完整度',
             value: profile
               ? `${Math.round((profile.identity?.completeness ?? 0) * 100)}%`
               : '—',
-            hint: profile ? undefined : '创作几篇后开始建模',
+            hint: profile ? '兴趣画像的建模进度' : '创作几篇后开始建模',
           },
           {
             label: '近 30 天创作行为',
@@ -424,10 +477,10 @@ export default function DashboardPage() {
               <SkeletonText lines={2} />
             ) : profile ? (
               <>
-                <p className="text-[15px] font-medium leading-snug text-zinc-100">
+                <p className="text-[15px] font-medium leading-snug text-[var(--vs-ink)]">
                   {profile.recent_creation_direction?.label ?? coreLabels[0] ?? '还在观察你的创作'}
                 </p>
-                <p className="text-[12px] leading-relaxed text-zinc-500">
+                <p className="vs-note leading-relaxed">
                   {profile.recent_creation_direction
                     ? `近 7 天有 ${profile.recent_creation_direction.recentEvents} 次相关创作行为`
                     : '继续创作，AI 会更快锁定你的主线方向'}
@@ -443,7 +496,7 @@ export default function DashboardPage() {
                 )}
               </>
             ) : (
-              <p className="text-[13px] leading-relaxed text-zinc-500">
+              <p className="vs-note leading-relaxed">
                 还没有足够的创作记录。完成第一篇作品后，这里会出现 AI 对你方向的判断。
               </p>
             )}
@@ -455,7 +508,7 @@ export default function DashboardPage() {
               <SkeletonText lines={2} />
             ) : domainTop.length > 0 ? (
               <>
-                <p className="text-[15px] font-medium leading-snug text-zinc-100">
+                <p className="text-[15px] font-medium leading-snug text-[var(--vs-ink)]">
                   {domainTop[0][0]}
                 </p>
                 <div className="mt-0.5 flex flex-wrap gap-1.5">
@@ -467,7 +520,7 @@ export default function DashboardPage() {
                 </div>
               </>
             ) : (
-              <p className="text-[13px] leading-relaxed text-zinc-500">
+              <p className="vs-note leading-relaxed">
                 沉淀素材与作品后，AI 会归纳出你真正擅长的知识领域。
               </p>
             )}
@@ -480,11 +533,11 @@ export default function DashboardPage() {
             ) : profile ? (
               <>
                 {rising.length > 0 ? (
-                  <p className="text-[15px] font-medium leading-snug text-zinc-100">
+                  <p className="text-[15px] font-medium leading-snug text-[var(--vs-ink)]">
                     {rising[0].label} {TREND_LABEL[rising[0].trend ?? ''] ?? ''}
                   </p>
                 ) : (
-                  <p className="text-[15px] font-medium leading-snug text-zinc-100">
+                  <p className="text-[15px] font-medium leading-snug text-[var(--vs-ink)]">
                     兴趣结构保持稳定
                   </p>
                 )}
@@ -500,12 +553,12 @@ export default function DashboardPage() {
                     </TagChip>
                   ))}
                 </div>
-                <p className="text-[12px] leading-relaxed text-zinc-500">
+                <p className="vs-note leading-relaxed">
                   AI 会据此决定：继续深挖，还是给你换个新方向。
                 </p>
               </>
             ) : (
-              <p className="text-[13px] leading-relaxed text-zinc-500">
+              <p className="vs-note leading-relaxed">
                 AI 还在观察你的兴趣走向，暂时不会凭单次行为下结论。
               </p>
             )}
@@ -521,7 +574,7 @@ export default function DashboardPage() {
         actions={
           <Link
             href="/inspiration-feed"
-            className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.1] px-3.5 py-2 text-[13px] font-medium text-zinc-300 transition hover:border-white/20 hover:text-white"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--vs-line)] px-3.5 py-2 text-[13px] font-medium text-[var(--vs-ink-2)] transition hover:border-white/20 hover:text-[var(--vs-ink)]"
           >
             看更多灵感
             <ArrowRight size={14} />
@@ -583,16 +636,16 @@ export default function DashboardPage() {
                           {isAi ? 'AI 为你挑选' : '大众创作方向'}
                         </TagChip>
                         {ins.cross_exploration && (
-                          <TagChip tone="violet" size="sm">
+                          <TagChip tone="brand" size="sm">
                             跨界灵感
                           </TagChip>
                         )}
                       </div>
 
-                      <h3 className="mt-2.5 text-[16px] font-semibold leading-snug text-white">
+                      <h3 className="vs-h3 mt-2.5 leading-snug">
                         {view.title}
                       </h3>
-                      <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-400 line-clamp-2">
+                      <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--vs-ink-3)] line-clamp-2">
                         {ins.description}
                       </p>
 
@@ -600,7 +653,7 @@ export default function DashboardPage() {
 
                       <dl className="space-y-2">
                         <InsightRow label="为什么推荐给你">
-                          <span className={isAi ? 'text-zinc-200' : 'text-zinc-400'}>
+                          <span className={isAi ? 'text-[var(--vs-ink)]' : 'text-[var(--vs-ink-3)]'}>
                             {view.whyForYou}
                           </span>
                         </InsightRow>
@@ -627,7 +680,7 @@ export default function DashboardPage() {
                         )}
                       </dl>
 
-                      <div className="mt-4 inline-flex items-center gap-1.5 text-[13px] font-medium text-indigo-300">
+                      <div className="mt-4 inline-flex items-center gap-1.5 text-[13px] font-medium text-[var(--vs-ink)]">
                         用这个方向开始创作
                         <ArrowRight
                           size={14}
@@ -637,14 +690,43 @@ export default function DashboardPage() {
                     </div>
 
                     {ins.rec_id && (
-                      <button
-                        onClick={(e) => handleDismissInsp(ins, e)}
-                        title="不再推荐这类主题"
-                        aria-label="不再推荐这类主题"
-                        className="shrink-0 rounded-lg p-1.5 text-zinc-600 transition hover:bg-red-500/10 hover:text-red-300"
-                      >
-                        <X size={14} />
-                      </button>
+                      <div className="relative shrink-0">
+                        <button
+                          onClick={(e) => handleDismissInsp(ins, e)}
+                          title="不再推荐这类主题"
+                          aria-label="不再推荐这类主题"
+                          aria-expanded={dismissFor === ins.rec_id}
+                          className="vs-link-danger rounded-lg p-1.5"
+                        >
+                          <X size={14} />
+                        </button>
+                        {dismissFor === ins.rec_id && (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className="absolute right-0 top-8 z-20 w-[196px] rounded-xl border border-[var(--vs-line)] bg-[var(--vs-void-1)] p-1.5 shadow-xl"
+                          >
+                            <p className="px-2 py-1.5 text-[11px] text-[var(--vs-ink-4)]">
+                              为什么不想看这类？
+                            </p>
+                            {DISMISS_REASONS.map((r) => (
+                              <button
+                                key={r.code}
+                                onClick={(e) => confirmDismiss(ins, r.code, e)}
+                                className="block w-full rounded-lg px-2 py-1.5 text-left text-[12px] text-[var(--vs-ink-2)] transition hover:bg-white/[0.06] hover:text-[var(--vs-ink)]"
+                              >
+                                {r.label}
+                              </button>
+                            ))}
+                            <div className="vs-divider my-1" />
+                            <button
+                              onClick={(e) => confirmDismiss(ins, undefined, e)}
+                              className="block w-full rounded-lg px-2 py-1.5 text-left vs-note transition hover:bg-white/[0.06] hover:text-[var(--vs-ink-2)]"
+                            >
+                              就是不想看
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 </SurfaceCard>
@@ -662,11 +744,11 @@ export default function DashboardPage() {
         actions={
           <div className="flex items-center gap-2.5">
             {!worksLoading && (
-              <span className="text-[12px] text-zinc-500">共 {works.length} 篇</span>
+              <span className="vs-note">共 {works.length} 篇</span>
             )}
             <Link
               href="/works"
-              className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.1] px-3.5 py-2 text-[13px] font-medium text-zinc-300 transition hover:border-white/20 hover:text-white"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--vs-line)] px-3.5 py-2 text-[13px] font-medium text-[var(--vs-ink-2)] transition hover:border-white/20 hover:text-[var(--vs-ink)]"
             >
               成长档案
               <ArrowRight size={14} />
@@ -682,8 +764,8 @@ export default function DashboardPage() {
               onClick={() => setFilter(cat)}
               className={`rounded-full border px-2.5 py-1 text-xs font-medium transition ${
                 filter === cat
-                  ? 'border-indigo-500/40 bg-indigo-500/15 text-indigo-300'
-                  : 'border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:border-white/20 hover:text-zinc-200'
+                  ? 'border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]'
+                  : 'border-white/[0.08] bg-[var(--vs-void-1)] text-[var(--vs-ink-3)] hover:border-white/20 hover:text-[var(--vs-ink)]'
               }`}
             >
               {cat}
@@ -719,7 +801,7 @@ export default function DashboardPage() {
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0 flex-1">
-                    <h3 className="text-[15px] font-semibold leading-snug text-white line-clamp-1">
+                    <h3 className="text-[15px] font-semibold leading-snug text-[var(--vs-ink)] line-clamp-1">
                       {w.title}
                     </h3>
                     <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -736,14 +818,14 @@ export default function DashboardPage() {
                             : w.identityLabel}
                         </TagChip>
                       )}
-                      <span className="text-[11px] text-zinc-600">
+                      <span className="vs-note">
                         {new Date(w.created_at).toLocaleDateString('zh-CN')}
                       </span>
                     </div>
                   </div>
                   <button
                     onClick={(e) => handleDeleteWork(w, e)}
-                    className="shrink-0 rounded-lg border border-white/[0.08] px-2 py-1 text-[12px] text-zinc-500 transition hover:border-red-500/40 hover:text-red-300"
+                    className="vs-link-danger shrink-0 rounded-lg border border-[var(--vs-line)] px-2 py-1"
                   >
                     删除
                   </button>
@@ -760,12 +842,12 @@ export default function DashboardPage() {
           <Link href="/materials" className="block">
             <SurfaceCard interactive className="h-full">
               <div className="flex items-start gap-3">
-                <span className="text-indigo-300/80">
+                <span className="text-[var(--vs-ink-3)]">
                   <Layers size={16} />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-[14px] font-medium text-zinc-100">我的素材</p>
-                  <p className="mt-1 text-[12px] leading-relaxed text-zinc-500">
+                  <p className="text-[14px] font-medium text-[var(--vs-ink)]">我的素材</p>
+                  <p className="mt-1 vs-note leading-relaxed">
                     原始文案与资料，AI 理解的起点
                   </p>
                 </div>
@@ -775,12 +857,12 @@ export default function DashboardPage() {
           <Link href="/knowledge" className="block">
             <SurfaceCard interactive className="h-full">
               <div className="flex items-start gap-3">
-                <span className="text-emerald-300/80">
+                <span className="text-[var(--vs-ink-3)]">
                   <Library size={16} />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-[14px] font-medium text-zinc-100">知识库</p>
-                  <p className="mt-1 text-[12px] leading-relaxed text-zinc-500">
+                  <p className="text-[14px] font-medium text-[var(--vs-ink)]">知识库</p>
+                  <p className="mt-1 vs-note leading-relaxed">
                     从素材沉淀出的可复用观点
                   </p>
                 </div>
@@ -790,12 +872,12 @@ export default function DashboardPage() {
           <Link href="/style-profile" className="block">
             <SurfaceCard interactive className="h-full">
               <div className="flex items-start gap-3">
-                <span className="text-violet-300/80">
+                <span className="text-[var(--vs-ink-3)]">
                   <Sparkles size={16} />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-[14px] font-medium text-zinc-100">AI 理解报告</p>
-                  <p className="mt-1 text-[12px] leading-relaxed text-zinc-500">
+                  <p className="text-[14px] font-medium text-[var(--vs-ink)]">AI 理解报告</p>
+                  <p className="mt-1 vs-note leading-relaxed">
                     看看 AI 现在是怎么理解你的
                   </p>
                 </div>
@@ -804,6 +886,16 @@ export default function DashboardPage() {
           </Link>
         </div>
       </Section>
+
+      {/* 访谈补位：注册走 /welcome（必经，不受冷却影响）；本页覆盖「登录直达工作台」
+          且声明未填完的老用户。hook 自带 7 天免打扰，刚在 /welcome 跳过的人不会
+          被连着弹两次。 */}
+      <InterviewDialog
+        open={interviewTrigger.shouldShow}
+        accessToken={interviewToken}
+        onCompleted={() => interviewTrigger.refresh()}
+        onDismiss={() => interviewTrigger.refresh()}
+      />
     </PageShell>
   )
 }

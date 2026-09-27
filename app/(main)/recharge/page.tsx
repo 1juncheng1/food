@@ -18,13 +18,15 @@ import {
   Clock,
   Loader2,
   QrCode,
-  ShieldAlert,
   Wallet,
   XCircle,
 } from 'lucide-react'
 import { getValidSession } from '@/lib/supabaseClient'
+import { getPaymentProvider } from '@/lib/paymentProvider'
 import {
+  FALLBACK_QUICK_AMOUNTS,
   ORDER_STATUS_TEXT,
+  estimatePoints,
   type OrderStatus,
   type RechargeConfig,
   type RechargeOrder,
@@ -39,8 +41,12 @@ import {
   SurfaceCard,
 } from '@/components/vision'
 
-/** 快捷金额档位：覆盖绝大多数充值场景，同时保留自定义输入 */
-const QUICK_AMOUNTS = [5, 10, 20, 50, 100] as const
+/**
+ * 待确认订单的自动刷新间隔。
+ * 需求 §19：用户点完「我已完成支付」就该等着，不该被要求手动刷新页面。
+ * 15 秒一次足够快（管理员确认后最多 15 秒到账），又不至于把接口打满。
+ */
+const POLL_INTERVAL_MS = 15_000
 
 export default function RechargePage() {
   const [loading, setLoading] = useState(true)
@@ -88,16 +94,47 @@ export default function RechargePage() {
     ])
     if (cfgRes.ok) setConfig(cfgRes.data)
     if (balRes.ok && typeof balRes.data.balance === 'number') setBalance(balRes.data.balance)
-    if (orderRes.ok) setOrders(orderRes.data.orders ?? [])
+    if (orderRes.ok) {
+      const list = orderRes.data.orders ?? []
+      setOrders(list)
+      // 需求 §16：用户付了钱但没点「我已完成支付」，后台就不会出现待确认。
+      // 所以重新进来时**主动把未完成的订单摆到面前**，而不是让用户自己去列表里翻。
+      const outstanding = list.find((o) => o.status === 'PENDING' || o.status === 'PAID')
+      if (outstanding) setCurrent(outstanding)
+    }
     if (!cfgRes.ok && !balRes.ok && !orderRes.ok) {
       setError(cfgRes.message)
     }
     setLoading(false)
   }, [])
 
+  /**
+   * 轻量刷新：只拉订单与余额，不切 loading（轮询时页面不该闪）。
+   * 当前跟进的订单以服务端返回为准——管理员一确认，状态与积分自己就变过来。
+   */
+  const tick = useCallback(async () => {
+    const [balRes, orderRes] = await Promise.all([
+      api<{ balance: number | null }>('/api/user/balance'),
+      api<{ orders: RechargeOrder[] }>('/api/recharge/orders'),
+    ])
+    if (balRes.ok && typeof balRes.data.balance === 'number') setBalance(balRes.data.balance)
+    if (!orderRes.ok) return
+    const list = orderRes.data.orders ?? []
+    setOrders(list)
+    setCurrent((prev) => (prev ? list.find((o) => o.id === prev.id) ?? prev : prev))
+  }, [])
+
   useEffect(() => {
     void load()
   }, [load])
+
+  // 自动刷新：只有存在未结束的订单时才轮询，全部到终态就停（不空转）
+  useEffect(() => {
+    const hasOpen = orders.some((o) => o.status === 'PENDING' || o.status === 'PAID')
+    if (!hasOpen) return
+    const timer = setInterval(() => void tick(), POLL_INTERVAL_MS)
+    return () => clearInterval(timer)
+  }, [orders, tick])
 
   const amountNumber = Number(amount)
   const pointsPerYuan = config?.pointsPerYuan ?? 20
@@ -106,7 +143,20 @@ export default function RechargePage() {
   const validAmount =
     Number.isFinite(amountNumber) && amountNumber >= minAmount && amountNumber <= maxAmount
   /** 预计积分（仅展示）：真正的入账积分由服务端按实际到账金额计算 */
-  const estimated = validAmount ? Math.floor(amountNumber * pointsPerYuan) : 0
+  const estimated = validAmount ? estimatePoints(amountNumber, pointsPerYuan) : 0
+  // 档位来自服务端配置（需求 §4 禁止把充值规则写死在前端），读不到才用兜底
+  const quickAmounts =
+    config?.quickAmounts && config.quickAmounts.length > 0 ? config.quickAmounts : FALLBACK_QUICK_AMOUNTS
+  // 话术由支付通道给：MANUAL 通道下系统**不知道**钱有没有到，
+  // 所以措辞只能是"已提交支付确认"，绝不能出现"支付成功"（需求 §15）
+  const provider = getPaymentProvider(current?.provider)
+
+  // 收款码：默认使用项目内置微信二维码；管理员配置会覆盖（用于切换其他收款方式）。
+  // 外部 URL 为空/失效/无法解析时自动回退到本地默认图，避免白框。
+  const defaultQrImageUrl = '/images/recharge/wechat-pay.png'
+  const rawQrImageUrl = config?.payment.qrImageUrl?.trim()
+  const qrImageUrl = rawQrImageUrl ? rawQrImageUrl : defaultQrImageUrl
+  const qrAlt = `${config?.payment.method ?? '微信'}收款码`
 
   async function submitOrder() {
     if (!validAmount || submitting) return
@@ -162,7 +212,7 @@ export default function RechargePage() {
   if (loading) {
     return (
       <PageShell width="narrow">
-        <div className="flex items-center justify-center gap-2 py-24 text-sm text-zinc-500">
+        <div className="flex items-center justify-center gap-2 py-24 vs-note">
           <Loader2 size={16} className="animate-spin" />
           正在加载账户信息…
         </div>
@@ -201,40 +251,48 @@ export default function RechargePage() {
       {current ? (
         <SurfaceCard tone="raised">
           <div className="flex items-center gap-2">
-            {current.status === 'PENDING' && <QrCode size={16} className="text-indigo-300" />}
-            {current.status === 'PAID' && <Clock size={16} className="text-amber-300" />}
-            {current.status === 'CONFIRMED' && <CheckCircle2 size={16} className="text-emerald-300" />}
+            {current.status === 'PENDING' && <QrCode size={16} className="text-[var(--vs-ink)]" />}
+            {current.status === 'PAID' && <Clock size={16} className="vs-note-warn" />}
+            {current.status === 'CONFIRMED' && <CheckCircle2 size={16} className="text-[var(--vs-ink)]" />}
             {(current.status === 'REJECTED' || current.status === 'CANCELLED') && (
-              <XCircle size={16} className="text-zinc-400" />
+              <XCircle size={16} className="text-[var(--vs-ink-3)]" />
             )}
-            <span className="text-sm font-medium text-zinc-200">
+            <span className="text-[14px] font-medium text-[var(--vs-ink)]">
               {current.status === 'PENDING' && '请使用收款码付款'}
-              {current.status === 'PAID' && '已收到你的付款声明，等待管理员确认'}
-              {current.status === 'CONFIRMED' && '已确认到账，积分已入账'}
+              {current.status === 'PAID' && '已提交支付确认，等待管理员确认'}
+              {current.status === 'CONFIRMED' && provider.confirmedMessage}
               {current.status === 'REJECTED' && '管理员未收到该笔款项'}
               {current.status === 'CANCELLED' && '订单已取消'}
             </span>
           </div>
 
+          {/* 需求 §5/§15：用户声明已付款 ≠ 系统确认收款，措辞必须如实 */}
+          {current.status === 'PAID' && (
+            <p className="vs-frame mt-4 px-4 py-3 text-[13px] leading-relaxed text-[var(--vs-ink)]">
+              {provider.submittedMessage}
+            </p>
+          )}
+
           {current.status === 'PENDING' && (
             <div className="mt-5 flex flex-col items-center">
-              {config?.payment.qrImageUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={config.payment.qrImageUrl}
-                  alt={`${config.payment.method}收款码`}
-                  className="h-[240px] w-[240px] rounded-xl border border-white/[0.1] bg-white object-contain"
-                />
-              ) : (
-                <div className="flex h-[240px] w-[240px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/[0.12] bg-white/[0.02] px-6 text-center">
-                  <ShieldAlert size={22} className="text-amber-300" />
-                  <p className="text-[13px] text-zinc-400">
-                    管理员尚未配置收款码，请联系管理员后再付款
-                  </p>
-                </div>
-              )}
+              {/*
+                默认使用项目内置微信收款码。
+                管理员若配置了其他通道的二维码，config.payment.qrImageUrl 会覆盖默认图。
+              */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={qrImageUrl}
+                alt={qrAlt}
+                className="h-[240px] w-[240px] rounded-xl border border-[var(--vs-line)] bg-white object-contain"
+                onError={(e) => {
+                  // 外部 URL 失效/无法解析时回退到本地二维码
+                  if (e.currentTarget.src !== defaultQrImageUrl) {
+                    e.currentTarget.src = defaultQrImageUrl
+                  }
+                }}
+              />
               {config?.payment.instruction && (
-                <p className="mt-4 max-w-md text-center text-[13px] leading-relaxed text-zinc-400">
+                <p className="mt-4 max-w-md text-center text-[13px] leading-relaxed text-[var(--vs-ink-3)]">
                   {config.payment.instruction}
                 </p>
               )}
@@ -251,7 +309,7 @@ export default function RechargePage() {
               value={
                 current.status === 'CONFIRMED' && current.points !== null
                   ? `${current.points} 积分`
-                  : `${Math.floor(current.requestedAmount * pointsPerYuan)} 积分`
+                  : `${estimatePoints(current.requestedAmount, pointsPerYuan)} 积分`
               }
             />
             {current.status === 'CONFIRMED' && current.confirmedAmount !== null && (
@@ -262,18 +320,22 @@ export default function RechargePage() {
           </div>
 
           {current.status === 'CONFIRMED' && (
-            <p className="mt-4 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-[13px] text-emerald-200">
-              积分已入账，最终积分以管理员核实的实际到账金额计算。
+            <p className="vs-frame mt-4 px-4 py-3 text-[13px] text-[var(--vs-ink)]">
+              {provider.confirmedMessage}
+              {current.points !== null ? `，${current.points} 积分已到账。` : '，积分已到账。'}
+              {current.confirmedAmount !== null && current.confirmedAmount !== current.requestedAmount
+                ? `（按实际到账 ${current.confirmedAmount} 元计算）`
+                : ''}
             </p>
           )}
           {current.status === 'REJECTED' && (
-            <p className="mt-4 rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-[13px] text-amber-200">
+            <p className="vs-note vs-note-warn vs-warn mt-4">
               管理员未收到该笔款项，积分未增加。如已付款请联系管理员核对。
             </p>
           )}
 
           {actionError && (
-            <p className="mt-4 text-[13px] text-red-300">{actionError}</p>
+            <p className="vs-error mt-4">{actionError}</p>
           )}
 
           <div className="mt-5 flex flex-wrap gap-2.5">
@@ -282,15 +344,15 @@ export default function RechargePage() {
                 <button
                   onClick={markPaid}
                   disabled={submitting}
-                  className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+                  className="vs-btn vs-btn-primary disabled:opacity-50"
                 >
                   {submitting && <Loader2 size={14} className="animate-spin" />}
-                  我已付款
+                  我已完成支付
                 </button>
                 <button
                   onClick={cancelOrder}
                   disabled={submitting}
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/[0.1] px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:border-white/20 hover:text-white disabled:opacity-50"
+                  className="vs-btn vs-btn-ghost disabled:opacity-50"
                 >
                   取消订单
                 </button>
@@ -302,7 +364,7 @@ export default function RechargePage() {
               current.status === 'CANCELLED') && (
               <button
                 onClick={() => setCurrent(null)}
-                className="inline-flex items-center gap-2 rounded-xl border border-white/[0.1] px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:border-white/20 hover:text-white"
+                className="vs-btn vs-btn-ghost"
               >
                 {current.status === 'PAID' ? '返回（可稍后查看状态）' : '完成'}
               </button>
@@ -312,17 +374,17 @@ export default function RechargePage() {
       ) : (
         /* ── 无跟进订单：展示充值表单 ── */
         <SurfaceCard tone="raised">
-          <p className="text-sm font-medium text-zinc-200">选择充值金额</p>
+          <p className="text-[14px] font-medium text-[var(--vs-ink)]">选择充值金额</p>
 
           <div className="mt-4 flex flex-wrap gap-2">
-            {QUICK_AMOUNTS.map((v) => (
+            {quickAmounts.map((v) => (
               <button
                 key={v}
                 onClick={() => setAmount(String(v))}
                 className={`rounded-xl border px-4 py-2 text-sm transition ${
                   Number(amount) === v
-                    ? 'border-indigo-500/40 bg-indigo-500/15 text-indigo-200'
-                    : 'border-white/[0.1] text-zinc-300 hover:border-white/20 hover:text-white'
+                    ? 'border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]'
+                    : 'border-[var(--vs-line)] text-[var(--vs-ink-2)] hover:border-white/20 hover:text-[var(--vs-ink)]'
                 }`}
               >
                 {v} 元
@@ -340,15 +402,15 @@ export default function RechargePage() {
               max={maxAmount}
               step={1}
               aria-label="充值金额（元）"
-              className="w-40 rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-100 outline-none transition focus:border-indigo-500/40"
+              className="vs-input vs-input-field w-40"
             />
-            <span className="text-sm text-zinc-500">元</span>
-            <span className="ml-auto text-sm text-zinc-300">
-              预计获得 <span className="font-semibold text-white">{estimated}</span> 积分
+            <span className="vs-note">元</span>
+            <span className="ml-auto text-[14px] text-[var(--vs-ink-2)]">
+              预计获得 <span className="font-semibold text-[var(--vs-ink)]">{estimated}</span> 积分
             </span>
           </div>
 
-          <p className="mt-2 text-[12px] leading-relaxed text-zinc-500">
+          <p className="mt-2 vs-note leading-relaxed">
             最低 {minAmount} 元，单笔上限 {maxAmount} 元。预计积分为展示值，
             最终以管理员核实的实际到账金额计算。
           </p>
@@ -359,15 +421,15 @@ export default function RechargePage() {
             maxLength={200}
             placeholder="备注（可选，例如付款账号后四位，便于管理员核对）"
             aria-label="充值备注"
-            className="mt-4 w-full rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-indigo-500/40"
+            className="vs-input vs-input-field mt-4 w-full"
           />
 
-          {actionError && <p className="mt-3 text-[13px] text-red-300">{actionError}</p>}
+          {actionError && <p className="vs-error mt-3">{actionError}</p>}
 
           <button
             onClick={submitOrder}
             disabled={!validAmount || submitting}
-            className="mt-5 inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+            className="vs-btn vs-btn-primary mt-5 disabled:opacity-50"
           >
             {submitting && <Loader2 size={14} className="animate-spin" />}
             <Wallet size={15} />
@@ -394,17 +456,17 @@ export default function RechargePage() {
                 key={o.id}
                 className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3"
               >
-                <span className="font-mono text-[12px] text-zinc-500">{o.orderNo}</span>
-                <span className="text-[13px] text-zinc-300">{o.requestedAmount} 元</span>
-                <span className="text-[13px] text-zinc-500">
-                  {o.points !== null ? `${o.points} 积分` : `≈ ${Math.floor(o.requestedAmount * pointsPerYuan)} 积分`}
+                <span className="font-mono vs-note">{o.orderNo}</span>
+                <span className="text-[13px] text-[var(--vs-ink-2)]">{o.requestedAmount} 元</span>
+                <span className="text-[13px] text-[var(--vs-ink-4)]">
+                  {o.points !== null ? `${o.points} 积分` : `≈ ${estimatePoints(o.requestedAmount, pointsPerYuan)} 积分`}
                 </span>
-                <span className="ml-auto text-[12px] text-zinc-400">
+                <span className="vs-note ml-auto">
                   {ORDER_STATUS_TEXT[o.status]}
                 </span>
                 <button
                   onClick={() => setCurrent(o)}
-                  className="text-[12px] text-indigo-300 transition hover:text-indigo-200"
+                  className="vs-link text-[12px]"
                 >
                   查看
                 </button>
@@ -421,8 +483,8 @@ export default function RechargePage() {
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-start justify-between gap-4">
-      <span className="shrink-0 text-zinc-500">{label}</span>
-      <span className="text-right text-zinc-200">{value}</span>
+      <span className="shrink-0 text-[var(--vs-ink-4)]">{label}</span>
+      <span className="text-right text-[var(--vs-ink)]">{value}</span>
     </div>
   )
 }

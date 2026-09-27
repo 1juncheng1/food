@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { authenticateRequest, type AuthResult } from '@/lib/apiAuth'
 import { parseDiagnosis } from '@/lib/creative/diagnosis'
 import { recordVersionSignal } from '@/lib/creative/styleLearning'
 import { trackEvent } from '@/lib/creative/interest/eventTracker'
+import { applyMemoryEvent, parseEditingProfile } from '@/lib/creative/editingMemory'
+import { extractEditDiffSignals } from '@/lib/creative/editDiff'
 
 export const maxDuration = 30
 export const dynamic = 'force-dynamic'
@@ -46,6 +49,61 @@ interface RpcResult {
  */
 async function authenticate(req: Request): Promise<AuthResult> {
   return authenticateRequest(req)
+}
+
+/**
+ * 从「原稿 → 用户改稿」的差异里沉淀编辑偏好。
+ *
+ * 为什么值得做：edited_content 是**用户亲手写的**内容。它和 AI 生成的正文
+ * 不同 —— 把它当信号源不会造成自蒸馏（AI 复读自己），因此它是 editingMemory
+ * 目前唯一缺失、也最可信的事件源。此前这份数据只被用来算 revisionCount 统计。
+ *
+ * 全程 try/catch + void 触发：记忆更新失败绝不阻塞反馈保存主链路。
+ */
+async function recordEditDiffMemory(
+  supabase: SupabaseClient,
+  userId: string,
+  generationId: string,
+  editedContent: string
+): Promise<void> {
+  try {
+    // 原稿取库内的 sample_text（RLS 已限定只能读自己的）
+    const { data: row } = await supabase
+      .from('generation_history')
+      .select('sample_text')
+      .eq('id', generationId)
+      .maybeSingle()
+    const original =
+      typeof (row as { sample_text?: unknown } | null)?.sample_text === 'string'
+        ? ((row as { sample_text: string }).sample_text ?? '')
+        : ''
+
+    const signals = extractEditDiffSignals(original, editedContent)
+    if (signals.length === 0) return
+
+    const { data: profileRow } = await supabase
+      .from('style_profiles')
+      .select('editing_profile')
+      .eq('user_id', userId)
+      .maybeSingle()
+    const nextProfile = applyMemoryEvent(parseEditingProfile(profileRow?.editing_profile), {
+      // 用户亲手改过 = 认可这次改动方向；analysis 留空，只让 reasons 生效
+      accepted: true,
+      // 把差异依据带进 examples，日后能在画像里溯源"这条偏好是怎么来的"
+      freeText: signals
+        .slice(0, 2)
+        .map((s) => s.source)
+        .join('；'),
+      analysis: null,
+      reasons: signals,
+    })
+    const { error } = await supabase
+      .from('style_profiles')
+      .upsert({ user_id: userId, editing_profile: nextProfile }, { onConflict: 'user_id' })
+    if (error) console.error('feedback：编辑差异记忆更新失败:', error)
+  } catch (e) {
+    console.error('feedback：编辑差异记忆异常:', e)
+  }
 }
 
 export async function POST(req: Request) {
@@ -133,6 +191,10 @@ export async function POST(req: Request) {
           topicExcerpt: str(body.topic, 500) || null,
           dailyKey: true,
         })
+        // 只有 'edit' 才有改稿可与原稿比对；void 触发，不阻塞反馈响应
+        if (feedbackType === 'edit') {
+          void recordEditDiffMemory(auth.supabase, auth.userId, targetId, editedContent ?? '')
+        }
       }
     }
 

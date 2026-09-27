@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { authFailureResponse } from '@/lib/apiAuth'
+import { guardRateLimit } from '@/lib/rateLimit'
 import { createServerClient } from '@/lib/supabaseServer'
 import {
   applyPatches,
@@ -13,6 +14,7 @@ import {
   parseEditingProfile,
   type EditingProfileState,
 } from '@/lib/creative/editingMemory'
+import { extractPreferenceReasons } from '@/lib/creative/preferenceReason'
 
 export const maxDuration = 20
 export const dynamic = 'force-dynamic'
@@ -81,6 +83,10 @@ export async function POST(req: Request) {
       return authFailureResponse(authErr)
     }
 
+    // 限流（跨实例）：补丁决策会写编辑记忆与偏好画像，属高频写操作
+    const limited = await guardRateLimit(user.id, 'creative-patch-decide', 30, 60_000)
+    if (limited) return limited
+
     const body = (await req.json().catch(() => ({}))) as DecideBody
     const generationId = str(body.generationId, 200)
     const accepted = body.accepted === true
@@ -117,7 +123,13 @@ export async function POST(req: Request) {
         .eq('user_id', user.id)
         .maybeSingle()
       const prevProfile: EditingProfileState = parseEditingProfile(profileRow?.editing_profile)
-      const nextProfile = applyMemoryEvent(prevProfile, { accepted, freeText, analysis })
+      const nextProfile = applyMemoryEvent(prevProfile, {
+        accepted,
+        freeText,
+        analysis,
+        // "为什么改"：从用户原话里抽出偏好（如"不要太像新闻"→ 避开新闻腔、偏好个人观点）
+        reasons: extractPreferenceReasons(freeText),
+      })
       const { error: profileErr } = await supabase.from('style_profiles').upsert(
         { user_id: user.id, editing_profile: nextProfile },
         { onConflict: 'user_id' }

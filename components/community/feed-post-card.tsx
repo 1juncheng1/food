@@ -73,7 +73,7 @@ export default function FeedPostCard({
   return (
     <article
       onClick={() => router.push(`/post/${post.id}`)}
-      className="cursor-pointer bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-5 hover:border-zinc-700 transition"
+      className="vs-frame cursor-pointer px-6 py-5 transition hover:border-[var(--vs-line-2)]"
     >
       {/* ── 作者行 ── */}
       <div className="flex items-center gap-3 mb-3">
@@ -86,11 +86,11 @@ export default function FeedPostCard({
         />
         <div className="ml-auto flex items-center gap-2 shrink-0">
           {isArchive ? (
-            <span className="text-[10px] px-2.5 py-1 rounded-lg bg-indigo-500/15 text-indigo-300 border border-indigo-500/25">
-              📖 创作档案
+            <span className="vs-verdict">
+               创作档案
             </span>
           ) : (
-            <span className="text-xs px-2.5 py-1 rounded-lg bg-zinc-800 text-zinc-400">
+            <span className="text-xs px-2.5 py-1 rounded-lg bg-[var(--vs-void-2)] text-[var(--vs-ink-3)]">
               {post.category}
             </span>
           )}
@@ -103,7 +103,7 @@ export default function FeedPostCard({
                 onDelete!(post.id)
               }}
               disabled={deleting}
-              className="text-xs text-zinc-600 hover:text-red-400 disabled:opacity-40 transition"
+              className="vs-link-danger disabled:opacity-40"
               title="删除"
             >
               {deleting ? '删除中…' : '删除'}
@@ -115,7 +115,7 @@ export default function FeedPostCard({
       {/* ── 作者简介：判断"要不要点进这个人的主页"所需的最小信息 ── */}
       {authorCard?.bio && (
         <p
-          className="-mt-1.5 mb-3 line-clamp-1 text-[12px] leading-relaxed text-zinc-500"
+          className="-mt-1.5 mb-3 line-clamp-1 vs-note leading-relaxed"
           title={authorCard.bio}
         >
           {authorCard.bio}
@@ -123,7 +123,7 @@ export default function FeedPostCard({
       )}
 
       {/* ── 标题 ── */}
-      <h3 className="text-base font-semibold text-zinc-100 leading-snug mb-2">
+      <h3 className="text-base font-semibold text-[var(--vs-ink)] leading-snug mb-2">
         {heading}
       </h3>
 
@@ -133,7 +133,7 @@ export default function FeedPostCard({
       ) : (
         <>
           {summary && (
-            <p className="text-sm text-zinc-300 leading-relaxed mb-3 whitespace-pre-wrap">
+            <p className="text-[14px] text-[var(--vs-ink-2)] leading-relaxed mb-3 whitespace-pre-wrap">
               {summary}
             </p>
           )}
@@ -144,15 +144,15 @@ export default function FeedPostCard({
               <img
                 src={post.image_url}
                 alt="帖子图片"
-                className="w-full max-h-80 object-cover rounded-xl border border-zinc-800"
+                className="w-full max-h-80 object-cover rounded-xl border border-[var(--vs-line)]"
               />
             </div>
           )}
 
           {imgDesc && (
-            <div className="bg-zinc-800/40 border border-zinc-700/50 rounded-lg px-4 py-3 mb-3">
-              <p className="text-xs text-zinc-500 mb-1">📷 图片描述</p>
-              <p className="text-xs text-zinc-400 leading-relaxed line-clamp-2">
+            <div className="vs-frame px-4 py-3 mb-3">
+              <p className="vs-mark mb-1"> 图片描述</p>
+              <p className="text-xs text-[var(--vs-ink-3)] leading-relaxed line-clamp-2">
                 {imgDesc.slice(0, 100)}
                 {imgDesc.length > 100 ? '…' : ''}
               </p>
@@ -164,7 +164,7 @@ export default function FeedPostCard({
               {post.tags.map((tag) => (
                 <span
                   key={tag}
-                  className="text-xs px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
+                  className="vs-verdict"
                 >
                   #{tag}
                 </span>
@@ -173,7 +173,7 @@ export default function FeedPostCard({
           )}
 
           {summary.length >= 180 && (
-            <span className="text-xs text-indigo-400/80">查看全文 →</span>
+            <span className="vs-link text-xs">查看全文 →</span>
           )}
         </>
       )}

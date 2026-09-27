@@ -106,11 +106,11 @@ export default function CommentSection({
   }
 
   return (
-    <div className="mt-4 pt-4 border-t border-zinc-800">
+    <div className="mt-4 pt-4 border-t border-[var(--vs-line)]">
       {loading ? (
-        <p className="text-xs text-zinc-600 py-2">加载评论中…</p>
+        <p className="vs-note py-2">加载评论中…</p>
       ) : comments.length === 0 ? (
-        <p className="text-xs text-zinc-600 py-2">
+        <p className="vs-note py-2">
           {error ? error : '还没有评论，来说说你的想法'}
         </p>
       ) : (
@@ -124,10 +124,10 @@ export default function CommentSection({
               />
               <div className="min-w-0 flex-1 -mt-0.5">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-zinc-400 font-medium">
+                  <span className="text-xs text-[var(--vs-ink-3)] font-medium">
                     {c.author_name || '创作者'}
                   </span>
-                  <span className="text-xs text-zinc-600">{timeAgo(c.created_at)}</span>
+                  <span className="vs-note">{timeAgo(c.created_at)}</span>
                   {viewerId && c.user_id === viewerId && (
                     <button
                       type="button"
@@ -137,13 +137,13 @@ export default function CommentSection({
                         void handleDelete(c.id)
                       }}
                       disabled={deletingId === c.id}
-                      className="text-[11px] text-zinc-600 hover:text-red-400 disabled:opacity-40 transition"
+                      className="vs-link-danger disabled:opacity-40"
                     >
                       {deletingId === c.id ? '删除中…' : '删除'}
                     </button>
                   )}
                 </div>
-                <p className="text-xs text-zinc-300 mt-1 leading-relaxed whitespace-pre-wrap">
+                <p className="text-[13px] text-[var(--vs-ink-2)] mt-1 leading-relaxed whitespace-pre-wrap">
                   {c.content}
                 </p>
               </div>
@@ -153,7 +153,7 @@ export default function CommentSection({
       )}
 
       {error && comments.length > 0 && (
-        <p className="text-xs text-red-400 mb-2">{error}</p>
+        <p className="vs-error mb-2">{error}</p>
       )}
 
       <div className="flex gap-2">
@@ -170,7 +170,7 @@ export default function CommentSection({
           }}
           onClick={(e) => e.stopPropagation()}
           placeholder="写下你的评论…"
-          className="flex-1 bg-zinc-800/60 border border-zinc-700 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-indigo-500 transition"
+          className="vs-input vs-input-field flex-1 text-xs"
         />
         <button
           type="button"
@@ -180,7 +180,7 @@ export default function CommentSection({
             void handleSubmit()
           }}
           disabled={submitting || !input.trim() || !token}
-          className="px-4 py-2 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition shrink-0"
+          className="vs-btn vs-btn-primary vs-btn-sm shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {submitting ? '发送中…' : '评论'}
         </button>

@@ -12,8 +12,46 @@
 import type { CreatorEventType, EventEffect, InterpretMode, ReasonCode, TrendDirection } from './types'
 import type { SuggestionSlot } from './ranking'
 
-/** 权重/分层规则版本（M2 起写入 build 记录） */
-export const RULE_VERSION = 'interest-rules-v2'
+/**
+ * 权重/分层规则版本（M2 起写入 build 记录）。
+ * v3：build 内新增「未被任何入选簇吸收的新作品」探索种子（数据闭环修复，
+ *     不改变评分公式与任何既有数字，仅扩大种子来源）。
+ * v4：评分公式 v2(5 维) → v3(7 维)，近期创作行为与个人知识资产独立成维。
+ *     这是一次真实的重排（interestMatch 0.4 → 0.16），必须整体重建画像。
+ * v5：评分从「写时定死」改为「读时计算」（rescore.ts）。落库的推荐卡必须额外
+ *     携带 ranking_features + embedding，否则无法在线重排 → 队列整体换血一次。
+ *     这是最后一次因"口径升级"需要清空队列的迁移：此后调评分权重不再需要重建。
+ * v6：v5 的换血实际上**从未发生**，所以补一次。
+ *     库里 1331 张卡、embedding 非空的 0 张，ranking_features 全是 '{}'——
+ *     不是代码没写，而是 v5 升版当时迁移 0018（embedding / ranking_features
+ *     两列）还没执行进库，insertSuggestions 每次都命中"新列不存在"降级、
+ *     静默把这两列剥掉重插。卡片照常落库，所以线上完全无感。
+ *     后果是 v5 之后建的整条链路全是死代码：候选→簇匹配恒 0%、在线重排
+ *     对所有卡不生效、曝光—反馈闭环学不到任何方向。
+ *     现在两列已就位（已实测确认列存在），升到 v6 只为触发一次真实换血，
+ *     让卡真正带上向量与特征。评分公式与任何权重数字均未改动。
+ *
+ * v7：放宽"单成员簇"进画像的门槛 —— 含作品级强信号（写完/定稿/发布）的簇，
+ *     即使只有 1 个成员也纳入 scored。这是聚类口径变更（进画像的方向集合变了），
+ *     不是评分权重调整，所以必须升版触发一次重建。
+ *     实测依据见下方 WORK_LEVEL_EVENT_TYPES 的存在理由。
+ */
+export const RULE_VERSION = 'interest-rules-v7'
+
+/**
+ * 在线重排版本（读路径 scorer 的特征契约）。
+ *
+ * 为什么和 RULE_VERSION 拆开：v5 起 score 不在写库时算死，而是读的时候由
+ * ranking_features 现场算。于是"调评分权重"的代价从"全量重建画像 + 清空队列 +
+ * 烧 3 次 LLM"降为"改一行代码"。二者的失效半径完全不同：
+ *   - RULE_VERSION 失效 → 画像口径不合	new舊 → 必须重跑聚类/ LLM（贵）
+ *   - RANKING_VERSION 失效 → 只是这批卡缺了某个新维度 → 退回库 score 即可（免费）
+ *
+ * 升这里的唯一理由：features 集合自身变了（新增/改名/改语义）。
+ * 落库时把版本写进 ranking_features.ranking_version，读时逐行比对，
+ * 不匹配就跳过在线重排——宁可退回旧分，也不能让不同特征契约的卡同队列混排。
+ */
+export const RANKING_VERSION = 'interest-ranking-v1'
 
 /** 聚类算法版本（M2 使用，此处先声明） */
 export const ALGO_VERSION = 'interest-cluster-v1'
@@ -83,15 +121,89 @@ export const EVENT_REGISTRY: Record<CreatorEventType, EventRegistryEntry> = {
 export const HALF_LIFE_DAYS = 45
 export const SCORING_WINDOW_DAYS = 365
 
-// ── WF5 评分公式 v2（业务侧唯一参数面，调任一数字即需再升 RULE_VERSION） ──
-// Score = InterestMatch×0.4 + RecentBehavior×0.2 + Trend×0.2 + Quality×0.1 + Explore×0.1
-export const RANKING_WEIGHTS_V2 = {
-  interestMatch: 0.4,
-  recentBehavior: 0.2,
-  trend: 0.2,
+// ── WF5 评分公式 v3（业务侧唯一参数面，调任一数字即需再升 RULE_VERSION） ──
+//
+// v2 → v3 的变化：把「近期创作行为」和「个人知识资产」从 interestMatch 里拆出来，
+// 变成两个可独立观测、可独立调参的维度。v2 里这两件事全被压在一个
+// interestMatch=0.4 里，结果就是"推荐永远在复述历史作品"——
+// 用户刚写完一篇新方向，历史相似度仍然压倒一切。
+//
+// v3 权重顺序严格对齐产品定义的优先级链：
+//   近期创作行为(recency 0.26)
+//   > 近期兴趣变化(trend 0.14 + recentBehavior 0.10 = 0.24)
+//   > 个人知识库(knowledge 0.18)
+//   > 历史作品 / 长期偏好(interestMatch 0.16)
+//
+// quality / explore 是内容与多样性修正项，不在优先级链内。
+//
+// 可调性说明：recency 与 knowledge 在信号缺失时（无近期事件 / 无知识单元）
+// 由 ranking.ts 按比例把权重重分配给其余维度，而不是按 0 计——
+// 否则没有知识库的用户会被整体压低 0.18，那是惩罚而非中性。
+export const RANKING_WEIGHTS_V3 = {
+  recency: 0.26,
+  interestMatch: 0.16,
+  knowledge: 0.18,
+  trend: 0.14,
+  recentBehavior: 0.1,
   quality: 0.1,
-  explore: 0.1,
+  explore: 0.06,
 } as const
+
+/** recency 语义相似度归一化：[floor, floor+range] → [0,1] */
+export const RECENCY_SIM_FLOOR = 0.4
+export const RECENCY_SIM_RANGE = 0.6
+/**
+ * 单张候选拿不到向量（S6 知识卡等）时的 recency 相似度取值。
+ *
+ * 为什么给中性而不是让该维度"缺席"：缺席会触发权重重分配，于是同一批候选里
+ * 有向量的卡按 7 维算、没向量的卡按 6 维算——两者的 score 不在同一把尺子上，
+ * 排序直接失真。整批都算不出（无质心）时仍然返回 null 走重分配，那是全体一致。
+ *
+ * 取 0.7 = floor + 0.5×range，归一化后正好落在 0.5 中性。
+ */
+export const RECENCY_NO_SIGNAL_SIM = 0.7
+/**
+ * 「近期行为质心」的时间衰减半衰期（天）。
+ * 45 天是画像整体半衰期（HALF_LIFE_DAYS），这里刻意更短：recency 要表达的是
+ * "这两周你在做什么"，不是"这半年你在做什么"。
+ */
+export const RECENT_BEHAVIOR_HALF_LIFE_DAYS = 21
+
+/**
+ * ✕ 原因 → 得分乘子（Taste Model 的最小可用形态）。
+ *
+ * 为什么不改权重而用乘子：原因表达的是"这张卡能不能要"，不是"这个方向重不重要"。
+ * 权重改动会影响整簇所有卡，乘子只作用于被判定的那张卡所在的簇，
+ * 语义上更接近用户的真实意图，也更容易回滚。
+ *
+ * 同簇多次 ✕ 不叠加：叠加会让"越点越死"，把探索空间彻底封死（取最强的一个）。
+ */
+export const TASTE_PENALTY: Record<DismissReasonCode, number> = {
+  not_my_direction: 0.55,
+  not_interesting: 0.7,
+  already_created: 0.75,
+  not_my_voice: 0.85,
+  too_hard: 0.9,
+}
+/** ✕ 但未选原因（兼容旧客户端与"就是不想看"）：按最轻档处理 */
+export const TASTE_PENALTY_NO_REASON = 0.85
+/** 口味惩罚的回看窗口（天）：半年前的"不感兴趣"不该继续约束现在的创作者 */
+export const TASTE_PENALTY_WINDOW_DAYS = 90
+
+/**
+ * 槽位级口味约束：同一个 ✕ 原因对不同槽位的含义不同，乘子不该一刀切。
+ *
+ * 唯一的实际用例是「已经创作过」：它说的不是"这个方向我不想要"，
+ * 而是"这条脉络我已经写过了"。推 continuation（延续你之前的创作）等于把
+ * 用户刚写完的东西换个说法再推一遍——正是 ✕ 的理由本身。
+ * 同方向的 core_gap（换个角度切入）仍然值得推，所以只压 continuation。
+ */
+export const TASTE_SLOT_PENALTY: Partial<
+  Record<DismissReasonCode, Partial<Record<SuggestionSlot, number>>>
+> = {
+  already_created: { continuation: 0.6 },
+  not_my_direction: { continuation: 0.7 },
+}
 
 /** InterestMatch 内部构成：0.7×语义匹配 + 0.3×标签命中（WF4 接入真实四维标签） */
 export const INTEREST_SEMANTIC_RATIO = 0.7
@@ -165,6 +277,29 @@ export const CLUSTER_MIN_MEMBERS = 2
 export const CLUSTER_INHERIT_SIMILARITY = 0.72
 export const MAX_ACTIVE_CLUSTERS = 12
 
+/**
+ * 作品级强信号事件类型：写完 / 定稿 / 发布。
+ *
+ * 存在理由（2026-09-25 生产实测）：CLUSTER_MIN_MEMBERS=2 会滤掉**全部**单成员簇，
+ * 而跨领域创作者的常态就是「N 篇作品 N 个方向」——每簇只有 1 个成员。实测两个账号：
+ *   23 个原始簇里 21 个是单成员 → 最终只有 2 个方向进画像
+ *   3  个原始簇里 2  个是单成员 → 最终只有 1 个方向进画像
+ * 画像只剩一两个方向，造卡就只能围着它反复改写，推荐退化成"刷来刷去都是这几张"；
+ * 同时绝大多数卡拿不到簇（semanticSimilarity=null），在线重排对它们全部失效。
+ * 这条限制代码里早就标注过（wf9：泛商业 5 主题两两相似度不达标 → 各自单成员 →
+ * 被 MIN_MEMBERS 滤掉，"多样本聚类放宽留 follow-up"），本常量就是那个 follow-up。
+ *
+ * 为什么只放宽作品级，而不是把 MIN_MEMBERS 直接降成 1：
+ *   作品是创作者真实投入的产物（写完/定稿/发布），一篇就足以证明一个方向；
+ *   而曝光、点击、点赞这类弱行为单次噪声太大——误点一下不该变成一个兴趣方向，
+ *   它们仍必须凑够 CLUSTER_MIN_MEMBERS 才被承认。这样放宽不引入弱信号噪声。
+ */
+export const WORK_LEVEL_EVENT_TYPES = [
+  'work_generate',
+  'work_finalize',
+  'work_publish',
+] as const
+
 // ── WF11 P1：多兴趣广度（S4 exploration 消费） ──
 // 单簇探索种子上限：一次 build 喂给 LLM 的用户兴趣方向数（core 优先，不足补 exploration 层）
 export const EXPLORATION_MAX_SEEDS = 6
@@ -188,7 +323,33 @@ export const BUILD_DIRTY_EVENT_COUNT = 5
  *   - reapStaleRunningBuild 将其置 failed 收尾
  */
 export const BUILD_STALE_RUNNING_MS = 5 * 60_000
-export const BUILD_MAX_AGE_HOURS = 1
+
+/**
+ * 画像"时间过期"触发重建的小时数。
+ *
+ * ⚠ 这个数字直接决定 LLM 成本与后台负载，改动前务必理解它触发的是什么：
+ *   命中后走 runBuild —— 全窗口重算聚类 + 3 次 LLM，耗时 20-150s。
+ *
+ *   注意它**不会**造成"用户看不到推荐"：builder 早已改成「先落新卡、
+ *   再 supersedeExceptBuild 按 build_id 清旧卡」的原子切换（见 suggestionRepo），
+ *   重建的 20-150s 里旧卡照常服务。所以这里的代价是算力与金钱，不是空窗期。
+ *   （本注释此前误写成"第一步 supersedeOldBuild 清空队列"，是照抄了下面
+ *    WF12 段里一段没跟着代码更新的旧描述，已一并订正。）
+ *
+ * 从 1 → 24 的理由：
+ *   1) 它是"什么都不做也会重建"的唯一通道。真实行为早已由更快的通道覆盖：
+ *      作品增删走 work_signal（1 条即触发，refill 秒级）、一般行为走 dirty（≥5 条）。
+ *      于是 1h 过期剩下的作用只有"用户毫无动静时每小时烧一次 3 次 LLM"，
+ *      而毫无动静恰恰意味着画像不需要更新——纯浪费。
+ *   2) 画像表达的是长期偏好（HALF_LIFE_DAYS=45 天）。一个人的创作方向不会
+ *      一小时一变，24h 更新一次绰绰有余。
+ *   3) RULE v5 之后 score 改为读时计算（rescore.ts），画像只提供簇/质心/分层。
+ *      即使画像稍旧，排序仍按"此刻"的上下文重算，新鲜度的实际影响进一步缩小。
+ *
+ * 收紧这个数字的唯一正当理由：发现了"画像陈旧导致推荐明显偏离"的实证。
+ * 放宽的代价仅为画像聚类更新变慢，不会造成错误推荐。
+ */
+export const BUILD_MAX_AGE_HOURS = 24
 /** 新用户首建：无画像用户行为事件达到该值时，/api/inspirations 自动触发首次 full build */
 export const FIRST_BUILD_MIN_EVENTS = 5
 export const INTERPRET_BATCH_SIZE = 20
@@ -222,6 +383,37 @@ export const REBUILD_HIGH_SIGNAL_MIN = 1
 export const REBUILD_SEED_EVENT_TYPES: ReadonlyArray<CreatorEventType> = ['work_generate', 'recommend_adopt']
 /** 新作品种子最多取几条主题（控制 S4 prompt 长度与 LLM 成本） */
 export const REBUILD_FRESH_TOPIC_LIMIT = 3
+
+/**
+ * build 内「新作品种子」最多取几条（与 REBUILD_FRESH_TOPIC_LIMIT 同量级，独立命名
+ * 是因为两者的语义不同：后者是 rebuildTrigger 取"上次 build 之后新增"的主题，
+ * 前者是 builder 取"被 CLUSTER_MIN_MEMBERS 挡在画像之外"的最新作品主题）。
+ *
+ * 存在理由：一篇全新方向的作品会形成单成员簇，被 CLUSTER_MIN_MEMBERS=2 滤掉，
+ * 既不进画像、也不进 buildExplorationSeeds 的簇种子 → 用户写完一篇新方向，
+ * 推荐队列纹丝不动（"新增作品不影响推荐"的直接根因）。这里把它捞回来当探索种子。
+ */
+export const BUILD_FRESH_WORK_SEED_LIMIT = 3
+
+/**
+ * dashboard 首屏最多前置几张「上次 build 之后新增」的卡。
+ * 与 Feed 的 FEED_FRESH_INJECT_MAX 同口径：补货只往队尾追加，而读卡按 score 取 Top N，
+ * 新卡大概率掉出首屏 —— 闭环在体感上等于没发生。
+ */
+export const DASHBOARD_FRESH_INJECT_MAX = 2
+
+/**
+ * ✕ 不感兴趣的原因码（白名单，服务端落 creator_events.payload.reason_code）。
+ * 只有 reason_code 没有 reasonFactor——它是 Taste Model 的原料，不参与兴趣权重计算。
+ */
+export const DISMISS_REASON_CODES = [
+  'not_my_direction',
+  'already_created',
+  'not_interesting',
+  'too_hard',
+  'not_my_voice',
+] as const
+export type DismissReasonCode = (typeof DISMISS_REASON_CODES)[number]
 /** 触发判定时扫描的最近事件条数上限（倒序取最新，够判定用，避免全表扫） */
 export const REBUILD_SCAN_EVENT_LIMIT = 500
 
@@ -229,14 +421,81 @@ export const REBUILD_SCAN_EVENT_LIMIT = 500
 //
 // build 与 refill 的分工，是"无限流不断供"的核心：
 //   runBuild = 理解用户（拉事件 → 补 embedding → 原因解释 → 聚类 → 分层 → 趋势
-//              → 装配画像 → 造卡），3 次 LLM，耗时 20-150s；
-//              且第一步就会 supersedeOldBuild 清空旧队列——用户正在翻的游标立即
-//              失效，重建期间翻页必然撞到"队列空"降级。这就是"刷到哪里就没了"的根因。
+//              → 装配画像 → 造卡），3 次 LLM，耗时 20-150s。
+//
+//              关于队列：**runBuild 不再"第一步清空"**，这条描述是旧实现留下的，
+//              已与代码不符——现在 builder 走的是「先落新卡 → 再 supersedeExceptBuild
+//              (build_id) 清旧卡」的原子切换，重建的 20-150s 里旧卡照常服务，
+//              用户不会撞到"队列空"降级。
+//              仍然存在的代价是**游标失效**：旧卡被整批换成新卡后，Feed 手里
+//              的 cursor 指向的行已不在 active 队列里，getFeedPage 会从头开始翻
+//              （feedRepo 对此有明确处理），表现为"刷着刷着回到前面几张"。
+//              这正是 Feed 端点坚持只走 refill、绝不直接 runBuild 的原因——
+//              refill 是追加，不动旧卡，游标连续。
 //   refill   = 只造卡（复用上次 build 落库的簇 → 候选生成 → 打分 → 追加队列），
 //              1 次 LLM，秒级完成，且不清空队列，翻页体验连续。
 //
 // 因此 Feed 库存不足时补货走 refill，只有 refill 不可行（无画像/无簇）时才回退 runBuild。
 // 这些是调度参数而非评分权重，不改变 scoreCandidate 口径，故不触发 RULE_VERSION 升版。
+
+/**
+ * 候选 embedding 与簇质心的最小余弦——低于此视为"不属于任何已知方向"。
+ *
+ * 实测标定（bge-m3 @1024，25 张存量卡 vs 各自活跃簇）：
+ *   中位数 0.49~0.63，p25 0.45~0.61，max 0.80。
+ * 取 0.5 时命中率 48%~96%（取决于用户簇的覆盖广度）。
+ *
+ * 调低会把弱相关的卡硬塞进某个簇，凭空造出「你在「X」关注但还没写过」的假事实；
+ * 调高则退回"全部无簇"，兴趣画像彻底不参与排序。0.5 是这两端的平衡点。
+ */
+export const CLUSTER_MATCH_MIN_SIMILARITY = 0.5
+
+// ── 曝光—反馈闭环：让推荐从真实互动里学 ──
+//
+// 背景（生产实锤）：三个用户累计 297 次曝光，只换来 6 次点击（CTR 0.5%~20%），
+// 却点了 16 次 ✕。而在加上下面的闭环之前，排序侧对这些信号是**零消费**的——
+// recommend_impression 权重 0（stats_only）、recommend_click 仅 0.15 且只间接
+// 参与聚类。结果：一张被展示 10 次、一次没点过的卡，分和被展示 0 次的新卡
+// 完全一样，队列永远不会轮换，体感就是"刷来刷去都是这几张"。
+//
+// 闭环分两层，口径不同，不要合并：
+//   ① 单卡曝光疲劳 —— 这张卡"看腻了没有"，只看它自己
+//   ② 簇级互动率   —— 这个方向"用户买不买账"，会推广到该方向的新卡
+// ① 负责轮换，② 负责学习。缺 ① 队列僵化，缺 ② 只能学会嫌弃具体某张卡。
+
+/** 回看多久的曝光/点击。卡 14 天过期，30 天足以覆盖它的一生 */
+export const ENGAGEMENT_WINDOW_DAYS = 30
+
+/** 前几次曝光不罚：新卡需要机会，不能一出生就按历史均值打折 */
+export const FATIGUE_FREE_IMPRESSIONS = 2
+
+/** 疲劳地板。降到 0.65 为止，保证"看腻了"也绝不等于"消失" */
+export const FATIGUE_FLOOR = 0.65
+
+/** 疲劳衰减速度（次）。越大越温和 */
+export const FATIGUE_DECAY_IMPRESSIONS = 5
+
+/** 簇级互动率的最小样本。低于此不学——3 次曝光没点击不能判一个方向死刑 */
+export const CTR_MIN_SAMPLE = 8
+
+/**
+ * 互动率的贝叶斯先验（拉普拉斯平滑）：伪点击 α / 伪未点击 β。
+ * 先验均值 = α/(α+β) = 0.05，即"一张值得展示的卡大约 5% 概率被点"。
+ * 平滑的意义：1 次点击 / 3 次曝光 不能等同于 33% 命中率。
+ */
+export const CTR_PRIOR_ALPHA = 1
+export const CTR_PRIOR_BETA = 19
+
+/** 簇级乘子的钳制区间。宁可学得慢，也不能一次把某个方向打进冷宫 */
+export const CTR_FACTOR_FLOOR = 0.7
+export const CTR_FACTOR_CAP = 1.2
+
+/**
+ * dashboard 端点每次读多少张 active 卡参与在线重排。
+ * 不是 Magic number 的例外——它是上限而非阈值：队列通常 20~30 张，
+ * 设 60 保证"全读"，再往上没有收益只有传输成本。
+ */
+export const DASHBOARD_QUEUE_SCAN_LIMIT = 60
 
 /** 同一用户两次 refill 的最小间隔（成本闸门：与请求频率解耦） */
 export const REFILL_MIN_INTERVAL_MS = 5 * 60_000

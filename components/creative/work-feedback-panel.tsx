@@ -274,18 +274,18 @@ export function WorkFeedbackPanel({
   if (!projectId || finalized) return null
 
   return (
-    <div className="mt-10 pt-8 border-t border-zinc-800/80">
+    <div className="mt-10 pt-8 border-t border-[var(--vs-line)]">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <p className="text-sm font-medium text-zinc-300">继续优化这一版</p>
-          <p className="text-xs text-zinc-500 mt-0.5">
+          <p className="text-sm font-medium text-[var(--vs-ink-2)]">继续优化这一版</p>
+          <p className="text-xs text-[var(--vs-ink-4)] mt-0.5">
             告诉 AI 哪里需要改，它会生成下一版（V2/V3…）
           </p>
         </div>
         {(state === 'analyzed' || state === 'error') && (
           <button
             onClick={handleReset}
-            className="text-xs text-zinc-500 hover:text-zinc-300 transition"
+            className="vs-link"
           >
             收起
           </button>
@@ -301,7 +301,7 @@ export function WorkFeedbackPanel({
             placeholder="例如：开头不够吸引人 / 想增加案例 / 不够震撼 / 改成更轻松的口吻…"
             rows={3}
             disabled={state === 'analyzing'}
-            className="w-full bg-zinc-900/60 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 resize-none dark-scroll disabled:opacity-50"
+            className="vs-input vs-input-area w-full resize-none dark-scroll disabled:opacity-50"
           />
           <div className="flex items-center gap-3 mt-2">
             <button
@@ -311,7 +311,7 @@ export function WorkFeedbackPanel({
                 state === 'analyzing' ||
                 !!improvingDirection
               }
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-indigo-600 hover:bg-indigo-500 transition disabled:opacity-40 disabled:cursor-not-allowed"
+              className="vs-btn vs-btn-primary disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {state === 'analyzing' ? (
                 <>
@@ -323,7 +323,7 @@ export function WorkFeedbackPanel({
               )}
             </button>
             {state === 'error' && (
-              <span className="text-xs text-red-400">{errorMsg}</span>
+              <span className="vs-error">{errorMsg}</span>
             )}
           </div>
         </div>
@@ -331,24 +331,24 @@ export function WorkFeedbackPanel({
 
       {/* ── AI 理解确认区 ── */}
       {(state === 'analyzed' || state === 'generating') && analysis ? (
-        <div className="bg-indigo-500/5 border border-indigo-500/25 rounded-xl px-5 py-4">
+        <div className="vs-frame px-5 py-4">
           <div className="flex items-center gap-2 mb-3">
-            <span className="text-[10px] font-medium text-indigo-400 tracking-wide uppercase">
+            <span className="text-[10px] font-medium text-[var(--vs-ink)] tracking-wide uppercase">
               AI 对你反馈的理解
             </span>
             {degraded && (
-              <span className="text-[10px] text-amber-500 bg-amber-500/10 px-1.5 py-0.5 rounded">
+              <span className="vs-chip-xs vs-note-warn">
                 降级模式
               </span>
             )}
           </div>
-          <p className="text-sm text-zinc-200 leading-relaxed mb-3">
-            <span className="text-zinc-500">理解：</span>
+          <p className="text-sm text-[var(--vs-ink)] leading-relaxed mb-3">
+            <span className="text-[var(--vs-ink-4)]">理解：</span>
             {analysis.userIntentSummary}
           </p>
           <div className="flex flex-wrap gap-2 mb-3">
-            <span className="rounded-full border border-zinc-700 bg-zinc-800/60 px-3 py-1 text-xs text-zinc-300">
-              <span className="text-zinc-500 mr-1">方向:</span>
+            <span className="vs-verdict">
+              <span className="text-[var(--vs-ink-4)] mr-1">方向:</span>
               {NEXT_ACTION_META.find((m) => m.key === analysis.intentType)?.emoji}{' '}
               {NEXT_ACTION_META.find((m) => m.key === analysis.intentType)?.label ??
                 analysis.intentType}
@@ -356,7 +356,7 @@ export function WorkFeedbackPanel({
             {analysis.modificationTargets.map((t, i) => (
               <span
                 key={i}
-                className="rounded-full border border-zinc-700 bg-zinc-800/60 px-3 py-1 text-xs text-zinc-300"
+                className="vs-verdict"
               >
                 {t}
               </span>
@@ -364,31 +364,31 @@ export function WorkFeedbackPanel({
             {(analysis.impactScope ?? []).map((scope) => (
               <span
                 key={`scope-${scope}`}
-                className="rounded-full border border-indigo-500/40 bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300"
+                className="vs-verdict"
               >
-                <span className="text-indigo-400/70 mr-1">范围:</span>
+                <span className="text-[var(--vs-ink-4)] mr-1">范围:</span>
                 {scope}
               </span>
             ))}
           </div>
           {(analysis.preserveItems ?? []).length > 0 && (
-            <p className="text-xs text-zinc-400 leading-relaxed mb-3">
-              <span className="text-zinc-500">保持不变：</span>
+            <p className="text-xs text-[var(--vs-ink-3)] leading-relaxed mb-3">
+              <span className="text-[var(--vs-ink-4)]">保持不变：</span>
               {analysis.preserveItems!.join('、')}
             </p>
           )}
-          <p className="text-xs text-zinc-400 leading-relaxed mb-4">
-            <span className="text-zinc-500">优化蓝图：</span>
+          <p className="text-xs text-[var(--vs-ink-3)] leading-relaxed mb-4">
+            <span className="text-[var(--vs-ink-4)]">优化蓝图：</span>
             {analysis.optimizationBlueprint}
           </p>
           {patchError && (
-            <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 mb-3">
+            <p className="vs-note vs-note-warn vs-warn mb-3">
               {patchError}
               {onFeedbackConfirmed && (
                 <button
                   onClick={handleFallbackFullRewrite}
                   disabled={patchLoading}
-                  className="ml-2 underline underline-offset-2 hover:text-amber-300 disabled:opacity-50"
+                  className="ml-2 underline underline-offset-2 hover:opacity-80 disabled:opacity-50"
                 >
                   改用全文优化
                 </button>
@@ -399,7 +399,7 @@ export function WorkFeedbackPanel({
             <button
               onClick={handleConfirmGenerate}
               disabled={state === 'generating' || !!improvingDirection}
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-500 transition disabled:opacity-40 disabled:cursor-not-allowed"
+              className="vs-btn vs-btn-primary disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {state === 'generating' || patchLoading ? (
                 <>
@@ -415,7 +415,7 @@ export function WorkFeedbackPanel({
             <button
               onClick={handleCancelAnalysis}
               disabled={state === 'generating' || !!improvingDirection}
-              className="px-4 py-2 rounded-lg text-sm text-zinc-400 border border-zinc-700 hover:border-zinc-500 hover:text-zinc-200 transition disabled:opacity-40"
+              className="vs-btn vs-btn-ghost disabled:opacity-40"
             >
               重新描述
             </button>
@@ -425,20 +425,20 @@ export function WorkFeedbackPanel({
 
       {/* ── AI 修改建议窗口（P4：段落级补丁对照 + 三操作）── */}
       {patches && analysis ? (
-        <div className="mt-4 bg-emerald-500/5 border border-emerald-500/25 rounded-xl px-5 py-4">
+        <div className="vs-frame mt-4 px-5 py-4">
           <div className="flex items-center justify-between gap-3 mb-3">
             <div>
-              <p className="text-[10px] font-medium text-emerald-400 tracking-wide uppercase">
+              <p className="vs-mark">
                 AI 修改建议（局部修改，不影响其余内容）
               </p>
               {patchSummary && (
-                <p className="text-xs text-zinc-400 mt-1">{patchSummary}</p>
+                <p className="text-xs text-[var(--vs-ink-3)] mt-1">{patchSummary}</p>
               )}
             </div>
             <button
               onClick={handleCancelAnalysis}
               disabled={deciding}
-              className="shrink-0 text-xs text-zinc-500 hover:text-zinc-300 transition disabled:opacity-40"
+              className="shrink-0 vs-link disabled:opacity-40"
             >
               收起
             </button>
@@ -448,21 +448,21 @@ export function WorkFeedbackPanel({
             {patches.map((p, i) => (
               <div
                 key={`${p.segmentIndex}-${i}`}
-                className="rounded-lg border border-zinc-700/60 bg-zinc-900/50 px-4 py-3"
+                className="vs-frame px-4 py-3"
               >
-                <p className="text-[11px] text-zinc-500 mb-2">
+                <p className="text-[11px] text-[var(--vs-ink-4)] mb-2">
                   第 {p.segmentIndex} 段 · {p.reason}
                 </p>
                 <div className="grid gap-2">
                   <div className="text-xs leading-relaxed">
-                    <span className="text-red-400/80 mr-1.5">原文</span>
-                    <span className="text-zinc-500">
+                    <span className="text-[var(--vs-ink-4)] mr-1.5">原文</span>
+                    <span className="text-[var(--vs-ink-4)]">
                       {p.originalExcerpt || currentContent.split(/\n\s*\n/).filter(Boolean)[p.segmentIndex - 1]?.slice(0, 80) || '（略）'}
                     </span>
                   </div>
                   <div className="text-xs leading-relaxed">
-                    <span className="text-emerald-400/90 mr-1.5">建议</span>
-                    <span className="text-zinc-200">{p.revisedText}</span>
+                    <span className="text-[var(--vs-ink-2)] mr-1.5">建议</span>
+                    <span className="text-[var(--vs-ink)]">{p.revisedText}</span>
                   </div>
                 </div>
               </div>
@@ -470,33 +470,33 @@ export function WorkFeedbackPanel({
           </div>
 
           {patchError && (
-            <p className="text-xs text-red-400 mb-3">{patchError}</p>
+            <p className="vs-error mb-3">{patchError}</p>
           )}
 
           <div className="flex flex-wrap items-center gap-3">
             <button
               onClick={() => handleDecide(true)}
               disabled={deciding}
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-500 transition disabled:opacity-40 disabled:cursor-wait"
+              className="vs-btn vs-btn-primary disabled:opacity-40 disabled:cursor-wait"
             >
               {deciding ? '正在融合…' : '✓ 接受修改'}
             </button>
             <button
               onClick={handleContinueTuning}
               disabled={deciding}
-              className="px-4 py-2 rounded-lg text-sm text-zinc-300 border border-zinc-700 hover:border-zinc-500 hover:text-zinc-100 transition disabled:opacity-40"
+              className="vs-btn vs-btn-ghost disabled:opacity-40"
             >
               继续调整
             </button>
             <button
               onClick={() => handleDecide(false)}
               disabled={deciding}
-              className="px-4 py-2 rounded-lg text-sm text-zinc-500 hover:text-zinc-300 transition disabled:opacity-40"
+              className="px-4 py-2 rounded-lg vs-note hover:text-[var(--vs-ink-2)] transition disabled:opacity-40"
             >
               拒绝修改
             </button>
           </div>
-          <p className="text-[11px] text-zinc-600 mt-2.5">
+          <p className="vs-note mt-2.5">
             接受后仅替换标注段落生成新版本；继续调整可补充反馈重新生成建议；拒绝会记入你的修改偏好。
           </p>
         </div>
@@ -505,7 +505,7 @@ export function WorkFeedbackPanel({
       {/* ── 快捷优化方向（6 类预设）── */}
       {state === 'idle' && (
         <div className="mt-6">
-          <p className="text-xs text-zinc-500 mb-2">或者直接选择优化方向：</p>
+          <p className="text-xs text-[var(--vs-ink-4)] mb-2">或者直接选择优化方向：</p>
           <div className="flex flex-wrap gap-2">
             {NEXT_ACTION_META.map((m) => (
               <button
@@ -520,8 +520,8 @@ export function WorkFeedbackPanel({
                 title={m.blurb}
                 className={`px-3.5 py-2 rounded-lg text-xs font-medium transition border disabled:opacity-40 disabled:cursor-not-allowed ${
                   improvingDirection === m.key
-                    ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/40'
-                    : 'bg-zinc-900 border-zinc-700 text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800'
+                    ? 'border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]'
+                    : 'border-[var(--vs-line)] bg-transparent text-[var(--vs-ink-3)] hover:border-[var(--vs-line-2)] hover:text-[var(--vs-ink)]'
                 }`}
               >
                 {m.emoji} {m.label}
@@ -536,7 +536,7 @@ export function WorkFeedbackPanel({
 
       {/* ── 提示：非登录用户 ── */}
       {!isLoggedIn && state === 'idle' && (
-        <p className="text-xs text-zinc-600 mt-3">
+        <p className="vs-note mt-3">
           登录后反馈会被保存到你的作品历史，跨设备可恢复
         </p>
       )}

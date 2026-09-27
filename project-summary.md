@@ -110,7 +110,7 @@
 | 1 | **P0** | 重跑 full build + GET /api/inspirations 验证最新 3 项修复 | 见 §5.1，代码已改且测试通过但**尚未实测新效果** |
 | 2 | P0 | M1 **实时埋点**实测 | backfill 路径已验证；真实操作路径（生成/点赞/定稿/删稿→creator_events）尚未验证 |
 | 3 | P1 | 配置 `SUPABASE_SERVICE_ROLE_KEY` 到 `.env.local` | 缺它 S2 ci_market 候选静默降级（当前推荐少一类来源） |
-| 4 | P1 | **M5 推荐解释能力** | evidence→中文解释模板（现在 reason 大量兜底"基于你的创作兴趣推荐"）；✕不感兴趣按钮（调 markDismissed）；前端曝光/点击埋点（markImpressed + recommend_impression/click/adopt 事件） |
+| 4 | ~~P1~~ **已完成** | **M5 推荐解释能力**（2026-09-24） | ✕按钮与曝光/点击埋点此前已落地；本次补齐最后一项：reason 兜底按槽位说真话（exploration 卡不再谎称"基于你的创作兴趣"），见 `reasonAi.test.ts` |
 | 5 | P2 | ranking 纯函数补单测 | scoreCandidate 归一化、selectSlots 自适应配额、stableOrder 日种子稳定性 |
 | 6 | P2 | git 提交拆分 | 36 文件 +3827/−1304 全部未提交且多功能线混杂（CIP / 灵感分析器 / 登录门 / 星空UI / plan改版），需按功能线分 commit |
 | 7 | P3 | ci_items 规模升级 | 超 ~10K 行后补 `match_ci_items` RPC 用 HNSW（当前应用端 Top200 余弦过滤） |

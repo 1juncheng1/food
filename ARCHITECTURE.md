@@ -67,6 +67,11 @@ supabase/
 | [generationTask.ts](file:///lib/generationTask.ts) | `GenerationParams`, `GenerationTask`, `getTask`, `startGenerationTask` | 跨页面生成任务状态管理（轮询作品落盘；improve 定向迭代模式） | generate, article |
 | [scrollMemory.ts](file:///lib/scrollMemory.ts) | `saveDashboardState`, `consumeReturnNavigation`, `restoreDashboardScroll`, `backToDashboard` | 素材库列表滚动位置记忆（sessionStorage + popstate 判定 + rAF 精确恢复） | dashboard, article, works(重定向页) |
 | [creative/styleLearning.ts](file:///lib/creative/styleLearning.ts) | `applySignals`, `formatStyleDimensions`, `recordVersionSignal`, `recordDirectionSignal` | 个人风格五维画像加权增量均值（仅服务端，失败静默） | prompt-optimizer, feedback, creative/projects |
+| [creative/creatorUnderstanding.ts](file:///lib/creative/creatorUnderstanding.ts) | `readCreatorUnderstanding`, `LAYER_WEIGHTS`, `understandingLevelMeta` | **Creator Intelligence 统一读取层**：六路（memory/interest/report/knowledge/style/editing）聚合出 readiness/percent/level + 每路置信度 + 缺口引导。纯函数、不读库、不建表 | creator-status, （未来的统一读者） |
+| [creative/creatorContext.ts](file:///lib/creative/creatorContext.ts) | `buildCreatorContextBlocks`, `CreatorContextBlocks` | **生成链路注入装配器**：方案/蓝图/正文三处共用同一份「注入哪些块、什么顺序、多少预算、哪些是硬禁忌」 | plan, blueprint, prompt-optimizer |
+| [creative/tasteView.ts](file:///lib/creative/tasteView.ts) | `buildTasteView`, `TASTE_SOURCE_LABEL` | **Taste 合成视图**：声明 / DNA 报告 / 修改行为 / 兴趣统计四路合成 likes/avoids/depth，每条带来源与置信度（noisy-OR 合并）。**不注入 prompt**（editing 原始块已注入） | style-profile |
+| [creative/consistencyCheck.ts](file:///lib/creative/consistencyCheck.ts) | `checkConsistency`, `CONSISTENCY_VERDICT_META` | **创作一致性三问**：是否符合你的知识 / 兴趣 / 是否踩禁忌。字面匹配 + 硬门槛，判不了的一律回 `unknown` | analyze, diagnosis-card |
+| [creative/publishPerformance.ts](file:///lib/creative/publishPerformance.ts) | `computePublishPerformance`, `fetchPublishFacts` | **发布表现事实包**：posts 点赞/收藏/评论聚合，样本不足时给 caveat 而非空排名 | publish-performance（无 UI） |
 | [creative/creatorModel.ts](file:///lib/creative/creatorModel.ts) | `formatCreatorModel`, `PersonalizationEvidence` | Creator Model → prompt 人格块（9.6 DNA 报告优先、9.5 散列回退；手动人格名优先于 AI 命名；排斥硬禁忌）+ 个性化证据结构 | prompt-optimizer, creative/blueprint, article |
 | [creative/creatorReport.ts](file:///lib/creative/creatorReport.ts) | `parseCreatorReport`, `buildStatsBrief`, `parseLlmDraft`, `assembleCreatorReport`, `computeConfidence`, `formatCreatorReportForPrompt` | 版本化创作 DNA 报告：主/副人格、主题/叙事 DNA（AI 标签必须引用真实样本，权重按引用篇数服务端重算）、语言 DNA、置信度 | style-profile/summarize, creatorModel |
 | [creative/languageStats.ts](file:///lib/creative/languageStats.ts) | `toneTagCounts`, `openingCounts`, `detectPace`, `computeBasicStats` | 确定性语言特征统计（语气命中/节奏/开头/均长），风格卡与 DNA 报告共用同一口径 | style-profile, creatorReport |
@@ -127,6 +132,36 @@ supabase/
 关键文件：lib/creative/blueprint.ts（类型+LLM+prompt 拼装）、components/creative/blueprint-card.tsx（蓝图卡片）
 任务状态机：pending（构思/撰写中）→ blueprint（蓝图就绪续写中）→ writing → done/error
 结果页轮询：进行中任务优先于 localStorage 旧作品（否则再来一版 thinking 会卡死），reloadTick 可重启轮询
+
+### 1a-bis. 个人数据注入：唯一装配口径（改动前必读）
+
+三处生成入口**禁止各自手拼个人数据块**，一律调 `buildCreatorContextBlocks()`：
+
+```
+style_profiles（单表多列）
+  → lib/creative/creatorContext.ts buildCreatorContextBlocks({ stage })
+      · styleText     风格统计 + 五维画像
+      · creatorText   人格（DNA 报告优先）→ 用户声明 → 修改偏好记忆
+      · interestText  长期关注领域（行为统计观察，软参考）
+      · avoid[]       硬禁忌合集（人格排斥 + 声明排斥 + 高置信拒绝过的改法）
+  → plan（stage='plan'）/ blueprint（stage='blueprint'）/ prompt-optimizer（stage='article'）
+```
+
+三条铁律：
+1. **块集合不可配，阶段措辞可配。** `stage` 只影响指令句，不影响注入哪些块 ——
+   此前 `editing_profile` 只进正文就是这么漂移出来的。
+2. **优先级**：用户主动声明 > AI 推断人格 > 用户修改行为 > 行为统计观察。
+3. 素材 / 知识这类需要异步检索的块**不进装配器**（召回口径本就不同），仍由各路由处理。
+
+「AI 有多懂这个用户」只有一个答案：`readCreatorUnderstanding()`（六路加权），
+由 `/api/creator-status` 对外暴露；dashboard 展示的是兴趣画像口径，已改名避免混淆。
+
+**扩维时的两条硬规则**（2026-09-24 新增身份三问时定下）：
+1. 新增维度是**加分项不进分母** —— 进分母会让已访谈老用户理解度一夜下降。
+2. 老用户走**增量补问**（`interviewTrigger` 的 `supplement`）而不是全量重访。
+
+**「这篇像不像我」与「这篇好不好」分开**：三镜头诊断回答后者，
+`checkConsistency()` 回答前者；判不了的三问一律 `unknown`，不编造结论。
 
 ### 1b. 创作进化系统（建设中，分阶段）
 ```
@@ -191,20 +226,45 @@ supabase/
 | `app/api/creative/work-agent/session/route.ts` | 会话生命周期（创建/恢复/放弃）；刷新后对话不失忆 |
 | `app/api/creative/work-agent/chat/route.ts` | 三阶段状态机（say / select_intent / select_plan） |
 | `lib/creative/workAgentContext.ts` | 上下文装配唯一出口 + `formatContextForPrompt()` 文本化 |
+| `lib/creative/workAgentMode.ts` | **输出模式路由**（纯规则）：companion / discuss / suggest / direct |
+| `lib/creative/workAgentDialogue.ts` | **讨论 / 陪伴模式回应**（只分析 + 提问，不给候选按钮） |
+| `lib/creative/revisionGuard.ts` | **修改守门**（纯规则）：识别会伤害作品的改法并给替代方案 |
+| `lib/creative/preferenceReason.ts` | **"为什么改"抽取**：「不要太像新闻」→ 避开新闻口径 + 偏好个人观点 |
 | `lib/creative/intentClarifier.ts` | 阶段 1：模糊反馈 → 候选含义 |
 | `lib/creative/revisionPlan.ts` | 阶段 2：已确认意图 → 多个修改方案 |
 | `lib/creative/patchEngine.ts` | 阶段 3：段落补丁（已改造为接收 `contextText` + `plan`） |
 | `lib/creative/workAgent.ts` | 全部纯类型 + 清洗函数 + DB 行映射（前端可安全引用） |
 
+**输出模式路由（改动前必读）**：不是所有输入都是修改指令。
+`say` 阶段先由 `detectInteractionMode()` 判定模式，再决定走哪条路：
+
+| 模式 | 触发示例 | 走向 |
+| --- | --- | --- |
+| `companion` | 「写出来没人看」「不知道写什么了」 | 陪伴回应：接住处境 + 基于真实上下文分析 + 一个最小动作，**不催改稿** |
+| `discuss` | 「你觉得这篇最大的问题在哪」 | 讨论回应：我的理解 / 可能原因 / 建议方向 / 一个待确认问题 |
+| `direct` | 「别问了直接改」 | 复用 `skipToPlan` 通道直达补丁（**跳过的是讨论，不是确认权**） |
+| `suggest` | 「开头太平了」 | 既有三步流水线 |
+
+判定顺序即优先级：`direct > companion > discuss > suggest(兜底)`。
+未命中一律回退 `suggest`，保证只会更贴合、不会让既有链路退化。
+
 **AI 必须携带的上下文**（`assembleWorkContext` 产出，三个阶段共用同一份，避免口径漂移）：
 `work`（是哪篇）· `diagnosis`（现在什么毛病）· `goal`（用户最初想写什么，来自 blueprint.problem_understanding）
+· `audience`（写给谁看，修改取舍的裁决依据）· `knowledge`（用户亲手确认过的知识单元）
+· `revisionHistory`（这个作品前一版改了什么、依据哪句反馈）
 · `creator`（谁写的，防统一 AI 文风）· `editing`（历史接受/拒绝偏好）· `materials`（用户自己的素材）· `external`（外部知识预留接口）
+
+`knowledge` 必须与生成链路同一口径（复用 `buildKnowledgeInjection`）：
+生成时遵守的主张，改的时候被改掉，等于替用户说了他不认同的话。
+`revisionHistory` 只是三个轻字段（direction/note/feedback），目的是避免 AI 在同一轮里重提刚被否决的改法。
 
 关键约束（改动前必读）：
 - 任一步 LLM 失败都必须返回**可见**的降级提示，不静默跳到下一阶段
 - 降级顺序：补丁失败 → 提示用户确认后改走全文重写；**绝不偷偷重写**
 - 素材优先于 AI 编造；上下文中没有真实案例时，禁止编造具体数据
 - 历史对话**不进** prompt（阶段输出已是用户确认过的结论）
+- **守门只提示不阻拦**：`revisionGuard` 给出"我不同意"而不是"我不干"，用户坚持要改 AI 照改
+- **禁止虚假鼓励**：陪伴/讨论模式下上下文没有正向证据时不许夸奖——空洞夸奖会削弱用户自己的判断力
 
 **方向验收（Feedback Alignment）——改完必须核对「到底改没改对方向」**：
 

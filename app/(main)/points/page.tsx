@@ -131,7 +131,7 @@ export default function PointsPage() {
       <SurfaceCard>
         <Link
           href="/recharge"
-          className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500"
+          className="vs-btn vs-btn-primary"
         >
           <Wallet size={15} />
           去充值
@@ -156,20 +156,20 @@ export default function PointsPage() {
                 className="rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3"
               >
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <span className="text-[13px] font-medium text-zinc-200">
+                  <span className="text-[13px] font-medium text-[var(--vs-ink)]">
                     {LEDGER_TEXT[e.type]}
                   </span>
                   <span
                     className={`text-[13px] font-semibold ${
-                      e.amount >= 0 ? 'text-emerald-300' : 'text-zinc-300'
+                      e.amount >= 0 ? 'text-[var(--vs-ink)]' : 'text-[var(--vs-ink-2)]'
                     }`}
                   >
                     {e.amount >= 0 ? '+' : ''}
                     {e.amount}
                   </span>
-                  <span className="ml-auto text-[12px] text-zinc-500">{formatTime(e.createdAt)}</span>
+                  <span className="ml-auto vs-note">{formatTime(e.createdAt)}</span>
                 </div>
-                <p className="mt-1 text-[12px] text-zinc-500">
+                <p className="mt-1 vs-note">
                   余额 {e.balanceBefore} → {e.balanceAfter}
                   {e.description ? ` · ${e.description}` : ''}
                 </p>

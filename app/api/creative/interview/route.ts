@@ -14,6 +14,7 @@
 
 import { NextResponse } from 'next/server'
 import { authenticateRequest, type AuthResult } from '@/lib/apiAuth'
+import { guardRateLimit } from '@/lib/rateLimit'
 import {
   INTERVIEW_QUESTIONS,
   CURRENT_INTERVIEW_VERSION,
@@ -23,6 +24,7 @@ import {
 import {
   normalizeCreatorDeclaration,
   isDeclarationComplete,
+  isDeclarationEmpty,
   type CreatorDeclaration,
   type DeclarationDimension,
 } from '@/lib/creative/creatorDeclaration'
@@ -55,24 +57,32 @@ export async function GET(req: Request) {
       (profile as Record<string, unknown> | null)?.creator_declaration
     )
 
+    // 增量补问：?dimensions=background,value_statement → 只返回这几问。
+    // 老用户新增维度时只补缺的，不要求重答整套问题。
+    const onlyRaw = new URL(req.url).searchParams.get('dimensions')
+    const requested = (onlyRaw ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const questions =
+      requested.length > 0
+        ? INTERVIEW_QUESTIONS.filter((q) => requested.includes(q.dimension))
+        : INTERVIEW_QUESTIONS
+
     return NextResponse.json({
       // 问题列表（静态，前端直接渲染）
-      questions: INTERVIEW_QUESTIONS as unknown as Array<
+      questions: questions as unknown as Array<
         Omit<InterviewQuestion, 'options'> & { options: Array<{ value: string; label: string; description?: string }> }
       >,
+      // 允许"完成"的最低回答数。补问只展示 3 问时不能还要求 6 个 ——
+      // 否则用户答完所有问题却点不了完成。
+      requiredCount: Math.min(6, questions.length),
       currentVersion: CURRENT_INTERVIEW_VERSION,
       // 当前访谈状态
       status: {
-        interviewed: !(
-          !declaration.creator_goal &&
-          !declaration.expression_profile &&
-          !declaration.thinking_profile &&
-          !declaration.narrative_preference &&
-          !declaration.emotional_preference &&
-          !declaration.quality_standard &&
-          !declaration.avoid_preference &&
-          !declaration.creation_scenario
-        ),
+        // 复用 isDeclarationEmpty：新增维度后不要再手写一份字段清单，
+        // 否则每次扩维都要记得同步改这里（此前就是 8 个字段的复制粘贴）。
+        interviewed: !isDeclarationEmpty(declaration),
         complete: isDeclarationComplete(declaration),
         declaration,
       },
@@ -100,6 +110,10 @@ export async function POST(req: Request) {
   try {
     const auth = await authenticate(req)
     if (!auth.ok) return auth.response
+
+    // 限流（跨实例）：问卷提交会写 style_profiles，属高频写操作
+    const limited = await guardRateLimit(auth.userId, 'creative-interview', 30, 60_000)
+    if (limited) return limited
 
     const body = (await req.json().catch(() => ({}))) as SubmitBody
     const answersRaw = Array.isArray(body.answers) ? body.answers : []

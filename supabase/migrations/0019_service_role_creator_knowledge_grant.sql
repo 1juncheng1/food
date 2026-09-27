@@ -1,0 +1,38 @@
+-- ============================================================
+-- 0019_service_role_creator_knowledge_grant.sql
+-- 补 service_role 对 creator_knowledge 的只读授权
+--
+-- 背景（2026-09-25 实测，见 CURRENT.md）：
+--   用 SUPABASE_SERVICE_ROLE_KEY 直连诊断时，creator_knowledge 返回
+--     42501 permission denied for table creator_knowledge
+--     hint: Grant the required privileges to the current role with:
+--           GRANT SELECT ON public.creator_knowledge TO service_role;
+--
+--   注意这和 0017 是同一类问题（GRANT 层缺失，**不是 RLS**），
+--   但成因不同、也更容易被误判：
+--     0005 建表时只做了 `grant ... to authenticated`，漏了 service_role。
+--     0005 自己的注释就写过"通过 SQL 编辑器建表不会自动授权、缺了会报
+--     permission denied"——只是当时只补了 authenticated 这一半。
+--
+--   误判代价：42501 与 42P01（表不存在）在 `?? []` 兜底下表现完全一样，
+--   都是"安静地拿到 0 行"。本次就一度被误报成"表未迁移、需要建表"，
+--   而实际上表一直在，只是没授权。
+--
+-- 为什么只授 SELECT（与 0017 同一条理由）：
+--   creator_knowledge 是用户业务数据，运行时一律走用户 token
+--   （builder.ts S6 知识候选源明确走 user token + select_own RLS）。
+--   service_role 只需要**读**权限做统计与诊断，不需要写；
+--   多授写权限等于给后台脚本开了绕过 RLS 改用户数据的口子。
+-- ============================================================
+
+grant select on public.creator_knowledge to service_role;
+
+-- 验证（应在 SQL Editor 返回一行，不报错）：
+--   select table_name, grantee, privilege_type
+--     from information_schema.role_table_grants
+--    where table_name = 'creator_knowledge'
+--      and grantee = 'service_role';
+--
+-- 或用 key 直连验证（应返回 200，不再是 403/42501）：
+--   curl "<SUPABASE_URL>/rest/v1/creator_knowledge?select=id&limit=1" \
+--        -H "apikey: <SERVICE_KEY>" -H "Authorization: Bearer <SERVICE_KEY>"

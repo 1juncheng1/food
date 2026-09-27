@@ -289,7 +289,7 @@ export async function verifyFeedbackAlignment(
     temperature: 0.1,
     max_tokens: maxTokens,
     jsonMode: true,
-    timeoutMs: llmTimeoutMs(maxTokens),
+    timeoutMs: llmTimeoutMs(maxTokens, 60),
     language: target,
     // 计费钩子：不传 billing 时不产生任何计费副作用
     ...(billing

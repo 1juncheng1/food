@@ -77,7 +77,24 @@ export function authFailureResponse(error: unknown): NextResponse {
 
 /** 鉴权结果：成功带客户端与身份；失败带**可直接 return 的响应** */
 export type AuthResult =
-  | { ok: true; supabase: SupabaseClient; userId: string; email: string | null }
+  | {
+      ok: true
+      supabase: SupabaseClient
+      userId: string
+      email: string | null
+      /**
+       * 邮箱是否已完成验证（对应 auth.users.email_confirmed_at）。
+       *
+       * 为什么把它放进鉴权结果：注册赠送 20 积分是按 user_id 幂等发放的，
+       * 一旦 Supabase 的 "Confirm email" 没开，批量注册就是批量领积分，
+       * 而 AI 消费只校验余额不校验身份可信度——等于白送 API 额度。
+       * 把状态在这里暴露出来，各路由才能按需决定要不要拦。
+       *
+       * 注意：本项目**不强制**校验它。是否拦截取决于部署形态，
+       * 详见 docs/runbooks/rate-limit-and-concurrency.md。
+       */
+      emailConfirmed: boolean
+    }
   | { ok: false; response: NextResponse }
 
 /** 成功分支的类型（可选鉴权的路由需要把它存成变量） */
@@ -133,7 +150,13 @@ export async function authenticateToken(
 
   if (error || !user) return { ok: false, response: authFailureResponse(error) }
 
-  return { ok: true, supabase, userId: user.id, email: user.email ?? null }
+  return {
+    ok: true,
+    supabase,
+    userId: user.id,
+    email: user.email ?? null,
+    emailConfirmed: typeof user.email_confirmed_at === 'string' && user.email_confirmed_at !== '',
+  }
 }
 
 /**

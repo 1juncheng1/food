@@ -30,15 +30,15 @@ const MODES: Array<{
 }> = [
   {
     key: 'archive',
-    emoji: '📖',
+    emoji: '',
     name: '分享完整创作档案',
     desc: '灵感起点 + AI 创作方向 + 版本迭代记录 + 最终作品，完整的创作者故事',
     badge: '推荐',
   },
-  { key: 'work', emoji: '📄', name: '只分享作品', desc: '仅发布最终文章正文、标签与创作风格' },
+  { key: 'work', emoji: '', name: '只分享作品', desc: '仅发布最终文章正文、标签与创作风格' },
   {
     key: 'inspiration',
-    emoji: '💡',
+    emoji: '',
     name: '只分享灵感',
     desc: '发布最初的创作想法、灵感来源与核心观点',
   },
@@ -145,14 +145,14 @@ export default function ShareToPlazaModal({
       onClick={() => !busy && onClose()}
     >
       <div
-        className="w-full max-w-xl max-h-[90vh] overflow-y-auto dark-scroll rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl"
+        className="w-full max-w-xl max-h-[90vh] overflow-y-auto dark-scroll rounded-2xl border border-[var(--vs-line)] bg-[var(--vs-void)] shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 头部 */}
-        <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-zinc-800/80 bg-zinc-950/95 backdrop-blur">
+        <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-[var(--vs-line)] bg-[var(--vs-void)] backdrop-blur">
           <div>
-            <h2 className="text-base font-semibold text-zinc-100">发布到灵感广场</h2>
-            <p className="text-xs text-zinc-500 mt-0.5 truncate max-w-sm">
+            <h2 className="text-base font-semibold text-[var(--vs-ink)]">发布到灵感广场</h2>
+            <p className="text-xs text-[var(--vs-ink-4)] mt-0.5 truncate max-w-sm">
               来自《{title}》· {versionCount} 个创作版本
             </p>
           </div>
@@ -160,7 +160,7 @@ export default function ShareToPlazaModal({
             type="button"
             onClick={onClose}
             disabled={busy}
-            className="text-zinc-500 hover:text-zinc-300 text-lg leading-none disabled:opacity-40"
+            className="text-[var(--vs-ink-4)] hover:text-[var(--vs-ink-2)] text-lg leading-none disabled:opacity-40"
             aria-label="关闭"
           >
             ✕
@@ -170,23 +170,23 @@ export default function ShareToPlazaModal({
         {postedId ? (
           /* ── 发布成功 ── */
           <div className="px-6 py-10 text-center">
-            <div className="text-4xl mb-3">🎉</div>
-            <p className="text-sm text-zinc-200 font-medium">已发布到灵感广场</p>
-            <p className="text-xs text-zinc-500 mt-1.5 leading-relaxed">
+            <div className="text-4xl mb-3"></div>
+            <p className="text-sm text-[var(--vs-ink)] font-medium">已发布到灵感广场</p>
+            <p className="vs-note mt-1.5 leading-relaxed">
               创作档案是发布瞬间的快照，之后作品继续迭代不会影响这条分享
             </p>
             <div className="mt-6 flex items-center justify-center gap-3">
               <button
                 type="button"
                 onClick={() => router.push(`/post/${postedId}`)}
-                className="text-xs px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition"
+                className="vs-btn vs-btn-primary vs-btn-sm"
               >
                 查看分享内容 →
               </button>
               <button
                 type="button"
                 onClick={onClose}
-                className="text-xs px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition"
+                className="vs-btn vs-btn-ghost vs-btn-sm"
               >
                 留在本页
               </button>
@@ -205,27 +205,27 @@ export default function ShareToPlazaModal({
                     onClick={() => setMode(m.key)}
                     className={`w-full text-left rounded-xl px-4 py-3 border transition flex items-start gap-3 ${
                       selected
-                        ? 'border-indigo-500/60 bg-indigo-500/10'
-                        : 'border-zinc-800 bg-zinc-900/50 hover:border-zinc-700'
+                        ? 'border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)]'
+                        : 'border-[var(--vs-line)] bg-transparent hover:border-[var(--vs-line-2)]'
                     }`}
                   >
                     <span className="text-xl leading-none mt-0.5">{m.emoji}</span>
                     <span className="flex-1 min-w-0">
                       <span className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-zinc-200">{m.name}</span>
+                        <span className="text-[14px] font-medium text-[var(--vs-ink)]">{m.name}</span>
                         {m.badge && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                          <span className="vs-verdict vs-note-warn">
                             {m.badge}
                           </span>
                         )}
                       </span>
-                      <span className="block text-[11px] text-zinc-500 mt-1 leading-relaxed">
+                      <span className="block text-[11px] text-[var(--vs-ink-4)] mt-1 leading-relaxed">
                         {m.desc}
                       </span>
                     </span>
                     <span
                       className={`mt-1 w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${
-                        selected ? 'border-indigo-400 bg-indigo-500' : 'border-zinc-600'
+                        selected ? 'border-[var(--vs-beam-line)] bg-[var(--vs-beam)]' : 'border-[var(--vs-line-2)]'
                       }`}
                     >
                       {selected && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
@@ -238,9 +238,9 @@ export default function ShareToPlazaModal({
             {/* 灵感起点（archive / inspiration 模式） */}
             {needInspiration && (
               <div>
-                <label className="text-xs font-medium text-zinc-300">
+                <label className="text-[13px] font-medium text-[var(--vs-ink-2)]">
                   {mode === 'archive' ? '① 灵感起点' : '灵感来源 / 创作初衷'}
-                  <span className="text-zinc-600 font-normal ml-2">
+                  <span className="text-[var(--vs-ink-4)] font-normal ml-2">
                     为什么会想创作这个主题？
                   </span>
                 </label>
@@ -250,13 +250,13 @@ export default function ShareToPlazaModal({
                   rows={4}
                   maxLength={2000}
                   placeholder="例如：看到身边朋友被裁员后的转变，想聊聊人在失败后如何重新定义自己……"
-                  className="mt-2 w-full rounded-lg bg-zinc-900/70 border border-zinc-800 focus:border-indigo-500/60 px-3 py-2.5 text-xs text-zinc-200 placeholder:text-zinc-600 outline-none resize-y dark-scroll"
+                  className="vs-input vs-input-area vs-resizable mt-2 w-full text-xs dark-scroll"
                 />
                 <div className="flex justify-between mt-1">
-                  <span className="text-[10px] text-zinc-600">
+                  <span className="text-[10px] text-[var(--vs-ink-4)]">
                     {mode === 'archive' && '已根据你的创作蓝图预填，可直接修改'}
                   </span>
-                  <span className="text-[10px] text-zinc-600">{inspiration.length}/2000</span>
+                  <span className="text-[10px] text-[var(--vs-ink-4)]">{inspiration.length}/2000</span>
                 </div>
               </div>
             )}
@@ -264,8 +264,8 @@ export default function ShareToPlazaModal({
             {/* 作者总结（仅档案模式，选填） */}
             {mode === 'archive' && (
               <div>
-                <label className="text-xs font-medium text-zinc-300">
-                  ② 作者总结 <span className="text-zinc-600 font-normal">（选填）</span>
+                <label className="text-[13px] font-medium text-[var(--vs-ink-2)]">
+                  ② 作者总结 <span className="text-[var(--vs-ink-4)] font-normal">（选填）</span>
                 </label>
                 <textarea
                   value={authorSummary}
@@ -273,27 +273,27 @@ export default function ShareToPlazaModal({
                   rows={2}
                   maxLength={500}
                   placeholder="这次 AI 协作给你带来的最大启发？一句话写给其他创作者……"
-                  className="mt-2 w-full rounded-lg bg-zinc-900/70 border border-zinc-800 focus:border-indigo-500/60 px-3 py-2.5 text-xs text-zinc-200 placeholder:text-zinc-600 outline-none resize-y dark-scroll"
+                  className="vs-input vs-input-area vs-resizable mt-2 w-full text-xs dark-scroll"
                 />
               </div>
             )}
 
             {/* 标签（选填） */}
             <div>
-              <label className="text-xs font-medium text-zinc-300">
-                标签 <span className="text-zinc-600 font-normal">（选填，逗号分隔）</span>
+              <label className="text-[13px] font-medium text-[var(--vs-ink-2)]">
+                标签 <span className="text-[var(--vs-ink-4)] font-normal">（选填，逗号分隔）</span>
               </label>
               <input
                 type="text"
                 value={tags}
                 onChange={(e) => setTags(e.target.value)}
                 placeholder="例如：人物成长, 创业故事"
-                className="mt-2 w-full rounded-lg bg-zinc-900/70 border border-zinc-800 focus:border-indigo-500/60 px-3 py-2 text-xs text-zinc-200 placeholder:text-zinc-600 outline-none"
+                className="vs-input vs-input-field mt-2 w-full text-xs"
               />
             </div>
 
             {error && (
-              <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+              <p className="vs-error">
                 {error}
               </p>
             )}
@@ -304,7 +304,7 @@ export default function ShareToPlazaModal({
                 type="button"
                 onClick={onClose}
                 disabled={busy}
-                className="text-xs px-4 py-2 rounded-lg text-zinc-400 hover:text-zinc-200 transition disabled:opacity-40"
+                className="text-xs px-4 py-2 rounded-lg text-[var(--vs-ink-3)] hover:text-[var(--vs-ink)] transition disabled:opacity-40"
               >
                 取消
               </button>
@@ -312,7 +312,7 @@ export default function ShareToPlazaModal({
                 type="button"
                 onClick={handlePublish}
                 disabled={busy}
-                className="text-xs px-5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
+                className="vs-btn vs-btn-primary vs-btn-sm inline-flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {busy && (
                   <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />

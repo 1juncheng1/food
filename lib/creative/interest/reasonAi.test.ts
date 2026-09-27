@@ -196,9 +196,49 @@ describe('buildReasonText（从 route.ts 迁移复用）', () => {
     expect(s).toContain('关注但还未写过')
   })
 
-  it('无 facts → 默认文案（与旧 route 行为一致）', () => {
-    expect(buildReasonText({ slot: 'exploration', clusterCode: null, evidence: {} })).toBe(
+  // 2026-09-24 口径变更：无 facts 时不再统一套用「基于你的创作兴趣推荐」。
+  // 那句话对 exploration 卡是假话（它本就不是从用户兴趣推出来的），
+  // 现在按槽位分别兜底，并对探索卡明确说破。
+  it('无 facts → 按槽位兜底，探索卡说破"不是从你已有兴趣推出来的"', () => {
+    expect(buildReasonText({ slot: 'exploration', clusterCode: null, evidence: {} })).toContain(
+      '不是从你已有兴趣推出来的'
+    )
+    expect(
+      buildReasonText({ slot: 'exploration', clusterCode: null, evidence: {} })
+    ).not.toContain('基于你的创作兴趣')
+  })
+
+  it('无 facts 且槽位未知 → 退回通用文案（不因为改口径就变成空串）', () => {
+    expect(buildReasonText({ slot: 'unknown_slot', clusterCode: null, evidence: {} })).toBe(
       '基于你的创作兴趣推荐'
     )
+  })
+
+  it('有 facts 但全部无法复述 → 同样走槽位兜底，而不是返回空串', () => {
+    const s = buildReasonText({
+      slot: 'core_gap',
+      clusterCode: null,
+      evidence: { facts: [{ type: 'other', count: 0 }] },
+    })
+    expect(s.length).toBeGreaterThan(0)
+  })
+})
+
+describe('buildReasonTextFromAiInput：模板理由不许编造', () => {
+  it('无簇名且无缺口说明 → null（宁可留空，也不写"基于你的创作兴趣推荐"）', async () => {
+    vi.stubGlobal('fetch', vi.fn())
+    const out = await generateAiReasons([
+      baseInput({ clusterLabel: null, gapReason: null, facts: [] }),
+    ])
+    expect(out[0].reasonSource).toBe('template')
+    expect(out[0].whyRecommend).toBeNull()
+  })
+
+  it('有簇名 → 复述簇名（簇是从用户自己行为聚出来的，这句话是真的）', async () => {
+    vi.stubGlobal('fetch', vi.fn())
+    const out = await generateAiReasons([
+      baseInput({ clusterLabel: 'AI创业', gapReason: null, facts: [] }),
+    ])
+    expect(out[0].whyRecommend).toContain('AI创业')
   })
 })

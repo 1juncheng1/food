@@ -9,8 +9,11 @@ import { normalizeRevisionPlan } from '@/lib/creative/workAgent'
 import { normalizeInjectedUnits } from '@/lib/creative/knowledgeInject'
 import { trackEvent } from '@/lib/creative/interest/eventTracker'
 import { runBuild } from '@/lib/creative/interest/builder'
+import { afterResponse } from '@/lib/afterResponse'
+import { parseVectorColumn } from '@/lib/creative/interest/vectorMath'
 
-export const maxDuration = 20
+// 后台增量重建（20–150s）挂在响应之后执行，需要实例存活窗口兜底
+export const maxDuration = 60
 export const dynamic = 'force-dynamic'
 
 /** 鉴权 + 项目归属校验，GET/PATCH 共用 */
@@ -246,7 +249,7 @@ export async function DELETE(
       .maybeSingle()
     const { data: versions, error: vErr } = await auth.supabase
       .from('generation_history')
-      .select('id, topic')
+      .select('id, topic, embedding')
       .eq('project_id', projectId)
     if (vErr) {
       console.error('查询项目版本行失败:', vErr.message)
@@ -295,15 +298,20 @@ export async function DELETE(
           targetType: 'generation',
           targetId: v.id,
           topicExcerpt: typeof v.topic === 'string' ? v.topic : null,
+          // 带向量才能把 -0.5 落到语义最近的簇上（scoreClusters 跳过无向量的负事件）；
+          // 版本行马上被删，向量必须在这里取出
+          embedding: parseVectorColumn((v as { embedding?: unknown }).embedding),
         })
       }
     } catch (eventErr) {
       console.error('画像撤回事件入账失败（删除已生效）:', eventErr)
     }
 
-    // 删除是低频高信号行为：立即增量重建，让推荐队列尽快反映删除（fire-and-forget，
-    // 在途折叠由 runBuild 步骤 0 兜底）；失败不影响删除结果
-    void runBuild(auth.supabase, auth.userId, 'incremental').catch(() => {})
+    // 删除是低频高信号行为：立即增量重建，让推荐队列尽快反映删除。
+    // 走 afterResponse 而非 void：serverless 下响应发出后进程随时被冻结，
+    // 20–150s 的 build 大概率跑不完（"删了作品推荐还是老样子"的静默根因）。
+    // 在途折叠由 runBuild 步骤 0 兜底；失败不影响删除结果。
+    afterResponse(() => runBuild(auth.supabase, auth.userId, 'incremental').catch(() => {}))
 
     return NextResponse.json({
       ok: true,

@@ -32,7 +32,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   if (loading) {
     return (
       <div className="w-full min-h-screen flex items-center justify-center">
-        <div className="flex items-center gap-2.5 text-[13px] text-indigo-200/90">
+        <div className="flex items-center gap-2.5 text-[13px] text-[var(--vs-ink-3)]">
           <span className="inline-flex items-center gap-[3px]">
             <i className="vs-ai-dot" />
             <i className="vs-ai-dot" />
@@ -48,7 +48,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   if (!session) {
     return (
       <div className="w-full min-h-screen flex items-center justify-center">
-        <div className="text-zinc-500 text-sm">正在跳转登录…</div>
+        <div className="text-[var(--vs-ink-4)] text-sm">正在跳转登录…</div>
       </div>
     )
   }

@@ -120,11 +120,11 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         title={collapsed ? item.label : undefined}
         className={`flex items-center ${collapsed ? 'justify-center px-0' : 'gap-3 px-3'} py-2.5 rounded-lg text-sm transition mb-0.5 ${collapsed ? 'mx-auto w-10' : ''} ${
           active
-            ? 'bg-indigo-500/15 text-indigo-300 font-medium'
-            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40'
+            ? 'border border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)] font-medium'
+            : 'text-[var(--vs-ink-3)] hover:text-[var(--vs-ink)] hover:bg-[var(--vs-void-1)]'
         }`}
       >
-        <span className={active ? 'text-indigo-400' : 'text-zinc-500'}>
+        <span className={active ? 'text-[var(--vs-ink)]' : 'text-[var(--vs-ink-4)]'}>
           <Icon size={18} strokeWidth={1.8} />
         </span>
         {!collapsed && <span>{item.label}</span>}
@@ -134,10 +134,10 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
   return (
     <aside
-      className={`fixed left-0 top-0 bottom-0 ${collapsed ? 'w-[60px]' : 'w-[220px]'} flex flex-col bg-zinc-950/85 backdrop-blur-xl border-r border-zinc-800/60 z-50 transition-all duration-300`}
+      className={`fixed left-0 top-0 bottom-0 ${collapsed ? 'w-[60px]' : 'w-[220px]'} flex flex-col bg-[var(--vs-void)] backdrop-blur-xl border-r border-[var(--vs-line)] z-50 transition-all duration-300`}
     >
       {/* ── Logo + 折叠按钮 ── */}
-      <div className="h-14 flex items-center border-b border-zinc-800/60">
+      <div className="h-14 flex items-center border-b border-[var(--vs-line)]">
         <Link
           href="/"
           title="视界 · 首页"
@@ -149,7 +149,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         <button
           onClick={onToggle}
           title={collapsed ? '展开侧栏' : '收起侧栏'}
-          className="w-9 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 transition shrink-0 border-l border-zinc-800/60"
+          className="w-9 h-full flex items-center justify-center text-[var(--vs-ink-4)] hover:text-[var(--vs-ink-2)] transition shrink-0 border-l border-[var(--vs-line)]"
         >
           <PanelLeftClose
             size={16}
@@ -166,7 +166,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         {NAV_GROUPS.map((group) => (
           <div key={group.title} className="mt-3">
             {!collapsed && (
-              <p className="mb-1 px-3 text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-600">
+              <p className="mb-1 px-3 text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--vs-ink-4)]">
                 {group.title}
               </p>
             )}
@@ -179,7 +179,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         {isAdmin && (
           <div className="mt-3">
             {!collapsed && (
-              <p className="mb-1 px-3 text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-600">
+              <p className="mb-1 px-3 text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--vs-ink-4)]">
                 管理
               </p>
             )}
@@ -191,14 +191,14 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
       </nav>
 
       {/* ── 底部：用户信息 + 退出 ── */}
-      <div className="border-t border-zinc-800/60 p-3">
+      <div className="border-t border-[var(--vs-line)] p-3">
         <div className={`flex items-center ${collapsed ? 'justify-center' : 'gap-3'} px-2 py-2`}>
-          <div className="w-8 h-8 rounded-full bg-indigo-500/20 text-indigo-300 flex items-center justify-center text-sm font-medium shrink-0">
+          <div className="w-8 h-8 rounded-full bg-[var(--vs-beam-wash)] text-[var(--vs-ink)] flex items-center justify-center text-sm font-medium shrink-0">
             {initial}
           </div>
           {!collapsed && (
             <div className="min-w-0 flex-1">
-              <p className="text-xs text-zinc-400 truncate">{email || '未登录'}</p>
+              <p className="text-xs text-[var(--vs-ink-3)] truncate">{email || '未登录'}</p>
             </div>
           )}
           <button
@@ -209,7 +209,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
               collapsed
                 ? 'absolute bottom-3 left-0 right-0 mx-auto w-8 h-8 flex items-center justify-center'
                 : 'shrink-0'
-            } text-zinc-500 hover:text-red-400 transition disabled:opacity-40`}
+            } text-[var(--vs-ink-4)] hover:text-[var(--vs-danger)] transition disabled:opacity-40`}
           >
             <LogOut size={collapsed ? 16 : 18} strokeWidth={1.8} />
           </button>

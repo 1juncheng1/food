@@ -6,7 +6,13 @@
 // ============================================================
 
 import { describe, expect, it, vi } from 'vitest'
-import { getSuggestionById, insertSuggestions, getActiveSuggestions } from './suggestionRepo'
+import {
+  getSuggestionById,
+  insertSuggestions,
+  getActiveSuggestions,
+  rerankColumnsMissing,
+  supersedeExceptBuild,
+} from './suggestionRepo'
 import type { SuggestionInsertInput } from './suggestionRepo'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
@@ -88,6 +94,57 @@ function insertInput(over: Partial<SuggestionInsertInput> = {}): SuggestionInser
   }
 }
 
+// ============================================================
+// 队列清空顺序：supersedeExceptBuild
+//
+// 锁的是一条用户可见的红线 —— **任何情况下 build 都不能把队列抹成 0 张**。
+// 旧实现无差别清空且必须先于 insert 调用，于是"候选被过滤空"或"落库失败"
+// 都会让用户首页一条推荐都没有（生产实测：某用户上一轮 14 张卡，下一个
+// build 产出 0 张 → 清零）。改成按 build_id 排除后，插入可以安全地放在
+// 清理之前，队列最坏也只是短暂多出几张旧卡，绝不会空。
+// ============================================================
+
+function mockUpdateCapture() {
+  const captured: Array<{ payload: Record<string, unknown>; filters: [string, unknown][] }> = []
+  // 同一数组引用：链式 filter 在 update 之后才挂上，靠引用同步可见
+  const filters: [string, unknown][] = []
+  const node: Record<string, unknown> = {
+    update: vi.fn((payload: Record<string, unknown>) => {
+      captured.push({ payload, filters })
+      return node
+    }),
+    eq: vi.fn((col: string, val: unknown) => {
+      filters.push([col, val])
+      return node
+    }),
+    neq: vi.fn((col: string, val: unknown) => {
+      filters.push(['neq:' + col, val])
+      return node
+    }),
+  }
+  const client = { from: vi.fn(() => node) } as unknown as SupabaseClient
+  return { client, captured }
+}
+
+describe('supersedeExceptBuild：只清旧批次，绝不误伤刚落库的卡', () => {
+  it('按 build_id 排除本批次，其余 active 卡置 superseded', async () => {
+    const { client, captured } = mockUpdateCapture()
+    await supersedeExceptBuild(client, 'user-1', 'build-new')
+
+    expect(captured).toHaveLength(1)
+    const calls = captured
+    expect(calls[0].payload).toEqual({ status: 'superseded' })
+    // 关键：必须是 neq('build_id', 本批次)，否则新卡刚落库就被自己清掉
+    expect(calls[0].filters).toEqual(
+      expect.arrayContaining([
+        ['user_id', 'user-1'],
+        ['status', 'active'],
+        ['neq:build_id', 'build-new'],
+      ])
+    )
+  })
+})
+
 /** 捕获 insert 载荷的可观测 mock */
 function mockInsertCapture() {
   const captured: Record<string, unknown>[] = []
@@ -140,5 +197,65 @@ describe('insertSuggestions：AI 理由字段映射（WF6）', () => {
     for (const col of ['core_question', 'why_recommend', 'creation_angle', 'related_knowledge', 'reason_source']) {
       expect(cols).toContain(col)
     }
+  })
+})
+
+// ============================================================
+// RULE v5：迁移 0018 需人工在 Supabase 执行。
+// 在它落地之前，任何带新列的读写都必须自动退回基础形状 ——
+// 缺列的代价只能是"在线重排不生效"，绝不能是"卡落不了库"或"推荐 500"。
+// ============================================================
+
+describe('缺列降级（迁移 0018 未执行时）', () => {
+  it('识别 PostgREST 的真实缺列报错（生产实测文案）', () => {
+    const real = {
+      message: 'column interest_suggestions.embedding does not exist',
+      code: '42703',
+    }
+    expect(rerankColumnsMissing(real)).toBe(true)
+  })
+
+  it('其它故障不被误判成缺列（否则真故障会被"降级"掩盖）', () => {
+    expect(
+      rerankColumnsMissing({ message: 'permission denied for table interest_suggestions' })
+    ).toBe(false)
+    expect(rerankColumnsMissing(null)).toBe(false)
+  })
+
+  it('insert 撞上缺列 → 去掉新列重插，卡不丢', async () => {
+    const attempts: Array<Record<string, unknown>[]> = []
+    let n = 0
+    const node: Record<string, unknown> = {
+      insert: vi.fn((rows: Record<string, unknown>[]) => {
+        attempts.push(rows)
+        n += 1
+        const failed = n === 1
+        return {
+          then: (resolve: (v: unknown) => unknown) =>
+            Promise.resolve(
+              failed
+                ? { error: { message: 'column interest_suggestions.embedding does not exist' } }
+                : { error: null }
+            ).then(resolve),
+        }
+      }),
+    }
+    const client = { from: vi.fn(() => node) } as unknown as SupabaseClient
+
+    const count = await insertSuggestions(client, 'user-1', 'build-1', [
+      insertInput({
+        embedding: new Array(1024).fill(0.01),
+        rankingFeatures: { ranking_version: 'interest-ranking-v1', quality: 0.8, tagOverlap: 1, knowledge: null },
+      }),
+    ])
+
+    expect(count).toBe(1)
+    expect(attempts).toHaveLength(2)
+    // 第一次带新列（失败），第二次剥离新列（成功）
+    expect(attempts[0][0]).toHaveProperty('embedding')
+    expect(attempts[1][0]).not.toHaveProperty('embedding')
+    expect(attempts[1][0]).not.toHaveProperty('ranking_features')
+    // 卡本身的内容一字不少
+    expect(attempts[1][0].title).toBe(attempts[0][0].title)
   })
 })

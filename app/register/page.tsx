@@ -28,15 +28,17 @@ export default function RegisterPage() {
   const [resending, setResending] = useState(false)
   const countdown = useCountdown(60)
 
-  // 已登录用户访问 /register:与 /login 对称,直接跳 dashboard
+  // 已登录用户访问 /register:与 /login 对称,统一走 /welcome。
+  // 出口收敛到一处:/welcome 自己判断是否需要访谈,不需要就直接进 dashboard,
+  // 避免"注册成功跳 A、已登录守卫跳 B"两个目标打架。
   useEffect(() => {
-    if (!authLoading && session) router.replace('/dashboard')
+    if (!authLoading && session) router.replace('/welcome')
   }, [authLoading, session, router])
 
   if (authLoading) {
     return (
-      <div className="inner-page gen-stage flex items-center justify-center" data-mode="inspiration">
-        <div className="animate-pulse text-zinc-600 text-sm">加载中…</div>
+      <div className="inner-page flex items-center justify-center" data-mode="inspiration">
+        <div className="animate-pulse text-[var(--vs-ink-4)] text-sm">加载中…</div>
       </div>
     )
   }
@@ -140,7 +142,9 @@ export default function RegisterPage() {
     }
 
     // 成功:verifyOtp 返回 session,onAuthStateChange 会触发 AuthProvider 更新
-    router.push('/dashboard')
+    // 跳 /welcome 而不是 dashboard:注册后的第一件事是创作者访谈,
+    // 已完成访谈的用户会在 /welcome 被直接送去 dashboard。
+    router.push('/welcome')
   }
 
   // 重新发送验证码(受 60s 倒计时 + 请求飞行中防重入双重限制)
@@ -168,15 +172,15 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="inner-page gen-stage flex items-center justify-center p-4" data-mode="inspiration">
-      <div className="glass w-full max-w-md rounded-2xl p-8">
-        <h1 className="text-2xl font-bold text-white mb-2">注册</h1>
-        <p className="text-zinc-400 text-sm mb-6">创建你的视界账号</p>
+    <div className="inner-page flex items-center justify-center p-4" data-mode="inspiration">
+      <div className="vs-frame w-full max-w-md rounded-2xl p-8">
+        <h1 className="text-2xl font-bold text-[var(--vs-ink)] mb-2">注册</h1>
+        <p className="vs-note mb-6">创建你的视界账号</p>
 
         {step === 'idle' && (
           <form onSubmit={handleSendCode} className="space-y-4">
             <div>
-              <label className="block text-sm text-zinc-400 mb-2">邮箱</label>
+              <label className="block text-[14px] mb-2 text-[var(--vs-ink-3)]">邮箱</label>
               <Input
                 type="email"
                 value={email}
@@ -187,7 +191,7 @@ export default function RegisterPage() {
               />
             </div>
             <div>
-              <label className="block text-sm text-zinc-400 mb-2">密码（至少6位）</label>
+              <label className="block text-[14px] mb-2 text-[var(--vs-ink-3)]">密码（至少6位）</label>
               <Input
                 type="password"
                 value={password}
@@ -200,7 +204,7 @@ export default function RegisterPage() {
             </div>
 
             {error && (
-              <div className="bg-red-500/10 text-red-400 text-sm rounded-lg p-3">
+              <div className="vs-error">
                 {error}
               </div>
             )}
@@ -209,9 +213,9 @@ export default function RegisterPage() {
               {loading ? '发送中...' : '获取验证码并注册'}
             </Button>
 
-            <p className="text-sm text-zinc-500 pt-2 text-center">
+            <p className="vs-note pt-2 text-center">
               已有账号？{' '}
-              <Link href="/login" className="text-indigo-400 hover:underline">
+              <Link href="/login" className="text-[var(--vs-ink)] hover:underline">
                 去登录
               </Link>
             </p>
@@ -220,16 +224,16 @@ export default function RegisterPage() {
 
         {step === 'code-sent' && (
           <form onSubmit={handleVerify} className="space-y-4">
-            <div className="bg-indigo-500/10 text-indigo-300 text-sm rounded-lg p-3">
+            <div className="vs-frame p-3 text-[14px]">
               验证码已发送至 {email}
             </div>
             <div>
-              <label className="block text-sm text-zinc-400 mb-2">验证码</label>
+              <label className="block text-[14px] mb-2 text-[var(--vs-ink-3)]">验证码</label>
               <OtpInput value={otp} onChange={setOtp} disabled={loading} />
             </div>
 
             {error && (
-              <div className="bg-red-500/10 text-red-400 text-sm rounded-lg p-3">
+              <div className="vs-error">
                 {error}
               </div>
             )}
@@ -243,7 +247,7 @@ export default function RegisterPage() {
                 type="button"
                 onClick={handleResend}
                 disabled={countdown.isCounting || loading || resending}
-                className="text-indigo-400 hover:underline disabled:text-zinc-500 disabled:no-underline"
+                className="text-[var(--vs-ink)] hover:underline disabled:text-[var(--vs-ink-4)] disabled:no-underline"
               >
                 {resending
                   ? '发送中...'
@@ -258,7 +262,7 @@ export default function RegisterPage() {
                   setOtp('')
                   setError('')
                 }}
-                className="text-zinc-400 hover:underline"
+                className="text-[var(--vs-ink-3)] hover:underline"
               >
                 修改邮箱
               </button>

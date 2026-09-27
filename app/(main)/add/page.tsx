@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { getValidSession } from '@/lib/supabaseClient'
 import Link from 'next/link'
@@ -359,33 +359,12 @@ export default function AddPage() {
   const traits = knowledge ? extractKnowledgeTraits(knowledge) : []
 
   return (
-    <div className="inner-page gen-stage" data-mode="inspiration">
-      {/* 星空氛围层 */}
-      <div className="gen-mode-ambient">
-        <i className="gm-star" style={{ top: '22%', left: '78%' }} />
-        <i className="gm-star" style={{ top: '34%', left: '36%' }} />
-        <i className="gm-star" style={{ top: '12%', left: '58%' }} />
-        <i className="gm-star" style={{ top: '46%', left: '8%' }} />
-        <i className="gm-star" style={{ top: '28%', left: '92%' }} />
-        <i className="gm-star" style={{ top: '58%', left: '68%' }} />
-        <i className="gm-star" style={{ top: '66%', left: '24%' }} />
-        <i className="gm-star" style={{ top: '74%', left: '84%' }} />
-        <i className="gm-star" style={{ top: '18%', left: '46%' }} />
-        <i className="gm-star" style={{ top: '52%', left: '50%' }} />
-        <i className="gm-star" style={{ top: '84%', left: '10%' }} />
-        <i className="gm-star" style={{ top: '80%', left: '58%' }} />
-        <i className="gm-star" style={{ top: '40%', left: '88%' }} />
-        <i className="gm-star" style={{ top: '90%', left: '34%' }} />
-        <i className="gm-meteor" style={{ '--m-top': '-4%', '--m-left': '22%', '--dur': '7s', '--delay': '-2s', '--dx': '-260px', '--dy': '380px', '--len': '90px' } as CSSProperties} />
-        <i className="gm-meteor" style={{ '--m-top': '-2%', '--m-left': '66%', '--dur': '9s', '--delay': '-6s', '--dx': '-300px', '--dy': '430px', '--len': '110px' } as CSSProperties} />
-        <i className="gm-meteor" style={{ '--m-top': '4%', '--m-left': '92%', '--dur': '8s', '--delay': '-4s', '--dx': '-240px', '--dy': '350px', '--len': '80px' } as CSSProperties} />
-      </div>
-
+    <div className="inner-page " data-mode="inspiration">
       <div className="inner-container gen-sheet">
         {/* ── 页眉：素材不是收藏，而是 AI 认识你的原始材料 ── */}
         <Link
           href="/materials"
-          className="mb-5 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
+          className="mb-5 vs-link"
         >
           ← 返回我的素材
         </Link>
@@ -405,7 +384,7 @@ export default function AddPage() {
               <button
                 type="button"
                 onClick={resetToIdle}
-                className="shrink-0 rounded-xl border border-white/[0.1] px-3.5 py-2.5 text-[13px] font-medium text-zinc-300 transition hover:border-white/20 hover:text-white"
+                className="vs-btn vs-btn-ghost vs-btn-sm shrink-0"
               >
                 重新输入
               </button>
@@ -414,7 +393,7 @@ export default function AddPage() {
         />
 
         {/* ── 稿纸卡 ── */}
-        <form onSubmit={handleAnalyze} className="gen-paper glass anim-rise">
+        <form onSubmit={handleAnalyze} className="vs-panel vs-rise">
           {/* Tab 切换 */}
           <div>
             <div className="mode-switch" role="group" aria-label="素材类型">
@@ -429,9 +408,8 @@ export default function AddPage() {
                 disabled={stage !== 'idle'}
                 aria-pressed={activeTab === 'text'}
                 data-active={activeTab === 'text' || undefined}
-                className={`mode-switch-btn flex items-center justify-center gap-2 ${activeTab === 'text' ? 'text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+                className={`mode-switch-btn flex items-center justify-center gap-2 ${activeTab === 'text' ? 'text-[var(--vs-ink)]' : 'text-[var(--vs-ink-3)] hover:text-[var(--vs-ink)]'}`}
               >
-                <span className="mode-switch-ico">📝</span>
                 <span>文本</span>
               </button>
               <button
@@ -440,9 +418,9 @@ export default function AddPage() {
                 disabled={stage !== 'idle'}
                 aria-pressed={activeTab === 'image'}
                 data-active={activeTab === 'image' || undefined}
-                className={`mode-switch-btn flex items-center justify-center gap-2 ${activeTab === 'image' ? 'text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+                className={`mode-switch-btn flex items-center justify-center gap-2 ${activeTab === 'image' ? 'text-[var(--vs-ink)]' : 'text-[var(--vs-ink-3)] hover:text-[var(--vs-ink)]'}`}
               >
-                <span className="mode-switch-ico">🖼️</span>
+                <span className="mode-switch-ico">️</span>
                 <span>图片</span>
               </button>
             </div>
@@ -476,7 +454,7 @@ export default function AddPage() {
                   const selected = e.target.files?.[0]
                   if (selected) handleSelectFile(selected)
                 }}
-                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 text-sm file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-indigo-600 file:text-white disabled:opacity-50"
+                className="vs-input vs-input-field w-full file:mr-4 file:py-2 file:px-4 file:rounded-[var(--vs-r-sm)] file:border-0 file:bg-[var(--vs-beam)] file:text-[var(--vs-beam-text)] disabled:opacity-50"
               />
               {preview && (
                 <img src={preview} alt="预览" className="mt-6 max-h-64 rounded-xl mx-auto" />
@@ -485,15 +463,15 @@ export default function AddPage() {
             </div>
           )}
 
-          {error && <p className="text-red-400 text-sm text-center">{error}</p>}
-          {success && <p className="text-emerald-400 text-sm text-center">{success}</p>}
+          {error && <p className="vs-error text-center">{error}</p>}
+          {success && <p className="text-[14px] text-center text-[var(--vs-ink)]">{success}</p>}
 
           {/* ── 状态机各阶段 ── */}
 
           {/* idle：提交按钮 */}
           {stage === 'idle' && (
             <div className="pt-2">
-              <button type="submit" className="w-full btn-shine bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-3.5 rounded-xl transition">
+              <button type="submit" className="vs-btn vs-btn-primary w-full">
                 添加
               </button>
             </div>
@@ -502,7 +480,7 @@ export default function AddPage() {
           {/* analyzing */}
           {stage === 'analyzing' && (
             <div className="pt-2">
-              <div className="w-full glass text-zinc-400 font-medium py-3.5 rounded-xl text-center">
+              <div className="vs-frame w-full py-3.5 text-center font-medium text-[var(--vs-ink-3)]">
                 AI 正在理解素材...
               </div>
             </div>
@@ -511,18 +489,18 @@ export default function AddPage() {
           {/* clarify */}
           {stage === 'clarify' && questions.length > 0 && (
             <div className="space-y-6">
-              <div className="glass rounded-xl px-6 py-4">
-                <p className="text-sm text-zinc-300 mb-2">AI 需要更多信息来理解这条素材</p>
-                <p className="text-xs text-zinc-500">回答这些问题让 AI 更准确地分析素材用途</p>
+              <div className="vs-frame px-6 py-4">
+                <p className="text-[14px] mb-2 text-[var(--vs-ink-2)]">AI 需要更多信息来理解这条素材</p>
+                <p className="vs-note">回答这些问题让 AI 更准确地分析素材用途</p>
               </div>
               {questions.map((q, idx) => {
                 const ans = clarifyAnswers[q.id]
                 const selectedValue = ans && !ans.isCustom ? ans.answer : ''
                 const customValue = ans && ans.isCustom ? ans.answer : ''
                 return (
-                  <div key={q.id} className="glass rounded-xl px-6 py-5">
-                    <div className="text-sm text-zinc-200 mb-3">
-                      <span className="text-zinc-500 mr-2">{idx + 1}.</span>
+                  <div key={q.id} className="vs-frame px-6 py-5">
+                    <div className="text-[14px] mb-3 text-[var(--vs-ink)]">
+                      <span className="text-[var(--vs-ink-4)] mr-2">{idx + 1}.</span>
                       {q.question}
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -534,8 +512,8 @@ export default function AddPage() {
                           aria-pressed={selectedValue === opt}
                           className={`text-sm px-3 py-1.5 rounded-lg border transition ${
                             selectedValue === opt
-                              ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
-                              : 'bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:border-zinc-600'
+                              ? 'border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]'
+                              : 'bg-transparent border-[var(--vs-line)] text-[var(--vs-ink-3)] hover:border-[var(--vs-line-2)]'
                           }`}
                         >
                           {opt}
@@ -548,21 +526,21 @@ export default function AddPage() {
                         value={customValue}
                         onChange={(e) => setClarifyCustom(q, e.target.value)}
                         placeholder="或自定义..."
-                        className="w-full mt-3 bg-transparent border border-zinc-700/50 rounded-lg px-3 py-2 text-sm text-zinc-200 outline-none focus:border-indigo-500/50"
+                        className="vs-input vs-input-field w-full mt-3"
                       />
                     )}
                   </div>
                 )
               })}
               <div className="flex gap-3">
-                <button type="button" onClick={resetToIdle} className="px-5 py-2.5 rounded-xl text-sm border border-zinc-700 text-zinc-400 hover:border-zinc-600 transition">
+                <button type="button" onClick={resetToIdle} className="vs-btn vs-btn-ghost">
                   返回
                 </button>
                 <button
                   type="button"
                   onClick={handleClarifySubmit}
                   disabled={Object.values(clarifyAnswers).filter((a) => a.answer.trim()).length === 0}
-                  className="flex-1 btn-shine bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-medium py-2.5 rounded-xl transition"
+                  className="vs-btn vs-btn-primary flex-1 disabled:opacity-40"
                 >
                   提交回答
                 </button>
@@ -574,38 +552,38 @@ export default function AddPage() {
           {stage === 'confirming' && (
             <div className="space-y-6">
               {degraded ? (
-                <div className="glass rounded-xl px-6 py-4" style={{ borderColor: 'rgba(245, 158, 11, 0.2)' }}>
-                  <p className="text-sm text-amber-400 mb-2">AI 分析暂时不可用</p>
-                  <p className="text-xs text-zinc-500">素材仍可保存，但本次未生成知识结构。保存后可在素材库查看。</p>
+                <div className="vs-frame vs-warn px-6 py-4">
+                  <p className="vs-note vs-note-warn mb-2">AI 分析暂时不可用</p>
+                  <p className="vs-note">素材仍可保存，但本次未生成知识结构。保存后可在素材库查看。</p>
                 </div>
               ) : knowledge ? (
-                <div className="glass rounded-xl px-6 py-5">
+                <div className="vs-frame px-6 py-5">
                   <div className="flex items-center justify-between mb-4">
-                    <p className="text-sm text-zinc-200">AI 已理解素材，请确认后保存</p>
+                    <p className="text-[14px] text-[var(--vs-ink)]">AI 已理解素材，请确认后保存</p>
                     {retryCount > 0 && (
-                      <span className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-2 py-0.5">
+                      <span className="vs-verdict vs-note-warn">
                         已纠错 {retryCount} 次
                       </span>
                     )}
                   </div>
                   <div className="space-y-3 text-sm">
                     <div>
-                      <span className="text-zinc-500">意义：</span>
-                      <span className="text-zinc-200">{knowledge.meaning}</span>
+                      <span className="vs-note">意义：</span>
+                      <span className="text-[var(--vs-ink)]">{knowledge.meaning}</span>
                     </div>
                     <div>
-                      <span className="text-zinc-500">用途：</span>
-                      <span className="text-zinc-200">{knowledge.content_type}</span>
+                      <span className="vs-note">用途：</span>
+                      <span className="text-[var(--vs-ink)]">{knowledge.content_type}</span>
                     </div>
                     {knowledge.creation_usage && (
                       <div>
-                        <span className="text-zinc-500">创作用途：</span>
-                        <span className="text-zinc-200">{knowledge.creation_usage}</span>
+                        <span className="vs-note">创作用途：</span>
+                        <span className="text-[var(--vs-ink)]">{knowledge.creation_usage}</span>
                       </div>
                     )}
                     <div>
-                      <span className="text-zinc-500">置信度：</span>
-                      <span className={`text-zinc-200 ${(knowledge.confidence ?? 0) >= 0.7 ? 'text-emerald-400' : (knowledge.confidence ?? 0) >= 0.5 ? 'text-amber-400' : 'text-red-400'}`}>
+                      <span className="vs-note">置信度：</span>
+                      <span className={`text-[var(--vs-ink-2)] ${(knowledge.confidence ?? 0) >= 0.7 ? 'text-[var(--vs-ink)]' : (knowledge.confidence ?? 0) >= 0.5 ? 'text-[var(--vs-ink-2)]' : 'text-[var(--vs-ink-4)]'}`}>
                         {Math.round((knowledge.confidence ?? 0) * 100)}%
                       </span>
                     </div>
@@ -614,9 +592,9 @@ export default function AddPage() {
                   <div className="mt-4 flex flex-wrap gap-2">
                     {traits.map((t) => (
                       <div key={t.dimension} className="flex items-center gap-1">
-                        <span className="text-[11px] text-zinc-500">{t.label}：</span>
+                        <span className="vs-note">{t.label}：</span>
                         {t.tags.map((tag) => (
-                          <span key={tag} className="text-[11px] px-2 py-0.5 rounded-full border border-indigo-500/30 bg-indigo-500/10 text-indigo-300">
+                          <span key={tag} className="vs-verdict">
                             {tag}
                           </span>
                         ))}
@@ -625,8 +603,8 @@ export default function AddPage() {
                   </div>
                   {/* 用户纠错区 */}
                   {retryCount < MAX_RETRY && (
-                    <div className="mt-5 pt-4 border-t border-zinc-800">
-                      <button type="button" onClick={() => setShowCorrection((v) => !v)} className="text-xs text-zinc-500 hover:text-amber-400 transition">
+                    <div className="mt-5 pt-4 border-t border-[var(--vs-line)]">
+                      <button type="button" onClick={() => setShowCorrection((v) => !v)} className="vs-link">
                         {showCorrection ? '收起' : 'AI 理解有误？点此指出'}
                       </button>
                       {showCorrection && (
@@ -636,13 +614,13 @@ export default function AddPage() {
                             onChange={(e) => setCorrectionInput(e.target.value)}
                             rows={3}
                             placeholder="比如：这不是剧情素材，这是用来对比两种创业思路的案例"
-                            className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-white outline-none focus:ring-2 focus:ring-amber-500/30 resize-none"
+                            className="vs-input vs-input-area w-full"
                           />
                           <div className="flex gap-2">
-                            <button type="button" onClick={() => { setCorrectionInput(''); setShowCorrection(false) }} className="text-xs px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-500 hover:text-zinc-300 transition">
+                            <button type="button" onClick={() => { setCorrectionInput(''); setShowCorrection(false) }} className="vs-btn vs-btn-ghost vs-btn-sm">
                               取消
                             </button>
-                            <button type="button" onClick={handleReAnalyze} disabled={!correctionInput.trim()} className="flex-1 text-xs py-1.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 disabled:opacity-40 transition">
+                            <button type="button" onClick={handleReAnalyze} disabled={!correctionInput.trim()} className="vs-btn vs-btn-ghost vs-btn-sm flex-1 disabled:opacity-40">
                               重新分析（剩余 {MAX_RETRY - retryCount} 次）
                             </button>
                           </div>
@@ -654,10 +632,10 @@ export default function AddPage() {
               ) : null}
 
               {/* ── Phase 2：素材元数据（materialType / 分组 / 来源）── */}
-              <div className="glass rounded-xl px-5 py-5 space-y-5">
+              <div className="vs-frame px-5 py-5 space-y-5">
                 <div>
-                  <p className="text-xs text-zinc-400 mb-1">素材类型</p>
-                  <p className="text-[11px] text-zinc-500 mb-3">
+                  <p className="vs-mark mb-1">素材类型</p>
+                  <p className="vs-note mb-3">
                     选好后 AI 创作时按对应规则使用（默认「其他」）
                   </p>
                   <div className="flex flex-wrap gap-2">
@@ -685,12 +663,12 @@ export default function AddPage() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <p className="text-xs text-zinc-400 mb-1">分组</p>
-                    <p className="text-[11px] text-zinc-500 mb-2">归类到已有分组，便于管理</p>
+                    <p className="vs-mark mb-1">分组</p>
+                    <p className="vs-note mb-2">归类到已有分组，便于管理</p>
                     <select
                       value={groupId}
                       onChange={(e) => setGroupId(e.target.value)}
-                      className="w-full bg-zinc-900/60 border border-zinc-800 rounded-lg px-3 py-2.5 text-sm text-white outline-none focus:border-indigo-500/50 cursor-pointer"
+                      className="vs-input vs-select w-full"
                     >
                       <option value="">不分组</option>
                       {groups.map((g) => (
@@ -702,12 +680,12 @@ export default function AddPage() {
                   </div>
 
                   <div>
-                    <p className="text-xs text-zinc-400 mb-1">来源</p>
-                    <p className="text-[11px] text-zinc-500 mb-2">素材来源（默认「手输」）</p>
+                    <p className="vs-mark mb-1">来源</p>
+                    <p className="vs-note mb-2">素材来源（默认「手输」）</p>
                     <select
                       value={source}
                       onChange={(e) => setSource(e.target.value as MaterialSource)}
-                      className="w-full bg-zinc-900/60 border border-zinc-800 rounded-lg px-3 py-2.5 text-sm text-white outline-none focus:border-indigo-500/50 cursor-pointer"
+                      className="vs-input vs-select w-full"
                     >
                       {SOURCE_OPTIONS.map((s) => (
                         <option key={s} value={s}>
@@ -720,15 +698,15 @@ export default function AddPage() {
               </div>
 
               <div className="flex gap-3">
-                <button type="button" onClick={resetToIdle} className="px-5 py-2.5 rounded-xl text-sm border border-zinc-700 text-zinc-400 hover:border-zinc-600 transition">
+                <button type="button" onClick={resetToIdle} className="vs-btn vs-btn-ghost">
                   重新输入
                 </button>
                 {degraded ? (
-                  <button type="button" onClick={handleSaveWithoutAnalysis} className="flex-1 btn-shine bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2.5 rounded-xl transition">
+                  <button type="button" onClick={handleSaveWithoutAnalysis} className="vs-btn vs-btn-primary flex-1">
                     直接保存
                   </button>
                 ) : (
-                  <button type="button" onClick={handleConfirmSave} className="flex-1 btn-shine bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2.5 rounded-xl transition">
+                  <button type="button" onClick={handleConfirmSave} className="vs-btn vs-btn-primary flex-1">
                     确认保存
                   </button>
                 )}
@@ -739,7 +717,7 @@ export default function AddPage() {
           {/* saving */}
           {stage === 'saving' && (
             <div className="pt-2">
-              <div className="w-full glass text-zinc-400 font-medium py-3.5 rounded-xl text-center">
+              <div className="vs-frame w-full py-3.5 text-center font-medium text-[var(--vs-ink-3)]">
                 保存中...
               </div>
             </div>
@@ -748,7 +726,7 @@ export default function AddPage() {
           {/* done */}
           {stage === 'done' && (
             <div className="pt-2">
-              <div className="w-full bg-emerald-500/20 text-emerald-300 font-medium py-3.5 rounded-xl text-center border border-emerald-500/30">
+              <div className="vs-frame w-full py-3.5 text-center font-medium text-[var(--vs-ink)]">
                 添加成功！返回素材库...
               </div>
             </div>

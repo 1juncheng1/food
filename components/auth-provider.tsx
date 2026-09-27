@@ -30,60 +30,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     // 初始加载：从 localStorage 恢复 session
     supabase.auth.getSession().then(async ({ data: { session } }) => {
-      // 会话验活：getSession 只读本地缓存，服务端已注销的僵尸 token 会造成
-      // "UI 以为已登录、API 全部 401、灵感推荐静默降级为平台推荐"的假象。
-      // getUser 走服务端校验；失效则只清本设备（scope:'local' 不误杀其他设备会话）。
-      if (session) {
-        const { error } = await supabase.auth.getUser()
-        if (error) {
-          // token 可能只是过期了（JWT 默认 1h 有效期），先尝试 refresh 而非直接 signOut。
-          // 直接 signOut 会清 localStorage，与并发执行的 getValidSession() 竞态，
-          // 导致页面级 API 拿到旧 token 请求 → 401 "用户验证失败"。
-          //
-          // ① 网络不通时 getUser 同样失败，但那不等于会话失效。
-          //    此时若往下走到 signOut 清掉本地会话，网络恢复后用户仍要重新登录（误踢）。
-          if (isAuthTransportError(error)) {
-            setStorageOwner(session.user.id)
-            setSession(session)
-            setLoading(false)
-            return
-          }
-
-          // ② 复用与 getValidSession() 相同的那一次刷新：两者各自发起会互相作废
-          //    对方的 refresh_token，并发时必有一方拿到 "Invalid Refresh Token"。
-          const { session: refreshed, error: refreshErr } = await refreshSessionDetailed()
-          if (refreshed) {
-            // refresh 成功 → 用新 session 继续（不 signOut）
-            setStorageOwner(refreshed.user.id)
-            setSession(refreshed)
-            setLoading(false)
-            return
-          }
-
-          // refresh 也失败：只有**凭证确实失效**才清会话。
-          // 服务端 5xx、项目暂停、限流等可用性问题一律保留会话——清掉之后用户
-          // 既登不上（同一条链路还是不通）又回不去，比"带着旧 token 继续用"更糟。
-          if (isCredentialInvalid(refreshErr) || isCredentialInvalid(error)) {
-            await supabase.auth.signOut({ scope: 'local' })
-            setStorageOwner(null)
-            setSession(null)
-            setLoading(false)
-            return
-          }
-
-          // 非凭证类失败：保留本地会话，等网络恢复后自然可用
-          console.warn('[auth] 会话验活失败（非凭证问题，保留登录态）:', String((error as { message?: string })?.message ?? error))
-          setStorageOwner(session.user.id)
-          setSession(session)
-          setLoading(false)
-          return
-        }
-      }
+      // ── 乐观放行：先让页面渲染出来 ──
+      // 旧实现在这里 await getUser() 走完一整轮网络往返才 setLoading(false)，
+      // 于是每次刷新/进入页面，用户都要盯着"正在准备你的创作空间…"等 Supabase。
+      // 绝大多数会话本来就是有效的，为验活阻塞整个首屏不划算：
+      // 先用本地缓存放行，验活挪到后台，真出问题再纠正。
+      //
       // 必须先于 setSession/setLoading：AuthGuard 放行渲染子页时，
       // 本地存储归属已就绪，子页读到的一定是当前用户的内容桶
       setStorageOwner(session?.user.id ?? null)
       setSession(session)
       setLoading(false)
+
+      if (!session) return
+
+      // ── 后台验活 ──
+      // getSession 只读本地缓存，服务端已注销的僵尸 token 会造成
+      // "UI 以为已登录、API 全部 401、灵感推荐静默降级为平台推荐"的假象。
+      // getUser 走服务端校验；失效则只清本设备（scope:'local' 不误杀其他设备会话）。
+      const { error } = await supabase.auth.getUser()
+      if (!error) return
+
+      // token 可能只是过期了（JWT 默认 1h 有效期），先尝试 refresh 而非直接 signOut。
+      // 直接 signOut 会清 localStorage，与并发执行的 getValidSession() 竞态，
+      // 导致页面级 API 拿到旧 token 请求 → 401 "用户验证失败"。
+      //
+      // ① 网络不通时 getUser 同样失败，但那不等于会话失效。
+      //    此时若往下走到 signOut 清掉本地会话，网络恢复后用户仍要重新登录（误踢）。
+      if (isAuthTransportError(error)) return
+
+      // ② 复用与 getValidSession() 相同的那一次刷新：两者各自发起会互相作废
+      //    对方的 refresh_token，并发时必有一方拿到 "Invalid Refresh Token"。
+      const { session: refreshed, error: refreshErr } = await refreshSessionDetailed()
+      if (refreshed) {
+        // refresh 成功 → 用新 session 继续（不 signOut）
+        setStorageOwner(refreshed.user.id)
+        setSession(refreshed)
+        return
+      }
+
+      // refresh 也失败：只有**凭证确实失效**才清会话。
+      // 服务端 5xx、项目暂停、限流等可用性问题一律保留会话——清掉之后用户
+      // 既登不上（同一条链路还是不通）又回不去，比"带着旧 token 继续用"更糟。
+      if (isCredentialInvalid(refreshErr) || isCredentialInvalid(error)) {
+        await supabase.auth.signOut({ scope: 'local' })
+        setStorageOwner(null)
+        setSession(null)
+        return
+      }
+
+      // 非凭证类失败：保留本地会话，等网络恢复后自然可用
+      console.warn('[auth] 会话验活失败（非凭证问题，保留登录态）:', String((error as { message?: string })?.message ?? error))
     })
 
     // 监听登录状态变化（登录/退出/token 刷新）

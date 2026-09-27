@@ -86,6 +86,81 @@ export function hardFilter(
   })
 }
 
+// ── 候选向量化 ──
+
+/** bge-m3 输出维度，与 config.EMBEDDING_MODEL 声明的 1024 对齐 */
+const EMBEDDING_DIM = 1024
+
+/**
+ * 候选的向量化文本：title + topic，**刻意不含 description**。
+ *
+ * description 在 S1/S2/S3 里是「你分析过这个主题，价值分 8/10」这类元信息，
+ * 把它混进向量只会稀释方向信号。可比性才是这里的全部要求：簇质心由事件 topic
+ * 的嵌入均值而来，已写过的向量也来自 work_generate 的 topic——候选必须用
+ * 同一种文本（"这张卡在讲什么方向"）才能和它们放在同一空间里比。
+ */
+export function candidateEmbedText(c: Pick<Candidate, 'title' | 'topic'>): string {
+  return [c.title, c.topic]
+    .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+    .join(' ')
+    .trim()
+    .slice(0, 8000)
+}
+
+/**
+ * 给缺失向量的候选补 embedding（就地写入，返回补上的条数）。
+ *
+ * 为什么必须有这一步：S4（LLM 生成）与 S6（知识单元）产出的候选 embedding
+ * 恒为 null，S2 也刻意不外泄 ci_items 的原始向量。而队列里绝大多数卡来自 S4。
+ * 没有向量的候选会同时让三件事失效：
+ *   1. hardFilter 的「已写过 / 已 ✕ / 队列内」三重查重 —— 它遇到 null 直接放行
+ *   2. 候选 → 簇的余弦匹配 —— 全部落到 no_cluster，兴趣画像无从参与排序
+ *   3. 语义相似度 / 近期行为 / 标签命中三个评分子项 —— 恒为兜底值
+ * 也就是说在补上这一步之前，排序链路对绝大多数卡是断的。
+ *
+ * 就地修改而非返回新数组：builder 用 WeakMap（forceBind）以候选对象引用为键，
+ * 换对象会让显式绑簇的引用查不到。
+ *
+ * 失败语义：embedFn 返回 null 或抛错 → 该条保持原状（null），其余照常。
+ * 拿不到向量只退回今天之前的行为，不能让 build 失败。
+ */
+export async function embedCandidates(
+  candidates: Candidate[],
+  embedFn: (text: string) => Promise<number[] | null>,
+  concurrency = 6
+): Promise<number> {
+  const missing = candidates.filter(
+    (c) => !Array.isArray(c.embedding) || c.embedding.length !== EMBEDDING_DIM
+  )
+  if (!missing.length) return 0
+
+  let cursor = 0
+  let done = 0
+  const worker = async (): Promise<void> => {
+    while (cursor < missing.length) {
+      const i = cursor++
+      const c = missing[i]
+      const text = candidateEmbedText(c)
+      if (!text) continue
+      try {
+        const vec = await embedFn(text)
+        if (Array.isArray(vec) && vec.length === EMBEDDING_DIM) {
+          c.embedding = vec
+          done++
+        }
+      } catch (e) {
+        console.warn(
+          '[candidates] 候选向量化失败:',
+          e instanceof Error ? e.message : String(e)
+        )
+      }
+    }
+  }
+  const lanes = Math.min(Math.max(concurrency, 1), missing.length)
+  await Promise.all(Array.from({ length: lanes }, worker))
+  return done
+}
+
 // ── S1: 未兑现的灵感分析 ──
 export async function getOwnInspirationCandidates(
   supabase: SupabaseClient,
@@ -283,6 +358,10 @@ export async function getKnowledgeCandidates(
   }
   return out
 }
+
+// 知识资产覆盖度不在这里单独加载：S6 已经把知识单元取回来并做了
+// domain_scope × 簇文本的确定性匹配（forceClusterCode），build 与 refill
+// 直接把 S6 卡投影到簇即可，再查一次 creator_knowledge 是纯浪费。
 
 // ── S5: 当前创作目标延续 ──
 export async function getActiveProjectCandidates(

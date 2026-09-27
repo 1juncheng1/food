@@ -19,7 +19,9 @@ export const dynamic = 'force-dynamic'
 // 公共帖子列表缓存已抽到 lib/postsCache.ts：
 // 互动/评论/发布/删除等写路径都要 invalidatePostsBaseCache()，
 // 否则刷新后会拿到 60 秒前的旧计数（"点赞刷新消失"根因之一）。
-export { invalidatePostsBaseCache }
+// 注意：这里**不能再导出** invalidatePostsBaseCache —— Next 16 限制路由文件
+// 只能导出 HTTP 处理函数与约定配置，多出的导出会让 next build 的类型检查失败。
+// 调用方一律直接从 '@/lib/postsCache' 导入。
 
 /** 单个帖子的当前用户状态 */
 type PostUserState = { liked: boolean; saved: boolean }
@@ -50,10 +52,15 @@ function parseTags(v: unknown, maxLen: number, maxCount: number): string[] {
     .slice(0, maxCount)
 }
 
-/** 校验类别的下拉值：不使用 toCategory 的严格校验，允许 '其他' 等新分类 */
-function validCategory(v: unknown): string {
-  if (typeof v !== 'string') return CATEGORIES[0]
-  return (CATEGORIES as readonly string[]).includes(v) ? v : CATEGORIES[0]
+/**
+ * 校验类别的下拉值：不使用 toCategory 的严格校验，允许 '其他' 等新分类。
+ * 发布页已不再采集分类（功能下线），缺省/非法时返回 null —— 交由 posts 表
+ * 默认值（'灵感'）兜底，避免给新帖打上"电影解说"这类凭空推断的分类。
+ */
+function validCategory(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  const value = v.trim()
+  return (CATEGORIES as readonly string[]).includes(value) ? value : null
 }
 
 // ────────────────────────────────────────────────────────────
@@ -269,8 +276,9 @@ export async function POST(req: Request) {
         user_id: userId,
         content: finalContent,
         content_type: contentType,
-        category,
-        tags,
+        // 分类/标签下线：未提交时不写列，走数据库默认值（category='灵感'、tags='{}'）
+        ...(category ? { category } : {}),
+        ...(tags.length > 0 ? { tags } : {}),
         style_vector: embedding,
         is_public: true,
         image_url: imageUrl,

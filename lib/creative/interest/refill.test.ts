@@ -16,16 +16,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-const { getLastBuild, fetchActiveClusters, runBuild } = vi.hoisted(() => ({
+const { getLastBuild, fetchActiveClusters, runBuild, getActiveSuggestions } = vi.hoisted(() => ({
   getLastBuild: vi.fn(),
   fetchActiveClusters: vi.fn(),
   runBuild: vi.fn(),
+  getActiveSuggestions: vi.fn(),
 }))
 
-// 只 mock 到「提前返回」所需的两个依赖：no_build / no_cluster 都在触及
+// 只 mock 到「提前返回」所需的依赖：no_build / no_cluster 都在触及
 // 候选生成、打分、造卡之前就返回了，无需把整条依赖链拉进单测。
+// getActiveSuggestions 是 topUpQueue 判断"队列里还有没有卡"的依据，必须可伪造。
 vi.mock('./interestRepo', () => ({ getLastBuild, fetchActiveClusters }))
 vi.mock('./builder', () => ({ runBuild }))
+vi.mock('./suggestionRepo', () => ({
+  getActiveSuggestions,
+  insertSuggestions: vi.fn(),
+}))
 
 import { topUpQueue } from './refill'
 
@@ -36,6 +42,9 @@ beforeEach(() => {
   runBuild.mockResolvedValue(undefined)
   getLastBuild.mockResolvedValue({ id: 'build-1' })
   fetchActiveClusters.mockResolvedValue([])
+  // 默认队列为空 —— 沿用本文件原有三个用例的语义（不可行即回退重建）。
+  // 「队列还有卡」的分支由下方新增的 describe 单独覆盖。
+  getActiveSuggestions.mockResolvedValue([])
 })
 
 describe('topUpQueue：refill 不可行 → 回退 runBuild', () => {
@@ -71,5 +80,25 @@ describe('topUpQueue：成本闸门', () => {
     // 否则用户连续翻页会把一次 Reset「重建」放大成 N 次。
     await topUpQueue(supabase, 'user-repeat')
     expect(runBuild).not.toHaveBeenCalled()
+  })
+})
+
+describe('topUpQueue：队列非空时不换血（保护正在翻的游标）', () => {
+  it('refill 不可行但队列仍有卡 → 不重建，避免 cursor 失效后从头翻', async () => {
+    // 核心回归。runBuild 末尾 supersedeExceptBuild 会把非本批次的 active 卡
+    // 整批替换，用户手里的 cursor 指向的行随之消失 → getFeedPage 找不到
+    // cursor 就从头翻，表现为"刷着刷着回到前面几张"。
+    // 用户此刻还有一堆卡没看完，这次换血毫无收益，只有破坏。
+    getActiveSuggestions.mockResolvedValue([{ id: 's1' }])
+    await topUpQueue(supabase, 'user-has-cards')
+    expect(runBuild).not.toHaveBeenCalled()
+  })
+
+  it('refill 不可行且队列已空 → 仍然重建（否则个性化永远不来）', async () => {
+    // 队列空 = 没有正在消费的流可以打断。此时不 build，Feed 只会一直补
+    // 全局热点，个性化永远不来，所以重建仍是唯一出路。
+    getActiveSuggestions.mockResolvedValue([])
+    await topUpQueue(supabase, 'user-empty-queue')
+    expect(runBuild).toHaveBeenCalledTimes(1)
   })
 })

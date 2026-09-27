@@ -277,9 +277,39 @@ export type AgentPhase = 'clarify' | 'propose' | 'apply' | 'done'
 /** 会话状态：进行中 / 已落地新版本 / 用户放弃 */
 export type AgentSessionStatus = 'active' | 'applied' | 'abandoned'
 
+/**
+ * 交互模式（Work Agent 输出模式路由的产物）。
+ *
+ * 不是所有输入都是修改指令：
+ *   companion 用户迷茫/受挫 → 先陪伴分析，不急着改
+ *   discuss  用户在征询判断 → 先回答"你怎么看"，不给方案
+ *   suggest  默认 → 走"澄清 → 方案 → 补丁"三步
+ *   direct   用户明示别问了 → 跳过讨论直达修改建议
+ */
+export type InteractionMode = 'companion' | 'discuss' | 'suggest' | 'direct'
+
+/**
+ * 修改守门提示（AI 认为这个改法会伤害作品时的提醒）。
+ *
+ * 设计边界：**只提示不阻拦**。它是"我不同意"而不是"我不干"——
+ * 用户看完坚持要改，AI 照改。字段必须给出替代方案，
+ * 否则就是把"那你说怎么办"这个问题丢回给用户。
+ */
+export interface AgentAdvisory {
+  /** 命中的风险规则 id（统计哪类提醒最常出现 / 最常被无视） */
+  ruleId: string
+  /** 这条改法的具体危害 */
+  concern: string
+  /** 为什么有害（讲清机制，让用户能自己判断） */
+  why: string
+  /** 替代改法（可执行） */
+  better: string
+}
+
 /** 消息类型：既是展示分发的依据，也是后续统计共创行为的分类维度 */
 export type AgentMessageKind =
   | 'intent_clarify' // AI 给出意图候选，等待用户选择
+  | 'dialogue' // 讨论/陪伴模式的结构化回应（分析问题，不给候选）
   | 'proposal' // AI 给出多个修改方案，等待用户选择
   | 'patch_preview' // AI 给出段落补丁预览，等待用户接受/拒绝
   | 'confirm' // 用户已做决策的结果回执
@@ -293,8 +323,14 @@ export interface AgentSessionMeta {
   chosenPlanIndex?: number | null
   /** 累计用户发言轮次 */
   turnCount?: number
-  /** 最近一次降级原因（可见即可诊断） */
+  /** 最近降级原因（可见即可诊断） */
   lastError?: string | null
+  /**
+   * 最近一轮被判定为哪种交互模式。
+   * 记在会话上而不是只回传给前端：要能回答"这个用户更多是在讨论还是在改稿"，
+   * 这是判断共创质量（AI 有没有逼着用户做选择）的关键统计口径。
+   */
+  lastMode?: InteractionMode | null
 }
 
 /** Work Agent 会话（work_agent_sessions 表一行） */
@@ -461,6 +497,17 @@ export const MAX_EXTERNAL_ITEMS = 3
  * 所有块到达这里时已是「裁剪完成的纯文本」，由 workAgentContext.ts 统一装配，
  * LLM 层只负责消费，不再各自拼 prompt（避免同一份画像在多处口径漂移）。
  */
+/** 一次历史修改的轨迹（本项目上一版改了什么、依据哪句反馈） */
+export interface RevisionTrace {
+  versionNumber: number
+  /** 迭代方向（improve_direction） */
+  direction: string | null
+  /** AI 说这一版改了什么（improve_note） */
+  note: string | null
+  /** 该版依据的用户反馈原话（user_feedback） */
+  feedback: string | null
+}
+
 export interface WorkAgentContext {
   work: {
     title: string
@@ -477,6 +524,12 @@ export interface WorkAgentContext {
   diagnosis: CreativeDiagnosis | null
   /** 用户原始创作目标（blueprint.problem_understanding 等） */
   goal: string
+  /** 目标读者（blueprint.target_audience）——判断"该让谁读懂"的唯一依据 */
+  audience: string
+  /** 创作者自己确认过的知识单元（Creator Knowledge 注入块） */
+  knowledge: string
+  /** 本项目历史修改轨迹（按版本号倒序，≤ CONTEXT_REVISION_LIMIT 条） */
+  revisionHistory: RevisionTrace[]
   /** Creator Profile 人格块（formatCreatorModel 输出） */
   creator: string
   /** 编辑偏好块（formatEditingProfileForPrompt 输出，样本不足时为空串） */
@@ -515,6 +568,7 @@ export function mapSessionRow(row: Record<string, unknown>): WorkAgentSession {
 
 const MESSAGE_KINDS: AgentMessageKind[] = [
   'intent_clarify',
+  'dialogue',
   'proposal',
   'patch_preview',
   'confirm',
@@ -673,5 +727,57 @@ export function normalizePatchPreview(raw: unknown): PatchPreview | null {
     targetSegments: segs,
     preserveItems: strArr(o.preserveItems ?? o.preserve_items, 4, 30),
     summary,
+  }
+}
+
+// ── 15. 守门提示与讨论型回应 ─────────────────────────────
+
+/**
+ * 清洗守门提示（存在 assistant 消息 payload.advisory 里，刷新后仍需可见）。
+ * 四字段缺一即视为无效——缺 better 的提示只会给用户添堵。
+ */
+export function normalizeAdvisory(raw: unknown): AgentAdvisory | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  const ruleId = s2(o.ruleId ?? o.rule_id, 40)
+  const concern = s2(o.concern, 120)
+  const why = s2(o.why, 200)
+  const better = s2(o.better, 200)
+  if (!ruleId || !concern || !why || !better) return null
+  return { ruleId, concern, why, better }
+}
+
+/**
+ * 讨论/陪伴模式的结构化回应。
+ * 与 IntentClarification 的区别：这里**不给候选**（不给"请选择方向"的按钮），
+ * 只给理解、原因、建议方向和一个待确认的问题——用户还没决定要改。
+ */
+export interface AgentDialogue {
+  /** 我的理解（一句话复述用户的处境） */
+  understanding: string
+  /** 可能的原因（2-4 条，必须基于上下文中真实存在的证据） */
+  causes: string[]
+  /** 建议方向（2-3 条，可执行） */
+  directions: string[]
+  /** 一个待用户确认的开放问题（把"下一步怎么走"的决定权交回去） */
+  question: string
+}
+
+/**
+ * 清洗 AgentDialogue LLM 输出。
+ * 有效判定：understanding 与 question 必填——没有问题的讨论等于自说自话，
+ * 而 Work Agent 的核心职责是"会提问"。
+ */
+export function normalizeAgentDialogue(raw: unknown): AgentDialogue | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  const understanding = s2(o.understanding, 300)
+  const question = s2(o.question, 200)
+  if (!understanding || !question) return null
+  return {
+    understanding,
+    causes: strArr(o.causes, 4, 120),
+    directions: strArr(o.directions, 3, 120),
+    question,
   }
 }

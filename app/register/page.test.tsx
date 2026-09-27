@@ -133,7 +133,7 @@ describe('RegisterPage 注册流程 state machine', () => {
     expect(screen.queryAllByLabelText(/验证码第/)).toHaveLength(0)
   })
 
-  it('handleVerify 成功:调 verifyOtp 并 router.push /dashboard', async () => {
+  it('handleVerify 成功:调 verifyOtp 并 router.push /welcome', async () => {
     const user = userEvent.setup()
     mockSignUp.mockResolvedValue({ data: { session: null }, error: null })
     mockVerifyOtp.mockResolvedValue({ data: { session: {} }, error: null })
@@ -154,7 +154,7 @@ describe('RegisterPage 注册流程 state machine', () => {
       token: '012345',
       type: 'signup',
     })
-    expect(mockPush).toHaveBeenCalledWith('/dashboard')
+    expect(mockPush).toHaveBeenCalledWith('/welcome')
   })
 
   it('handleVerify invalid_otp:显示"验证码错误",不跳转', async () => {

@@ -214,6 +214,33 @@ export function buildExplorationSeeds(
   return { seeds: [...singleSeeds, ...combos], nonCoreLabels, seedClusters: chosen }
 }
 
+/**
+ * 把「用户刚完成/刚采纳的作品主题」转成探索种子（P0 数据闭环，builder 与 refill 共用）。
+ *
+ * 为什么必须单独走这条路：簇种子只来自已成簇的画像方向，而新作品还没被聚类
+ * （它可能连一次 build 都没触发过，或因为单成员被 CLUSTER_MIN_MEMBERS 挡在画像外），
+ * 簇里根本没有它。只靠簇种子造卡，造出来的仍是旧方向——用户刚写完一篇，
+ * 推荐却毫无反应。
+ *
+ * 种子标记 fresh=true，S4 prompt 会据此要求"产出承接它的下一个问题"，
+ * 而不是复述该主题（复述等于把用户刚写过的东西再推一遍）。
+ */
+export function toFreshWorkSeeds(topics: string[]): ExplorationSeed[] {
+  const out: ExplorationSeed[] = []
+  for (const raw of topics) {
+    const label = raw.trim().slice(0, 40)
+    if (!label) continue
+    if (out.some((s) => s.label === label)) continue
+    out.push({
+      label,
+      summary: `用户刚完成/采纳了这个方向：「${label}」。请给出它的下一个可写问题——承接它的上下文继续深挖，不要复述它。`,
+      keywords: [],
+      fresh: true,
+    })
+  }
+  return out
+}
+
 interface LlmExplorationItem {
   title: string
   description: string

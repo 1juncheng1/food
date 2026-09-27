@@ -383,11 +383,11 @@ export default function ProfilePage() {
 
   if (loading) {
     return (
-      <div className="inner-page gen-stage" data-mode="inspiration">
+      <div className="inner-page " data-mode="inspiration">
         <div className="inner-container">
-          <div className="animate-pulse space-y-6">
-            <div className="h-16 bg-zinc-900 rounded-xl" />
-            <div className="h-32 bg-zinc-900 rounded-xl" />
+          <div className="space-y-6">
+            <div className="h-16 vs-skeleton" />
+            <div className="h-32 vs-skeleton" />
           </div>
         </div>
       </div>
@@ -396,13 +396,13 @@ export default function ProfilePage() {
 
   if (error && !profileInfo) {
     return (
-      <div className="inner-page gen-stage" data-mode="inspiration">
+      <div className="inner-page " data-mode="inspiration">
         <div className="inner-container">
-          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4 flex items-center justify-between gap-4">
-            <p className="text-sm text-red-400">{error}</p>
+          <div className="vs-error flex items-center justify-between gap-4">
+            <p className="text-[14px]">{error}</p>
             <Link
               href="/explore"
-              className="text-xs text-indigo-400 hover:text-indigo-300 transition shrink-0"
+              className="vs-link shrink-0"
             >
               回到灵感广场
             </Link>
@@ -421,39 +421,39 @@ export default function ProfilePage() {
   const styleFacts = profileInfo.styleProfile ? (
     <>
       <div className="mb-5">
-        <p className="text-xs text-zinc-500 mb-2.5">语气标签</p>
+        <p className="vs-mark mb-2.5">语气标签</p>
         <div className="flex flex-wrap gap-2">
           {profileInfo.styleProfile.tone_tags.length > 0 ? (
             profileInfo.styleProfile.tone_tags.map((tag) => (
               <span
                 key={tag}
-                className="text-xs px-2.5 py-1 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
+                className="vs-verdict"
               >
                 {tag}
               </span>
             ))
           ) : (
-            <span className="text-xs text-zinc-600">暂无</span>
+            <span className="vs-note">暂无</span>
           )}
         </div>
       </div>
 
       <div className="grid grid-cols-3 gap-4">
         <div>
-          <p className="text-xs text-zinc-500 mb-1.5">节奏偏好</p>
-          <p className="text-sm text-zinc-300">
+          <p className="vs-mark mb-1.5">节奏偏好</p>
+          <p className="text-[14px] text-[var(--vs-ink-2)]">
             {profileInfo.styleProfile.pace_preference || '未知'}
           </p>
         </div>
         <div>
-          <p className="text-xs text-zinc-500 mb-1.5">常用开头</p>
-          <p className="text-sm text-zinc-300">
+          <p className="vs-mark mb-1.5">常用开头</p>
+          <p className="text-[14px] text-[var(--vs-ink-2)]">
             {profileInfo.styleProfile.common_opening || '未知'}
           </p>
         </div>
         <div>
-          <p className="text-xs text-zinc-500 mb-1.5">平均字数</p>
-          <p className="text-sm text-zinc-300">{profileInfo.styleProfile.avg_length || 0}</p>
+          <p className="vs-mark mb-1.5">平均字数</p>
+          <p className="text-[14px] text-[var(--vs-ink-2)]">{profileInfo.styleProfile.avg_length || 0}</p>
         </div>
       </div>
     </>
@@ -463,7 +463,7 @@ export default function ProfilePage() {
     <PageShell width="narrow">
         <Link
           href="/explore"
-          className="mb-6 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
+          className="mb-6 vs-link"
         >
           ← 返回灵感广场
         </Link>
@@ -471,7 +471,7 @@ export default function ProfilePage() {
         {error && <ErrorState className="mb-6" message={error} />}
 
         {/* ── 作者卡片：这里是社区里的「人」，不是账号详情页 ── */}
-        <div className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
+        <div className="mb-6 rounded-2xl border border-white/[0.08] bg-[var(--vs-void-1)] px-6 py-6">
           <div className="flex items-start gap-4 flex-wrap">
             <AuthorAvatar
               name={profileInfo.authorName}
@@ -479,31 +479,31 @@ export default function ProfilePage() {
               size="lg"
             />
             <div className="min-w-0 flex-1">
-              <h1 className="text-xl font-semibold text-white">
+              <h1 className="vs-h2">
                 {profileInfo.authorName || '创作者'}
               </h1>
               {bio ? (
-                <p className="mt-2 text-sm text-zinc-400 leading-relaxed max-w-2xl">
+                <p className="text-[14px] mt-2 leading-relaxed max-w-2xl text-[var(--vs-ink-3)]">
                   {bio}
                 </p>
               ) : (
-                <p className="mt-2 text-xs text-zinc-600">
+                <p className="mt-2 vs-note">
                   这位创作者还没有留下简介
                 </p>
               )}
-              <div className="flex gap-5 mt-3 text-sm text-zinc-400">
+              <div className="flex gap-5 mt-3 text-[14px] text-[var(--vs-ink-3)]">
                 <span>
-                  <span className="text-zinc-200 font-medium">{profileInfo.postCount}</span>{' '}
+                  <span className="font-medium text-[var(--vs-ink)]">{profileInfo.postCount}</span>{' '}
                   创作
                 </span>
                 <span>
-                  <span className="text-zinc-200 font-medium">
+                  <span className="font-medium text-[var(--vs-ink)]">
                     {profileInfo.followerCount}
                   </span>{' '}
                   粉丝
                 </span>
                 <span>
-                  <span className="text-zinc-200 font-medium">
+                  <span className="font-medium text-[var(--vs-ink)]">
                     {profileInfo.followingCount}
                   </span>{' '}
                   关注
@@ -518,8 +518,8 @@ export default function ProfilePage() {
                 disabled={followBusy}
                 className={`px-5 py-2 rounded-lg text-sm font-medium transition shrink-0 ${
                   profileInfo.isFollowing
-                    ? 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
-                    : 'bg-indigo-600 text-white hover:bg-indigo-500'
+                    ? 'vs-btn vs-btn-ghost vs-btn-sm'
+                    : 'vs-btn vs-btn-primary vs-btn-sm'
                 } disabled:opacity-40 disabled:cursor-not-allowed`}
               >
                 {followBusy ? '处理中…' : profileInfo.isFollowing ? '已关注' : '关注'}
@@ -529,34 +529,33 @@ export default function ProfilePage() {
             {/* 账户余额（仅本人可见） */}
             {profileInfo.isOwn && balance !== null && (
               balance < MIN_GENERATION_COST ? (
-                <div className="shrink-0 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-4 py-2.5">
-                  <span aria-hidden="true">💰</span>
+                <div className="shrink-0 flex items-start gap-2 vs-frame vs-warn px-4 py-2.5">
                   <div>
-                    <p className="text-sm font-medium text-amber-200 leading-tight">
+                    <p className="text-[14px] font-medium leading-tight text-[var(--vs-ink)]">
                       {NO_BALANCE_MESSAGE}
                     </p>
                     <Link
                       href="/recharge"
-                      className="mt-1 inline-flex rounded-lg border border-amber-400/40 px-2.5 py-1 text-xs font-medium text-amber-100 transition hover:border-amber-300/60 hover:bg-amber-400/10"
+                      className="vs-btn vs-btn-ghost vs-btn-sm mt-1"
                     >
                       去充值
                     </Link>
                   </div>
                 </div>
               ) : (
-                <div className="shrink-0 rounded-lg border border-zinc-800 bg-zinc-800/40 px-4 py-2.5 text-right">
-                  <p className="text-xs text-zinc-500 leading-tight">账户余额</p>
-                  <p className="text-sm font-medium text-zinc-100 leading-tight mt-0.5">
+                <div className="shrink-0 vs-frame px-4 py-2.5 text-right">
+                  <p className="vs-note leading-tight">账户余额</p>
+                  <p className="vs-num font-medium leading-tight mt-0.5">
                     {balance} 积分
                   </p>
                   {pointsPerYuan !== null && (
-                    <p className="text-[11px] text-zinc-500 leading-tight mt-0.5">
+                    <p className="vs-note leading-tight mt-0.5">
                       ≈ ¥{amountForPoints(balance, pointsPerYuan).toFixed(2)}
                     </p>
                   )}
                   <Link
                     href="/recharge"
-                    className="mt-1 inline-flex text-[11px] text-indigo-300 transition hover:text-indigo-200"
+                    className="vs-link mt-1 text-[11px]"
                   >
                     充值
                   </Link>
@@ -569,7 +568,7 @@ export default function ProfilePage() {
               <button
                 type="button"
                 onClick={() => setEditing(true)}
-                className="shrink-0 px-3 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-700 hover:border-zinc-600 transition"
+                className="vs-btn vs-btn-ghost vs-btn-sm shrink-0"
               >
                 编辑资料
               </button>
@@ -601,30 +600,30 @@ export default function ProfilePage() {
 
         {/* ── 创作者人格 ── */}
         {creator ? (
-          <div className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
+          <div className="mb-6 rounded-2xl border border-white/[0.08] bg-[var(--vs-void-1)] px-6 py-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-medium text-zinc-200">创作者人格</h2>
+              <h2 className="vs-h3">创作者人格</h2>
               {profileInfo.isOwn && (
                 <Link
                   href="/style-profile"
-                  className="text-xs text-indigo-400 hover:text-indigo-300 transition"
+                  className="vs-link"
                 >
                   查看完整 DNA →
                 </Link>
               )}
             </div>
 
-            <h3 className="text-xl font-semibold text-white">
+            <h3 className="vs-h2">
               {creator.main || '未命名人格'}
               {creator.sub && (
-                <span className="ml-2 text-sm font-normal text-zinc-400">
+                <span className="vs-note ml-2">
                   × {creator.sub}
                 </span>
               )}
             </h3>
 
             {creator.description && (
-              <p className="mt-3 text-sm text-zinc-300 leading-loose">
+              <p className="text-[14px] mt-3 leading-loose text-[var(--vs-ink-2)]">
                 {creator.description}
               </p>
             )}
@@ -633,11 +632,11 @@ export default function ProfilePage() {
               <div className="mt-4 space-y-2.5">
                 {creator.motifs.length > 0 && (
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs text-zinc-500">持续关注的母题</span>
+                    <span className="vs-mark">持续关注的母题</span>
                     {creator.motifs.map((m) => (
                       <span
                         key={m}
-                        className="text-xs px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-300 border border-indigo-500/20"
+                        className="vs-verdict"
                       >
                         {m}
                       </span>
@@ -646,11 +645,11 @@ export default function ProfilePage() {
                 )}
                 {creator.narratives.length > 0 && (
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs text-zinc-500">叙事特征</span>
+                    <span className="vs-mark">叙事特征</span>
                     {creator.narratives.map((n) => (
                       <span
                         key={n}
-                        className="text-xs px-2.5 py-1 rounded-lg bg-purple-500/10 text-purple-300 border border-purple-500/20"
+                        className="vs-verdict"
                       >
                         {n}
                       </span>
@@ -661,7 +660,7 @@ export default function ProfilePage() {
             )}
 
             <details className="mt-5 group">
-              <summary className="cursor-pointer select-none text-xs text-zinc-500 hover:text-zinc-300 transition list-none">
+              <summary className="vs-note cursor-pointer select-none list-none transition hover:text-[var(--vs-ink)]">
                 <span className="inline-block group-open:rotate-90 transition-transform mr-1">
                   ▸
                 </span>
@@ -671,10 +670,10 @@ export default function ProfilePage() {
             </details>
           </div>
         ) : profileInfo.styleProfile ? (
-          <div className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
+          <div className="mb-6 rounded-2xl border border-white/[0.08] bg-[var(--vs-void-1)] px-6 py-6">
             <div className="flex items-center justify-between mb-5">
-              <h2 className="text-sm font-medium text-zinc-200">创作风格</h2>
-              <span className="text-xs text-zinc-500">
+              <h2 className="vs-h3">创作风格</h2>
+              <span className="vs-mark">
                 {profileInfo.styleProfile.source === 'manual' ? '手动编辑' : '自动统计'}
               </span>
             </div>
@@ -685,11 +684,11 @@ export default function ProfilePage() {
         {/* ── 发布作品 ── */}
         <div>
           <div className="mb-4 flex items-baseline gap-2">
-            <h2 className="text-[15px] font-semibold tracking-tight text-zinc-100">
+            <h2 className="vs-h3">
               发布的作品
             </h2>
             {posts.length > 0 && (
-              <span className="text-xs text-zinc-500">{posts.length} 条</span>
+              <span className="vs-mark">{posts.length} 条</span>
             )}
           </div>
           {posts.length === 0 ? (
@@ -718,16 +717,16 @@ export default function ProfilePage() {
                   <article
                     key={post.id}
                     onClick={() => router.push(`/post/${post.id}`)}
-                    className="cursor-pointer bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-5 hover:border-zinc-700 transition"
+                    className="vs-frame cursor-pointer px-6 py-5 transition hover:border-[var(--vs-line-2)]"
                   >
                     <div className="flex items-center gap-2 mb-3">
-                      <span className="text-xs px-2.5 py-1 rounded-lg bg-zinc-800 text-zinc-400 shrink-0">
+                      <span className="vs-verdict shrink-0">
                         {post.category}
                       </span>
-                      <span className="text-xs text-zinc-600">{timeAgo(post.created_at)}</span>
+                      <span className="vs-note">{timeAgo(post.created_at)}</span>
                       {isArchive && (
-                        <span className="text-[10px] px-2 py-0.5 rounded-lg bg-indigo-500/15 text-indigo-300 border border-indigo-500/25">
-                          📖 创作档案
+                        <span className="vs-verdict">
+                           创作档案
                         </span>
                       )}
                       {profileInfo.isOwn && (
@@ -738,19 +737,19 @@ export default function ProfilePage() {
                             void handleDeletePost(post.id)
                           }}
                           disabled={deletingId === post.id}
-                          className="ml-auto text-xs text-zinc-600 hover:text-red-400 disabled:opacity-40 transition"
+                          className="vs-link-danger ml-auto disabled:opacity-40"
                         >
                           {deletingId === post.id ? '删除中…' : '删除'}
                         </button>
                       )}
                     </div>
 
-                    <h3 className="text-base font-semibold text-zinc-100 leading-snug mb-2">
+                    <h3 className="vs-h3 mb-2 leading-snug">
                       {heading}
                     </h3>
 
                     {summary && (
-                      <p className="text-sm text-zinc-300 leading-relaxed mb-3 whitespace-pre-wrap">
+                      <p className="text-[14px] leading-relaxed text-[var(--vs-ink-2)] mb-3 whitespace-pre-wrap">
                         {summary}
                       </p>
                     )}
@@ -761,7 +760,7 @@ export default function ProfilePage() {
                         <img
                           src={post.image_url}
                           alt="帖子图片"
-                          className="w-full max-h-64 object-cover rounded-xl border border-zinc-800"
+                          className="w-full max-h-64 object-cover rounded-[var(--vs-r)] border border-[var(--vs-line)]"
                         />
                       </div>
                     )}
@@ -771,7 +770,7 @@ export default function ProfilePage() {
                         {post.tags.map((tag) => (
                           <span
                             key={tag}
-                            className="text-xs px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
+                            className="vs-verdict"
                           >
                             #{tag}
                           </span>
@@ -836,13 +835,13 @@ export default function ProfilePage() {
                   ref={sentinelRef}
                   className="flex items-center justify-center py-6"
                 >
-                  <span className="animate-pulse text-sm text-zinc-500">加载更多…</span>
+                  <span className="vs-note">加载更多…</span>
                 </div>
               )}
 
               {!hasMore && posts.length > 0 && (
                 <div className="flex items-center justify-center py-6">
-                  <span className="text-xs text-zinc-600">没有更多了</span>
+                  <span className="vs-note">没有更多了</span>
                 </div>
               )}
             </div>

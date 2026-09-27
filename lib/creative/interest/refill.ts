@@ -23,26 +23,37 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { cosineSimilarity, parseVectorColumn } from './vectorMath'
 import { fetchActiveClusters, getLastBuild } from './interestRepo'
+import { TASTE_PENALTY_WINDOW_DAYS } from './config'
 import {
   getOwnInspirationCandidates,
   getSavedMaterialCandidates,
   getActiveProjectCandidates,
   getKnowledgeCandidates,
   hardFilter,
+  embedCandidates,
   type Candidate,
 } from './candidates'
+import { generateEmbedding } from '@/lib/storage'
 import {
   getMarketCandidates,
   getExplorationCandidates,
   buildExplorationSeeds,
-  type ExplorationSeed,
+  toFreshWorkSeeds,
 } from './suggestionSynthesizer'
-import { scoreCandidate } from './ranking'
+import {
+  scoreCandidate,
+  recentBehaviorCentroid,
+  recentSimilarityOf,
+  tasteFactorFor,
+  type TasteEntry,
+} from './ranking'
 import {
   getActiveSuggestions,
   insertSuggestions,
   type SuggestionInsertInput,
 } from './suggestionRepo'
+import { buildTasteMap } from './tasteModel'
+import { buildRankingFeatures } from './rescore'
 import { generateAiReasons } from './reasonAi'
 import { buildEvidenceFacts, accumulateFact, type FactCounts } from './evidenceFacts'
 import { loadStyleHints, filterByAvoid } from './styleHints'
@@ -56,6 +67,7 @@ import {
   REFILL_TEXT_DEDUPE_THRESHOLD,
   REFILL_LOCK_TTL_MS,
   REFILL_FACTS_WINDOW_DAYS,
+  CLUSTER_MATCH_MIN_SIMILARITY,
 } from './config'
 import { runBuild } from './builder'
 
@@ -183,32 +195,9 @@ function toClusterView(row: ActiveClusterRow, nowIso: string): ClusterView {
 }
 
 // ── 新作品种子（P0 数据闭环）──
-
-/**
- * 把「上次 build 之后新完成的作品主题」转成探索种子。
- *
- * 为什么必须单独走这条路：refill 的设计是复用上次 build 落库的簇造卡，
- * 而新作品还没被聚类（它连一次 build 都没触发过），簇里根本没有它。
- * 只靠簇种子补货，造出来的仍是旧方向——用户刚写完一篇，推荐却毫无反应。
- *
- * 种子标记 fresh=true，S4 prompt 会据此要求"产出承接它的下一个问题"，
- * 而不是复述该主题（复述等于把用户刚写过的东西再推一遍）。
- */
-export function toFreshWorkSeeds(topics: string[]): ExplorationSeed[] {
-  const out: ExplorationSeed[] = []
-  for (const raw of topics) {
-    const label = raw.trim().slice(0, 40)
-    if (!label) continue
-    if (out.some((s) => s.label === label)) continue
-    out.push({
-      label,
-      summary: `用户刚完成/采纳了这个方向：「${label}」。请给出它的下一个可写问题——承接它的上下文继续深挖，不要复述它。`,
-      keywords: [],
-      fresh: true,
-    })
-  }
-  return out
-}
+// toFreshWorkSeeds 已上移到 suggestionSynthesizer：builder 现在也要用它
+// （build 内捞回被聚类门槛挡住的新作品），两处必须同一口径。
+export { toFreshWorkSeeds }
 
 // ── 文本去重（refill 没有候选向量列可依赖，用标题 bigram 近似）──
 
@@ -245,13 +234,28 @@ function dedupeByText(candidates: Candidate[], existingTitles: string[]): Candid
 
 // ── 取数 ──
 
-/** 近 30 天"已写过"与"已点 ✕"的主题向量（与 builder 步骤 13 同口径） */
+/**
+ * 近 30 天"已写过"与"已点 ✕"的主题向量（与 builder 步骤 13 同口径），
+ * 外加从同一次 dismiss 查询里顺带取回的口味惩罚表。
+ *
+ * 口味为什么要在 refill 里也要：refill 是 ✕ 之后秒级补货的主路径，
+ * 若它不看原因，用户刚说"这不是我的方向"，补上来的下一张还是同一方向 ——
+ * 而这恰恰是用户对"不感兴趣"最直观的验收点。payload 本来就要查，
+ * 多一个 select 字段没有额外代价。
+ */
 async function loadFilterEmbeddings(
   supabase: SupabaseClient,
   userId: string
-): Promise<{ written: number[][]; dismissed: number[][] }> {
+): Promise<{
+  written: number[][]
+  dismissed: number[][]
+  tasteByCluster: Map<string, TasteEntry>
+}> {
   const since = new Date()
   since.setDate(since.getDate() - 30)
+  // 口味回看窗口比"已写过"更长：一次 ✕ 的约束力不该只有 30 天
+  const tasteSince = new Date()
+  tasteSince.setDate(tasteSince.getDate() - TASTE_PENALTY_WINDOW_DAYS)
   const [{ data: writtenRows }, { data: dismissedRows }] = await Promise.all([
     supabase
       .from('creator_events')
@@ -262,19 +266,31 @@ async function loadFilterEmbeddings(
       .limit(50),
     supabase
       .from('creator_events')
-      .select('embedding')
+      .select('embedding, payload, occurred_at')
       .eq('user_id', userId)
       .eq('event_type', 'recommend_dismiss')
-      .gte('occurred_at', since.toISOString())
+      .gte('occurred_at', tasteSince.toISOString())
       .limit(50),
   ])
+  const rows = (dismissedRows ?? []) as Array<{
+    embedding: unknown
+    payload: unknown
+    occurred_at: unknown
+  }>
   return {
     written: (writtenRows ?? [])
       .map((r) => parseVectorColumn((r as { embedding: unknown }).embedding))
       .filter((e): e is number[] => !!e),
-    dismissed: (dismissedRows ?? [])
-      .map((r) => parseVectorColumn((r as { embedding: unknown }).embedding))
+    dismissed: rows
+      .map((r) => parseVectorColumn(r.embedding))
       .filter((e): e is number[] => !!e),
+    tasteByCluster: buildTasteMap(
+      rows.map((r) => ({
+        occurredAt: typeof r.occurred_at === 'string' ? r.occurred_at : '',
+        payload: (r.payload as Record<string, unknown>) ?? null,
+      })),
+      new Date()
+    ),
   }
 }
 
@@ -308,11 +324,21 @@ async function loadClusterFacts(
 
 // ── 打分 + 落库结构 ──
 
+/** 评分 v3 的维度输入（refill 侧；与 builder 步骤 13.2 同口径） */
+interface ScoringContext {
+  recentCentroid: number[] | null
+  knowledgeByCluster: Map<string, number>
+  /** 用户是否有可用知识单元；false → knowledge 维度权重重分配 */
+  hasKnowledge: boolean
+  tasteByCluster: Map<string, TasteEntry>
+}
+
 function buildInsertInput(
   cand: Candidate,
   clusters: RefillCluster[],
   facts: Map<string, ClusterFacts>,
-  now: Date
+  now: Date,
+  ctx: ScoringContext
 ): SuggestionInsertInput {
   // 簇匹配：先用候选自带的确定性 cluster_code（S6 知识单元无向量，只能靠它），
   // 再用 embedding 余弦兜底（refill 无 forceBind / projectId 直连的上下文）
@@ -320,7 +346,7 @@ function buildInsertInput(
     ? clusters.find((c) => c.code === cand.forceClusterCode) ?? null
     : null
   if (!matched && cand.embedding && cand.embedding.length === 1024) {
-    let bestSim = 0.5
+    let bestSim = CLUSTER_MATCH_MIN_SIMILARITY
     for (const c of clusters) {
       if (!c.centroid?.length) continue
       const sim = cosineSimilarity(cand.embedding, c.centroid)
@@ -340,12 +366,22 @@ function buildInsertInput(
       ? Math.round(cosineSimilarity(cand.embedding, matched.centroid!) * 1000) / 1000
       : null
 
+  // RULE v5：与 builder 同口径，把两个"卡片固有值"抽出来，一份喂给打分、
+  // 一份落进 ranking_features 供日后在线重排。两边必须同源，否则读时会算出另一把尺子。
+  const tagOverlap = tagOverlapFor(cand.embedding, matched?.tagEmbedding)
+  const knowledgeScore: number | null = ctx.hasKnowledge
+    ? ctx.knowledgeByCluster.get(matched?.code ?? 'no_cluster') ?? 0
+    : null
+
   const scored = scoreCandidate({
     candidate: cand,
     semanticSimilarity: semanticSim,
     trend: matched?.trend ?? null,
     daysSinceLastInCluster,
-    tagOverlapRatio: tagOverlapFor(cand.embedding, matched?.tagEmbedding),
+    tagOverlapRatio: tagOverlap,
+    recentSimilarity: recentSimilarityOf(cand.embedding, ctx.recentCentroid),
+    knowledgeScore,
+    tasteFactor: tasteFactorFor(ctx.tasteByCluster.get(matched?.code ?? 'no_cluster'), cand.slot),
   })
 
   // 事实包：只放真实计数；无匹配簇/无计数 → facts 为空 → AI 理由自动走模板（红线）
@@ -382,6 +418,14 @@ function buildInsertInput(
     scoreBreakdown: scored.breakdown,
     evidence,
     marketRefs: cand.marketRefs ? { refs: cand.marketRefs } : null,
+    // RULE v5：与 builder 同口径落特征（refill 是日常补货主路径，不落这里
+    // 就等于"大部分卡都没有重排能力"）
+    embedding: cand.embedding,
+    rankingFeatures: buildRankingFeatures({
+      quality: cand.contentValue,
+      tagOverlap,
+      knowledge: knowledgeScore,
+    }),
   }
 }
 
@@ -493,8 +537,12 @@ export async function refillSuggestions(
     const all: Candidate[] = [...s1, ...s2, ...s3, ...s4, ...s5, ...s6]
     if (!all.length) return { added: 0, reason: 'no_candidate' }
 
-    // 已写过 / 已点 ✕ 的主题向量过滤
-    const { written, dismissed } = await loadFilterEmbeddings(supabase, userId)
+    // RULE v5：与 builder 同口径补候选向量。refill 是日常补货主路径，
+    // 这里漏掉就等于"绝大多数新卡都没有向量"——查重、簇匹配、语义评分照旧失效。
+    await embedCandidates(all, (t) => generateEmbedding(t))
+
+    // 已写过 / 已点 ✕ 的主题向量过滤 + ✕ 原因构成的口味惩罚
+    const { written, dismissed, tasteByCluster } = await loadFilterEmbeddings(supabase, userId)
     // 队列内去重传空数组：refill 不 supersede，在库卡仍要保留，改用标题文本去重
     // P1 S7：硬禁忌过滤（与 builder 同口径，放在 hardFilter 之后）
     let filtered = filterByAvoid(hardFilter(all, written, dismissed, []), styleHints)
@@ -504,7 +552,28 @@ export async function refillSuggestions(
     if (!filtered.length) return { added: 0, reason: 'no_candidate' }
 
     const facts = await loadClusterFacts(supabase, userId)
-    const items = filtered.map((c) => buildInsertInput(c, clusters, facts, new Date(startedAt)))
+
+    // 评分 v3 的维度输入必须与 builder 同口径，否则同一队列里
+    // build 卡与 refill 卡的 score 不在同一把尺子上，排序失去意义。
+    const recentCentroid = recentBehaviorCentroid(clusters, new Date(startedAt))
+    // 知识覆盖可以直接从已取回的 S6 卡投影（refill 已经查过 creator_knowledge）
+    const knowledgeByCluster = new Map<string, number>()
+    for (const k of s6) {
+      const code = k.forceClusterCode ?? k.clusterCode
+      if (!code) continue
+      const prev = knowledgeByCluster.get(code) ?? 0
+      if (k.contentValue > prev) knowledgeByCluster.set(code, k.contentValue)
+    }
+    const hasKnowledge = s6.length > 0
+
+    const items = filtered.map((c) =>
+      buildInsertInput(c, clusters, facts, new Date(startedAt), {
+        recentCentroid,
+        knowledgeByCluster,
+        hasKnowledge,
+        tasteByCluster,
+      })
+    )
 
     await attachAiReasons(
       items,
@@ -523,8 +592,10 @@ export async function refillSuggestions(
 
 /**
  * Feed 库存不足时的统一补货入口（fire-and-forget 调用）。
- * 优先轻量 refill；refill 不可行（从未成功 build / 无活跃簇 / 补货失败）时
- * 才回退完整 runBuild——那时没有更好的选择，重建是唯一出路。
+ *
+ * 优先轻量 refill：它是**追加**新卡，不动旧卡，正在翻的游标保持连续。
+ * refill 不可行时**不一定**回退 runBuild —— 是否回退取决于队列里还有没有卡，
+ * 理由见下方。
  */
 export async function topUpQueue(
   supabase: SupabaseClient,
@@ -533,6 +604,30 @@ export async function topUpQueue(
   try {
     const r = await refillSuggestions(supabase, userId)
     if (r.reason === 'no_build' || r.reason === 'no_cluster' || r.reason === 'failed') {
+      // ── 只有队列空了才允许换血 ──
+      //
+      // runBuild 末尾的 supersedeExceptBuild 会把非本批次的 active 卡**整批**替换。
+      // 对正在翻 Feed 的用户，这意味着手里的 cursor 指向的行瞬间消失，
+      // getFeedPage 找不到 cursor 就从头翻（feedRepo 有明确处理）——
+      // 表现为"刷着刷着回到前面几张"。而这件事发生得毫无必要：
+      // 用户此刻明明还有一堆卡没看完。
+      //
+      // 队列非空 → 保留旧卡，让库存自然耗尽后走 no_more 诚实收尾。
+      //   ADR 0001 已把"重度用户当天看到诚实收尾态"作为设计上接受的终态，
+      //   它远好过打断用户正在消费的流。断供是可见且诚实的，游标被重置不是。
+      // 队列已空 → 没有正在消费的流可以打断，且不 build 就永远不会有新卡
+      //   （只会一直补全局热点，个性化永远不来），此时重建是唯一出路。
+      //
+      // 读失败时 getActiveSuggestions 返回 []，会被判定为"空"→ 走 build。
+      // 这是刻意的 fail-safe 方向：宁可多跑一次 build 恢复供给，
+      // 也不能把用户永久留在"没有卡且不再补货"的状态。
+      const remaining = await getActiveSuggestions(supabase, userId, 1)
+      if (remaining.length > 0) {
+        console.warn(
+          `[interest] topUpQueue: refill 不可行（${r.reason}）但队列仍有卡，跳过重建以保护正在翻的游标`
+        )
+        return
+      }
       await runBuild(supabase, userId, 'incremental')
     }
   } catch (e) {

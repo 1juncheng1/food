@@ -43,6 +43,23 @@ export interface CreatorDeclaration {
   /** 创作场景：短视频 / 文章 / 商业方案 / 知识分享 / 其他 */
   creation_scenario?: string
 
+  // ── 「我是谁」三问（2026-09-24 新增，可选）────────────────
+  //
+  // 存在理由：上面 8 维全部是「怎么写」，没有一个维度回答「这个人是谁」。
+  // 没有经历/目标/价值判断，AI 只能模仿用户的语气，无法理解用户为什么在意
+  // 某个话题、凭什么坚持某个观点 —— 这正是「像用户写的」和「懂用户」的差别。
+  //
+  // 向后兼容：jsonb 加可选字段，旧数据 normalize 后为 undefined，
+  // 不触发 migration、不影响 isDeclarationComplete（仍按核心 8 维判定），
+  // 已访谈老用户通过「增量补问」补齐，不会被强制重新访谈。
+
+  /** 经历与背景：你在这个领域做过什么 / 凭什么谈这个话题 */
+  background?: string
+  /** 长期目标：你希望这些创作在更长时间里带来什么 */
+  long_term_goal?: string
+  /** 价值判断：你坚持什么、反对什么（区别于 avoid_preference 的写法禁忌） */
+  value_statement?: string
+
   // ── 元数据 ──
 
   /** 访谈完成时间（ISO 字符串） */
@@ -64,6 +81,9 @@ export type DeclarationDimension =
   | 'quality_standard'
   | 'avoid_preference'
   | 'creation_scenario'
+  | 'background'
+  | 'long_term_goal'
+  | 'value_statement'
 
 /** 各维度的中文标签和用途说明（UI 展示和 prompt 注入共用） */
 export const DECLARATION_DIMENSION_META: Array<{
@@ -73,6 +93,12 @@ export const DECLARATION_DIMENSION_META: Array<{
   impact: string
   /** 是否硬约束（avoid_preference 是硬约束，其余是软约束） */
   hard?: boolean
+  /**
+   * 是否可选维度（「我是谁」三问）。
+   * 可选维度不计入 isDeclarationComplete 的分母 —— 否则已访谈老用户会因为
+   * 我们新增维度而一夜之间变成「未访谈」，这是把系统需求转嫁给用户。
+   */
+  optional?: boolean
 }> = [
   {
     key: 'creator_goal',
@@ -115,7 +141,54 @@ export const DECLARATION_DIMENSION_META: Array<{
     label: '创作场景',
     impact: '影响输出形式和适配平台',
   },
+  {
+    key: 'background',
+    label: '经历与背景',
+    impact: '影响可信度基线与可调用的亲身论据',
+    optional: true,
+  },
+  {
+    key: 'value_statement',
+    label: '价值判断',
+    impact: '影响立场取舍：涉及价值冲突时以该判断为准',
+    optional: true,
+  },
+  {
+    key: 'long_term_goal',
+    label: '长期目标',
+    impact: '影响内容的时间取向：单篇爆款还是长期资产',
+    optional: true,
+  },
 ]
+
+/**
+ * 「我是谁」三问的维度集合。
+ * 三者全部缺失时触发增量补问（见 interviewTrigger），
+ * 让已访谈老用户只补这 3 问，而不是重答 13 问。
+ */
+export const IDENTITY_DIMENSIONS: DeclarationDimension[] = [
+  'background',
+  'value_statement',
+  'long_term_goal',
+]
+
+/** 核心维度（决定「是否已访谈」与理解度分母） */
+export const CORE_DIMENSIONS: DeclarationDimension[] =
+  DECLARATION_DIMENSION_META.filter((d) => !d.optional).map((d) => d.key)
+
+/** 返回尚未填写的「我是谁」维度（全部已填时返回空数组） */
+export function missingIdentityDimensions(d: CreatorDeclaration): DeclarationDimension[] {
+  return IDENTITY_DIMENSIONS.filter((key) => {
+    const v = d[key]
+    return typeof v !== 'string' || v.trim().length === 0
+  })
+}
+
+/** 判断某维度是否已填写（供理解度与补全判定复用，避免各处重复取值逻辑） */
+export function isDimensionFilled(d: CreatorDeclaration, key: DeclarationDimension): boolean {
+  const v = (d as Record<string, unknown>)[key]
+  return typeof v === 'string' && v.trim().length > 0
+}
 
 // ── 3. normalize 纯函数（服务端用，兜底清洗）──────────────
 
@@ -135,7 +208,8 @@ export function normalizeCreatorDeclaration(raw: unknown): CreatorDeclaration {
 
   const result: CreatorDeclaration = {}
 
-  // 8 个维度字段，每个限 200 字（用户选择项 + 自定义文本）
+  // 11 个维度字段（8 核心 + 3「我是谁」），每个限 200 字（用户选择项 + 自定义文本）。
+  // 顺序即注入顺序：先身份，后写法。
   const dimFields: Array<[keyof CreatorDeclaration, string]> = [
     ['creator_goal', 'creator_goal'],
     ['expression_profile', 'expression_profile'],
@@ -145,6 +219,9 @@ export function normalizeCreatorDeclaration(raw: unknown): CreatorDeclaration {
     ['quality_standard', 'quality_standard'],
     ['avoid_preference', 'avoid_preference'],
     ['creation_scenario', 'creation_scenario'],
+    ['background', 'background'],
+    ['value_statement', 'value_statement'],
+    ['long_term_goal', 'long_term_goal'],
   ]
 
   for (const [camelKey, snakeKey] of dimFields) {
@@ -179,35 +256,26 @@ export function normalizeCreatorDeclaration(raw: unknown): CreatorDeclaration {
 
 /**
  * 判断 declaration 是否为空（未访谈）。
- * 8 个维度字段全部缺失时返回 true。
+ * 11 个维度字段全部缺失时返回 true（含「我是谁」三问 —— 只填了身份三问
+ * 也说明用户已经表达过自己，应当注入，不应当被当成"没数据"）。
  */
 export function isDeclarationEmpty(d: CreatorDeclaration): boolean {
-  return (
-    !d.creator_goal &&
-    !d.expression_profile &&
-    !d.thinking_profile &&
-    !d.narrative_preference &&
-    !d.emotional_preference &&
-    !d.quality_standard &&
-    !d.avoid_preference &&
-    !d.creation_scenario
-  )
+  return DECLARATION_DIMENSION_META.every((dim) => !isDimensionFilled(d, dim.key))
 }
 
 /**
- * 判断 declaration 是否已完成访谈（至少回答了 6 个维度）。
+ * 判断 declaration 是否已完成访谈（核心 8 维至少回答 6 个）。
  * 用于决定是否触发首次访谈。
+ *
+ * 分母刻意只算核心 8 维：新增「我是谁」三问是我们要补的数据缺口，
+ * 不能因为系统升级就让已访谈老用户重新变成"未完成"（那是把系统需求转嫁给用户）。
+ * 缺身份三问由增量补问单独触发，见 missingIdentityDimensions。
  */
 export function isDeclarationComplete(d: CreatorDeclaration): boolean {
   let answered = 0
-  if (d.creator_goal) answered++
-  if (d.expression_profile) answered++
-  if (d.thinking_profile) answered++
-  if (d.narrative_preference) answered++
-  if (d.emotional_preference) answered++
-  if (d.quality_standard) answered++
-  if (d.avoid_preference) answered++
-  if (d.creation_scenario) answered++
+  for (const key of CORE_DIMENSIONS) {
+    if (isDimensionFilled(d, key)) answered++
+  }
   return answered >= 6
 }
 
@@ -229,12 +297,17 @@ export function formatDeclarationForPrompt(d: CreatorDeclaration): string {
   const lines: string[] = []
   lines.push('【创作者主动声明 · 该用户对自己创作偏好的明确表达（自然贴合，禁止在正文中提及这些设定本身）】')
 
-  // 6 类软约束维度（按 impact 顺序注入）
+  // 软约束维度（按 impact 顺序注入）。
+  // 「我是谁」三问排在写法维度之前 —— 它们决定内容的立场与可信度基线，
+  // 比"节奏快慢"更接近创作的本质，也让模型先知道"谁在说话"再看"怎么说"。
   const softDims: Array<{
     key: keyof CreatorDeclaration
     label: string
     impact: string
   }> = [
+    { key: 'background', label: '经历与背景', impact: '决定可调用的亲身论据与可信度基线' },
+    { key: 'value_statement', label: '价值判断', impact: '涉及价值冲突时以此为准，不做骑墙表述' },
+    { key: 'long_term_goal', label: '长期目标', impact: '决定内容的时间取向：单篇爆款还是长期资产' },
     { key: 'creator_goal', label: '创作目的', impact: '影响内容价值取向' },
     { key: 'expression_profile', label: '表达方式', impact: '影响文章节奏' },
     { key: 'thinking_profile', label: '思考方式', impact: '影响论证逻辑' },
@@ -293,6 +366,9 @@ export function extractDeclarationTraits(
     dimension: string
     hard?: boolean
   }> = [
+    { key: 'background', dimension: '经历与背景' },
+    { key: 'value_statement', dimension: '价值判断' },
+    { key: 'long_term_goal', dimension: '长期目标' },
     { key: 'creator_goal', dimension: '创作目的' },
     { key: 'expression_profile', dimension: '表达方式' },
     { key: 'thinking_profile', dimension: '思考方式' },

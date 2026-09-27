@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
+import { withAiDeadline } from '@/lib/aiDeadline'
 import { aiFailureResponse, authFailureResponse } from '@/lib/apiAuth'
+import { guardRateLimit } from '@/lib/rateLimit'
 import { createServerClient } from '@/lib/supabaseServer'
 import {
   generateEditPatches,
@@ -8,6 +10,9 @@ import {
   type PatchGenerationInput,
 } from '@/lib/creative/patchEngine'
 import { normalizeFeedbackAnalysis } from '@/lib/creative/workAgent'
+// 需求 §12：AI 消费必须与积分打通
+import { hasEnoughFor } from '@/lib/aiCost'
+import { INSUFFICIENT_POINTS_MESSAGE } from '@/lib/balance'
 
 export const maxDuration = 60
 export const dynamic = 'force-dynamic'
@@ -44,7 +49,10 @@ function sanitizePatches(raw: unknown): ModificationPatch[] {
   return normalizeEditPatches({ patches: raw }).patches
 }
 
-export async function POST(req: Request) {
+// 下面的 60 必须等于本文件的 maxDuration。
+// generateEditPatches 内部有 2 次尝试，两次预算相加会超出 maxDuration →
+// 进程被平台硬杀、预扣退不回。共享一份总预算可避免。见 lib/aiDeadline.ts
+async function handlePost(req: Request) {
   try {
     const authHeader = req.headers.get('authorization') ?? ''
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
@@ -59,6 +67,11 @@ export async function POST(req: Request) {
     if (authErr || !user) {
       return authFailureResponse(authErr)
     }
+
+    // 限流（跨实例）：补丁生成要把基底全文 + 反馈原文整篇送进 LLM，
+    // 单次输入 token 是全站最高的几个入口之一。
+    const limited = await guardRateLimit(user.id, 'creative-patch', 10, 60_000)
+    if (limited) return limited
 
     const body = (await req.json().catch(() => ({}))) as PatchBody
     const content = str(body.content, 100000)
@@ -75,7 +88,23 @@ export async function POST(req: Request) {
       previousPatches: sanitizePatches(body.previousPatches).slice(0, 5),
     }
 
-    const result = await generateEditPatches(input)
+    // ── 调用前余额预检 ────────────────────────────────────────
+    // 扣费发生在 generateEditPatches 内部的原子预扣。这里先挡一道，
+    // 是为了让余额不足时返回 402「请充值」，而不是把「本次没生成出补丁」
+    // 归因为"AI 定位不到段落"——那句降级文案会把用户彻底带偏。
+    const budget = await hasEnoughFor(supabase, user.id, 'generation')
+    if (!budget.ok) {
+      return NextResponse.json(
+        { error: INSUFFICIENT_POINTS_MESSAGE, code: 'insufficient_balance' },
+        { status: 402 }
+      )
+    }
+
+    const result = await generateEditPatches(input, {
+      supabase,
+      userId: user.id,
+      refId: crypto.randomUUID(),
+    })
 
     // 降级：超长/单段/两次尝试无有效补丁 → 前端走全文重写链路（提示可见，不静默）
     if (!result) {
@@ -98,3 +127,5 @@ export async function POST(req: Request) {
     return await aiFailureResponse('生成修改建议失败，请重试')
   }
 }
+
+export const POST = withAiDeadline(60, handlePost)

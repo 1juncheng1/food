@@ -2428,3 +2428,35 @@ end $$;
 --   having b.balance <> coalesce(sum(l.amount), 0);
 -- 完整验收清单见 supabase/verify_points.sql
 
+-- ═══════════════════════════════════════════════════════════════
+-- ───── 17. 推荐卡在线重排（RULE v5，2026-09-25） ─────
+--
+-- 背景：score 此前在 build/refill 写库时算死，落库后 14 天不变。而它依赖的量
+-- （簇最近行为天数 / 簇趋势 / 近期行为质心 / ✕ 口味惩罚）全是活的 ——
+-- 队列实际上是一张冻结在 build 时刻的排序快照。
+--
+-- 改法：离线落「卡片固有特征」，分与排序挪到读路径现场算（lib/creative/interest/rescore.ts）。
+-- 本节是它需要的两个 additive 列，老行一律 nullable / 空对象，
+-- 旧代码不读这两列、不受影响；拿不到特征的卡在线重排会自动跳过。
+-- ═══════════════════════════════════════════════════════════════
+
+-- 卡自身的语义向量（bge-m3@1024）。nullable：S6 知识卡等无向量的源照旧为 null，
+-- 在线重排时该维度走"信号缺失 → 权重重分配"，与离线同口径。
+alter table public.interest_suggestions
+  add column if not exists embedding vector(1024);
+
+-- 卡片固有特征：quality / tagOverlap / knowledge / ranking_version。
+-- ranking_version 是关键：它不是历史标签，而是"这行能不能被当前代码重排"的开关。
+-- 将来若给评分加一个新维度，只须让新写入的 features 带上新版本号，
+-- 老行会自动因版本不匹配退回库 score，绝不会出现"半批新契约半批旧契约混排"。
+alter table public.interest_suggestions
+  add column if not exists ranking_features jsonb not null default '{}'::jsonb;
+
+-- 验证：
+--   select column_name from information_schema.columns
+--    where table_name='interest_suggestions'
+--      and column_name in ('embedding','ranking_features');
+--   select count(*) filter (where ranking_features <> '{}'::jsonb) as 可重排卡数,
+--          count(*) as 总卡数
+--     from public.interest_suggestions where status='active';
+

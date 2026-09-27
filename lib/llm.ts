@@ -21,6 +21,9 @@ import {
 } from '@/lib/languageConsistency'
 // 只引入类型与纯函数（无服务端依赖），用于把 token 用量带回调用方按量扣积分
 import { ZERO_USAGE, addUsage, type TokenUsage } from '@/lib/balance'
+// 请求级 AI 总预算：整条请求共享一个 deadline，重试循环不会把总耗时撑爆
+// 路由 maxDuration（否则进程被平台硬杀，预扣的钱退不回来）。见 aiDeadline.ts
+import { MIN_CALL_BUDGET_MS, llmBudgetMs, remainingAiBudgetMs } from './aiDeadline'
 // Phase 4：AI 计费钩子（调用前预扣 + 调用后按量结算）。
 // 传了 billing 的调用自动计费；没传的行为与改造前完全一致——
 // 存量调用点不必一次性全改，接一个算一个。
@@ -109,7 +112,12 @@ export type DeepSeekChatResult =
  * 必须分开计。没给细分字段时，全部输入按「未命中」计——
  * 这是已知信息下唯一不会低估成本的算法（宁可高估，不可漏算）。
  */
-function parseUsage(data: unknown): TokenUsage {
+/**
+ * 从 DeepSeek 响应里取出 token 用量。
+ * 对外导出：少数生成器（plan / diagnosis）直接 fetch DeepSeek 而非走
+ * callDeepSeekChat，它们同样要按真实用量结算，必须用同一套解析口径。
+ */
+export function parseUsage(data: unknown): TokenUsage {
   const u = (data as { usage?: Record<string, unknown> } | null)?.usage
   if (!u) return ZERO_USAGE
   const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
@@ -123,7 +131,9 @@ function parseUsage(data: unknown): TokenUsage {
   }
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000
+// 单次调用的超时预算由 ./aiDeadline 定义（请求级 deadline 也在那里）——
+// 这里重新导出，让既有的 `import { llmBudgetMs } from '@/lib/llm'` 不受影响。
+export { llmBudgetMs }
 const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/v1/chat/completions'
 
 /**
@@ -363,6 +373,20 @@ export async function callDeepSeekChat(
 ): Promise<DeepSeekChatResult> {
   const billing = opts.billing
 
+  // ── 阶段零：请求级总预算检查 ────────────────────────────────
+  // 位置是这里的关键：必须在预扣**之前**。
+  //   预扣之后若进程被平台硬杀，退款代码根本跑不到，用户白扣钱。
+  //   在这里放弃则一次都没扣——"没扣"不可能失效，"扣了再退"有可能失效。
+  // 典型触发场景是重试循环：第 1 次慢但成功返回了无效内容，
+  //   此时剩余时间已不够再跑一次，硬发起只会被平台杀在半路。
+  const remaining = remainingAiBudgetMs()
+  if (remaining !== null && remaining < MIN_CALL_BUDGET_MS) {
+    console.warn(
+      `[llm] 请求级 AI 预算耗尽（剩余 ${remaining}ms < ${MIN_CALL_BUDGET_MS}ms），放弃本次调用（未预扣）`
+    )
+    return { ok: false, error: 'timeout' }
+  }
+
   // ── 阶段一：调用前预扣 ──────────────────────────────────────
   // 余额不足时直接返回，**不发起任何 HTTP 请求**：先生成再发现没钱，
   // 那笔 token 成本就是平台自己吞了（需求 §18 明确禁止）。
@@ -429,7 +453,14 @@ async function callDeepSeekChatInner(
       })
     : opts.messages
 
-  const budget = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  // 未显式指定时用全局预算（上限受 AI_TIMEOUT_BUDGET_MS 约束，见 llmBudgetMs）。
+  // 再与请求级剩余预算取 min：重试时不可能再拿到一整份完整预算，
+  // 否则多次尝试累加会撑爆路由 maxDuration，进程被杀 → 预扣退不回。
+  const remaining = remainingAiBudgetMs()
+  const budget = Math.min(
+    opts.timeoutMs ?? llmBudgetMs(),
+    remaining ?? Number.POSITIVE_INFINITY
+  )
   const startedAt = Date.now()
 
   const first = await requestOnce(messages, opts, budget)
@@ -496,11 +527,20 @@ async function callDeepSeekChatInner(
  * 按 max_tokens 推导单次请求的超时毫秒数（供尚未走 callDeepSeekChat 的直连 fetch 使用）。
  *
  * DeepSeek 输出速率按 30 tok/s 保守估算生成耗时，另加 15s 连接/排队余量，
- * 最终夹取到 [20s, 120s]：短输出快速失败；超长输出（如 7000 tokens 的方案生成）
- * 也不会被过早掐断而改变既有产品行为。
+ * 最终夹取到 [20s, llmBudgetMs(maxDurationSec)]：短输出快速失败；超长输出
+ * （如 7000 tokens 的方案生成）也不会被过早掐断而改变既有产品行为。
+ *
+ * 上限从写死的 120s 改为预算：120s 超过了站内多数路由的 maxDuration，
+ * 会触发"平台先杀进程、预扣积分退不回"的账单事故。详见 llmBudgetMs。
+ *
+ * @param maxDurationSec 调用方所在路由的 maxDuration。必须传——
+ *   不传会落到 25s 兜底，长输出任务会被过早掐断。
  */
-export function llmTimeoutMs(maxTokens: number): number {
-  return Math.min(120_000, Math.max(20_000, Math.round(15_000 + (maxTokens / 30) * 1000)))
+export function llmTimeoutMs(maxTokens: number, maxDurationSec?: number): number {
+  return Math.min(
+    llmBudgetMs(maxDurationSec),
+    Math.max(20_000, Math.round(15_000 + (maxTokens / 30) * 1000))
+  )
 }
 
 /**
@@ -508,8 +548,8 @@ export function llmTimeoutMs(maxTokens: number): number {
  * 用于给历史直连 fetch 补超时边界：请求无限挂起会吃满 serverless 并发并产生
  * 不可控的 token 费用，必须在调用侧设上限。
  */
-export function llmTimeoutSignal(maxTokens: number): AbortSignal {
-  return AbortSignal.timeout(llmTimeoutMs(maxTokens))
+export function llmTimeoutSignal(maxTokens: number, maxDurationSec?: number): AbortSignal {
+  return AbortSignal.timeout(llmTimeoutMs(maxTokens, maxDurationSec))
 }
 
 /**

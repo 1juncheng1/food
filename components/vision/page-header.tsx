@@ -4,10 +4,10 @@ import { cn } from '@/lib/utils'
 /**
  * 全站统一的页面页眉。
  *
- * 结构（对应产品原则「三、页面统一结构」的顶部）：
- *   eyebrow（短标签） → 标题 → 一句产品理念描述 → 右侧动作 / AI 状态
+ * 结构：眉标（可选） → 标题 → 一句产品理念 → 右侧动作 / AI 状态
  *
- * 每个功能页都必须有 description：告诉用户「这个页面为什么存在、AI 在这里做什么」。
+ * 排版纪律：标题与说明竖向堆叠，不做"左大标题 + 右小段落"的漂浮排版；
+ * 眉标不是每个页面都要有，没有就不传。
  */
 export function PageHeader({
   eyebrow,
@@ -21,7 +21,7 @@ export function PageHeader({
   title: string
   description?: string
   actions?: ReactNode
-  /** AI 状态槽位：放 <AiStatus />，让「AI 正在工作」始终可见 */
+  /** AI 状态槽位：放 <AiStatus />，让系统状态始终可见 */
   ai?: ReactNode
   className?: string
 }) {
@@ -29,19 +29,9 @@ export function PageHeader({
     <header className={cn('mb-8 sm:mb-10', className)}>
       <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 max-w-2xl">
-          {eyebrow && (
-            <p className="mb-2.5 text-[11px] font-medium uppercase tracking-[0.18em] text-indigo-300/80">
-              {eyebrow}
-            </p>
-          )}
-          <h1 className="text-[26px] sm:text-[32px] font-semibold leading-tight tracking-tight text-white">
-            {title}
-          </h1>
-          {description && (
-            <p className="mt-3 text-sm sm:text-[15px] leading-relaxed text-zinc-400">
-              {description}
-            </p>
-          )}
+          {eyebrow && <p className="vs-mark mb-3">{eyebrow}</p>}
+          <h1 className="vs-h1">{title}</h1>
+          {description && <p className="vs-body mt-3">{description}</p>}
         </div>
         {actions && (
           <div className="flex shrink-0 items-center gap-2.5">{actions}</div>

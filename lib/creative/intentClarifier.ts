@@ -123,7 +123,7 @@ export async function clarifyIntent(
       temperature: 0.4,
       max_tokens: maxTokens,
       jsonMode: true,
-      timeoutMs: llmTimeoutMs(maxTokens),
+      timeoutMs: llmTimeoutMs(maxTokens, 60),
       language: target,
       // 第 2 次尝试已是兜底重来，不再叠加语言自纠偏以免拖长响应
       languageRetry: attempt === 0,

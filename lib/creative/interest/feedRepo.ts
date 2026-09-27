@@ -11,7 +11,13 @@
 // ============================================================
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { SuggestionRow } from './suggestionRepo'
+import {
+  SUGGESTION_BASE_COLUMNS,
+  SUGGESTION_RERANK_COLUMNS,
+  rerankColumnsMissing,
+  type SuggestionRow,
+} from './suggestionRepo'
+import { applyRescore, type RescoreContext } from './rescore'
 
 /** 每用户每日出卡上限（spec AC-6，达上限返回 no_more 且不产生新 LLM 调用） */
 export const FEED_DAILY_CAP = 100
@@ -152,7 +158,7 @@ export function applyExploreQuota<T extends { slot: string; score: number; id: s
 export async function getFeedPage(
   supabase: SupabaseClient,
   userId: string,
-  opts: { cursor?: string; limit?: number } = {}
+  opts: { cursor?: string; limit?: number; rescore?: RescoreContext | null } = {}
 ): Promise<{
   cards: SuggestionRow[]
   next_cursor: string | null
@@ -162,23 +168,29 @@ export async function getFeedPage(
   const limit = Math.min(Math.max(opts.limit ?? FEED_PAGE_SIZE, 1), 50)
   const cursor = opts.cursor ? decodeCursor(opts.cursor) : null
 
+  const activeRows = (columns: string) =>
+    supabase
+      .from('interest_suggestions')
+      .select(columns)
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .order('score', { ascending: false })
+      .order('id', { ascending: true })
+
   // 1. 并行启动：当日已 dismiss/已曝光的卡 ID + 全部 active 推荐卡（P1-4 优化）
   // 两个查询无依赖关系，原串行实现浪费 ~100-200ms
   const [excludedIds, mainQueryRes] = await Promise.all([
     getTodayExcludedIds(supabase, userId),
-    supabase
-      .from('interest_suggestions')
-      .select(
-        'id, cluster_code, slot, source, title, description, topic, form_hint, score, score_breakdown, evidence, market_refs, core_question, why_recommend, creation_angle, related_knowledge, reason_source'
-      )
-      .eq('user_id', userId)
-      .eq('status', 'active')
-      .order('score', { ascending: false })
-      .order('id', { ascending: true }),
+    activeRows(SUGGESTION_RERANK_COLUMNS),
   ])
 
-  // 2. 主查询结果处理
-  const { data, error } = mainQueryRes
+  // 2. 主查询结果处理；迁移 0018 未落地时退回基础列（库 score 排序）
+  let { data, error } = mainQueryRes
+  if (error && rerankColumnsMissing(error)) {
+    const fallback = await activeRows(SUGGESTION_BASE_COLUMNS)
+    data = fallback.data
+    error = fallback.error
+  }
   if (error) {
     console.error('[feed] 查询 Feed 页失败:', error)
     return { cards: [], next_cursor: null, no_more: false, remaining: 0 }
@@ -189,13 +201,21 @@ export async function getFeedPage(
     (r) => !excludedIds.has(r.id)
   )
 
-  // 4. P3 AC-10：applyExploreQuota 重排，保证每 10 张 ≥2 张 exploration
-  const rows = applyExploreQuota(excludedRows)
+  // 4. RULE v5：用「当下的画像」重算分并重排（无上下文则保持库 score）
+  const reranked = opts.rescore ? applyRescore(excludedRows, opts.rescore) : excludedRows
 
-  // 5. 游标定位：找到 cursor 指定的起始位置
+  // 5. P3 AC-10：applyExploreQuota 重排，保证每 10 张 ≥2 张 exploration
+  const rows = applyExploreQuota(reranked)
+
+  // 6. 游标定位：找到 cursor 指定的起始位置
+  //
+  // 只按 id 匹配，不再比对 score。库 score 与在线重排后的现场分是两个不同的值：
+  // 只要把 score 卷进定位条件，任何一次重排（执行一次 ✕ 后的口味惩罚也算）
+  // 都会让 score 对不上 → findIndex 返回 -1 → startIndex 归零 → 第二页从头再来，
+  // 用户看到的就是"翻页一直在重复"。id 不可变，才是合格的锚点。
   let startIndex = 0
   if (cursor) {
-    const idx = rows.findIndex((r) => r.score === cursor.s && r.id === cursor.i)
+    const idx = rows.findIndex((r) => r.id === cursor.i)
     if (idx !== -1) {
       startIndex = idx + 1 // 从 cursor 之后开始
     }
@@ -233,24 +253,32 @@ export async function loadFreshSuggestions(
   supabase: SupabaseClient,
   userId: string,
   sinceIso: string,
-  limit: number
+  limit: number,
+  opts: { rescore?: RescoreContext | null } = {}
 ): Promise<SuggestionRow[]> {
-  const { data, error } = await supabase
-    .from('interest_suggestions')
-    .select(
-      'id, cluster_code, slot, source, title, description, topic, form_hint, score, score_breakdown, evidence, market_refs, core_question, why_recommend, creation_angle, related_knowledge, reason_source'
-    )
-    .eq('user_id', userId)
-    .eq('status', 'active')
-    .gt('created_at', sinceIso)
-    .order('score', { ascending: false })
-    .order('id', { ascending: true })
-    .limit(Math.max(1, limit))
+  const freshRows = (columns: string) =>
+    supabase
+      .from('interest_suggestions')
+      .select(columns)
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .gt('created_at', sinceIso)
+      .order('score', { ascending: false })
+      .order('id', { ascending: true })
+      .limit(Math.max(1, limit))
+
+  let { data, error } = await freshRows(SUGGESTION_RERANK_COLUMNS)
+  if (error && rerankColumnsMissing(error)) {
+    const fallback = await freshRows(SUGGESTION_BASE_COLUMNS)
+    data = fallback.data
+    error = fallback.error
+  }
   if (error) {
     console.error('[feed] 查询本轮新卡失败:', error.message)
     return []
   }
-  return (data ?? []) as unknown as SuggestionRow[]
+  const rows = (data ?? []) as unknown as SuggestionRow[]
+  return opts.rescore ? applyRescore(rows, opts.rescore) : rows
 }
 
 /**

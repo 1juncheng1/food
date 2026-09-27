@@ -11,7 +11,7 @@
 //   5. 完成后立即触发 onCompleted 回调，调用方决定后续动作
 // ============================================================
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import {
   INTERVIEW_QUESTIONS,
   type InterviewQuestion,
@@ -28,6 +28,16 @@ interface InterviewDialogProps {
   onCompleted: () => void
   /** 用户主动关闭弹窗（跳过访谈） */
   onDismiss: () => void
+  /**
+   * 只问这些维度（增量补问）。
+   * 新增维度后老用户只需补这几问，不传则展示整套问题。
+   */
+  dimensions?: DeclarationDimension[]
+  /**
+   * 沉浸式：作为整页内容渲染（不带遮罩、不响应点击空白关闭），
+   * 供 /welcome 这类独立 onboarding 页面使用。默认 false = 弹窗。
+   */
+  immersive?: boolean
 }
 
 interface InterviewStatus {
@@ -49,19 +59,26 @@ export function InterviewDialog({
   accessToken,
   onCompleted,
   onDismiss,
+  dimensions,
+  immersive = false,
 }: InterviewDialogProps) {
   const [loading, setLoading] = useState(true)
   const [status, setStatus] = useState<InterviewStatus | null>(null)
   const [questions, setQuestions] = useState<InterviewQuestion[]>([])
   const [answers, setAnswers] = useState<Record<string, Answer>>({})
+  // 完成所需的最低回答数由服务端下发：补问只展示 3 问时不能还要求 6 个
+  const [requiredCount, setRequiredCount] = useState(6)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+
+  // 维度集合变化才重新拉取；数组字面量每次渲染都是新引用，故用 join 做依赖
+  const dimensionKey = dimensions?.join(',') ?? ''
 
   // ── 加载问题和当前状态 ────────────────────────────────
   useEffect(() => {
     if (!open) return
     void loadInterview()
-  }, [open, accessToken])
+  }, [open, accessToken, dimensionKey])
 
   async function loadInterview() {
     if (!accessToken) {
@@ -72,13 +89,21 @@ export function InterviewDialog({
     setLoading(true)
     setError('')
     try {
-      const res = await fetch('/api/creative/interview', {
+      // 增量补问：只取缺的维度对应的问题
+      const query = dimensionKey ? `?dimensions=${encodeURIComponent(dimensionKey)}` : ''
+      const res = await fetch(`/api/creative/interview${query}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       })
       if (!res.ok) throw new Error('加载失败')
       const data = await res.json()
-      setQuestions(data.questions ?? [])
+      const loaded: InterviewQuestion[] = (data.questions ?? []) as InterviewQuestion[]
+      setQuestions(loaded)
       setStatus(data.status ?? null)
+      setRequiredCount(
+        typeof data.requiredCount === 'number' && data.requiredCount > 0
+          ? data.requiredCount
+          : Math.min(6, loaded.length)
+      )
 
       // 回填已有回答
       const existing = data.status?.declaration ?? {}
@@ -171,11 +196,13 @@ export function InterviewDialog({
   const answeredCount = Object.values(answers).filter(
     (a) => a.value.trim().length > 0
   ).length
-  const canComplete = answeredCount >= 6
+  const canComplete = answeredCount >= requiredCount
 
-  return (
-    <div
-      style={{
+  // 弹窗模式：fixed 遮罩 + 点击空白关闭；沉浸式：普通流式布局，
+  // 没有遮罩也就没有"点空白关闭"这条逃逸路径。
+  const shellStyle: CSSProperties = immersive
+    ? { width: '100%', maxWidth: '760px', margin: '0 auto' }
+    : {
         position: 'fixed',
         inset: 0,
         background: 'rgba(0, 0, 0, 0.6)',
@@ -185,23 +212,28 @@ export function InterviewDialog({
         alignItems: 'center',
         justifyContent: 'center',
         padding: '20px',
-      }}
+      }
+
+  const cardStyle: CSSProperties = {
+    background: 'var(--surface, #1a1a1a)',
+    border: '1px solid var(--border, rgba(255,255,255,0.08))',
+    borderRadius: '16px',
+    width: '100%',
+    maxWidth: immersive ? '760px' : '640px',
+    // 沉浸式由页面自己滚动，卡片不再锁 90vh
+    maxHeight: immersive ? 'none' : '90vh',
+    overflow: immersive ? 'visible' : 'auto',
+    boxShadow: '0 16px 48px rgba(0,0,0,0.4)',
+  }
+
+  return (
+    <div
+      style={shellStyle}
       onClick={(e) => {
-        if (e.target === e.currentTarget && !submitting) handleDismiss()
+        if (!immersive && e.target === e.currentTarget && !submitting) handleDismiss()
       }}
     >
-      <div
-        style={{
-          background: 'var(--surface, #1a1a1a)',
-          border: '1px solid var(--border, rgba(255,255,255,0.08))',
-          borderRadius: '16px',
-          width: '100%',
-          maxWidth: '640px',
-          maxHeight: '90vh',
-          overflow: 'auto',
-          boxShadow: '0 16px 48px rgba(0,0,0,0.4)',
-        }}
-      >
+      <div style={cardStyle}>
         <div style={{ padding: '24px 28px', borderBottom: '1px solid var(--border, rgba(255,255,255,0.08))' }}>
           <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 600, color: 'var(--text, #fff)' }}>
             AI 想先认识你一下
@@ -352,7 +384,7 @@ export function InterviewDialog({
             >
               <div style={{ fontSize: '12px', color: 'var(--text-muted, #888)' }}>
                 已回答 {answeredCount}/{questions.length} 问
-                {!canComplete && answeredCount > 0 && '（至少 6 问才能完成）'}
+                {!canComplete && answeredCount > 0 && `（至少 ${requiredCount} 问才能完成）`}
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
@@ -426,13 +458,18 @@ export function useInterviewTrigger(
 ): {
   shouldShow: boolean
   reason: string
-  triggerType: 'first_time' | 'incomplete' | 'version_outdated' | null
+  triggerType: 'first_time' | 'incomplete' | 'supplement' | 'version_outdated' | null
+  /** 增量补问时需要补的维度（非补问场景为 null） */
+  missingDimensions: DeclarationDimension[] | null
   refresh: () => void
 } {
   const [shouldShow, setShouldShow] = useState(false)
   const [reason, setReason] = useState('')
   const [triggerType, setTriggerType] = useState<
-    'first_time' | 'incomplete' | 'version_outdated' | null
+    'first_time' | 'incomplete' | 'supplement' | 'version_outdated' | null
+  >(null)
+  const [missingDimensions, setMissingDimensions] = useState<
+    DeclarationDimension[] | null
   >(null)
   const [refreshKey, setRefreshKey] = useState(0)
 
@@ -472,8 +509,10 @@ export function useInterviewTrigger(
           setShouldShow(true)
           setReason(result.reason ?? '')
           setTriggerType(result.triggerType)
+          setMissingDimensions(result.missingDimensions ?? null)
         } else {
           setShouldShow(false)
+          setMissingDimensions(null)
         }
       } catch { /* ignore */ }
     })()
@@ -485,5 +524,5 @@ export function useInterviewTrigger(
     setRefreshKey((k) => k + 1)
   }
 
-  return { shouldShow, reason, triggerType, refresh }
+  return { shouldShow, reason, triggerType, missingDimensions, refresh }
 }

@@ -30,11 +30,10 @@ import {
   normalizeInspirationAnalysis,
   formatInspirationForPrompt,
 } from '@/lib/creative/inspirationAnalyzer'
-import { formatStyleDimensions } from '@/lib/creative/styleLearning'
-import { formatCreatorModel } from '@/lib/creative/creatorModel'
+import { clampWordCount } from '@/lib/creative/wordCount'
 import { resolveMode, buildCreatorIdentity } from '@/lib/creative/personalization'
 import { adoptRecommendation } from '@/lib/creative/interest/adopt'
-import { buildInterestBlock } from '@/lib/creative/interest/promptBlock'
+import { buildCreatorContextBlocks } from '@/lib/creative/creatorContext'
 import { fetchCreatorStyleProfile } from '@/lib/creative/styleProfileRepo'
 import {
   buildKnowledgeInjection,
@@ -46,6 +45,9 @@ import {
   formatCharactersForPrompt,
 } from '@/lib/characters'
 import type { createServerClient } from '@/lib/supabaseServer'
+// 需求 §12：AI 消费必须与积分打通——余额不足禁止调用，充足则原子预扣后调用
+import { hasEnoughFor } from '@/lib/aiCost'
+import { INSUFFICIENT_POINTS_MESSAGE } from '@/lib/balance'
 
 export const maxDuration = 60 // 输出含问题理解 + 三方向方案，与 prompt-optimizer 同口径
 export const dynamic = 'force-dynamic'
@@ -81,6 +83,13 @@ interface RequestBody {
    * + 触发增量重建。无此字段 = 普通生成路径，零影响。
    */
   rec_id?: unknown
+  /**
+   * 用户自定义目标字数（生成页可选填写，100-5000）。
+   * 传入后方案的三档字数必须包含该值，且 recommended_word_count 等于该值；
+   * 冻结方案与正文生成沿用它，实现"我填多少字就写多少字"。
+   * 缺省 / 越界 = 不限制，完全由 AI 按主题表达容量给档（行为与改动前一致）。
+   */
+  word_count?: unknown
 }
 
 function str(v: unknown, maxLen: number): string {
@@ -98,33 +107,6 @@ async function countWorks(supabase: SupabaseServerClient, userId: string): Promi
     return 0
   }
   return count ?? 0
-}
-
-/**
- * 我的模式：装配风格卡 + 创作者人格文本（与 blueprint 接口同口径，
- * 保证"方案阶段的 AI"和"正文阶段的 AI"对用户的理解一致）。
- */
-function buildStyleProfileText(profile: Record<string, unknown> | null): string {
-  if (!profile) return ''
-  const toneTags =
-    Array.isArray(profile.tone_tags) && profile.tone_tags.length
-      ? profile.tone_tags.filter((x): x is string => typeof x === 'string').join('、')
-      : '暂无'
-  const learnedDims = formatStyleDimensions(profile.style_dimensions)
-
-  let text = `【用户的创作风格特征】
-语气：${toneTags}
-节奏：${typeof profile.pace_preference === 'string' ? profile.pace_preference : '未知'}
-常用开头：${typeof profile.common_opening === 'string' ? profile.common_opening : '未知'}
-平均长度：${typeof profile.avg_length === 'number' ? profile.avg_length : 0} 字/篇
-请在三个方向的设计中体现这些风格特征（方向可有探索性，但推荐方向必须贴合）。${learnedDims ? `\n${learnedDims}` : ''}`
-
-  // 创作者人格：母题偏好影响方向选取；排斥元素是所有方向的硬禁忌
-  const block = formatCreatorModel(profile)
-  if (block.text) {
-    text += `\n${block.text}\n请在方向的选题切入、Hook 与核心冲突上体现该创作者的母题偏好；排斥元素不得出现在任何方向的任何环节。`
-  }
-  return text
 }
 
 export async function POST(req: Request) {
@@ -254,7 +236,16 @@ export async function POST(req: Request) {
         ? `${identity.forWriter}\n\n本次任务是先为这位创作者"设计创作方案"而不是直接写正文：选题切入、方向选择、Hook 与冲突设计都要像 ta 本人会自然生长出来的样子，而不是平台通用模板。`
         : ''
 
-      styleProfileText = buildStyleProfileText(profile)
+      // 个人数据注入统一走装配器（Creator Context）：方案 / 蓝图 / 正文三处同一
+      // 口径，杜绝"某一阶段少注入一块"的漂移。声明与修改偏好此前只进正文，
+      // 方案阶段看不到用户排斥什么、反复拒绝什么 —— 这里一并补齐。
+      const blocks = buildCreatorContextBlocks(profile, {
+        stage: 'plan',
+        interest: { maxTopics: 5, maxLength: 420 },
+      })
+      styleProfileText = blocks.styleText
+      if (blocks.creatorText) styleProfileText += `\n\n${blocks.creatorText}`
+      interestBlock = blocks.interestText
 
       // Creator Knowledge System Phase 3：方案阶段的知识注入。
       // 只读「已确认 + 置信度达标」的单元 —— AI 侧写的候选到不了这里，
@@ -263,15 +254,6 @@ export async function POST(req: Request) {
       const knowledge = await buildKnowledgeInjection(supabase, userId, topic)
       knowledgeBlock = knowledge.block
       knowledgeUnits = knowledge.units
-
-      // 长期关注领域：profile 已由上方 fetchCreatorStyleProfile 一并读出（可选列，
-      // 未迁移环境自动降级缺失，此处取到 undefined 时同样返回空串）。
-      // 纯函数、不读库、不调 LLM —— 无额外成本与失败面。
-      interestBlock = buildInterestBlock(profile?.interest_profile, {
-        // 方案阶段上下文紧张，且只需要「足以影响方向选取」的信号，收紧预算
-        maxTopics: 5,
-        maxLength: 420,
-      }).text
     }
 
     // ── AI 灵感分析：从 body 取出并转文本注入 plan（让 plan 延续灵感分析结论）──
@@ -285,6 +267,8 @@ export async function POST(req: Request) {
       topic,
       categoryOptions: CATEGORIES,
       mode,
+      // 用户自定义字数（可选）：越界/非法一律当作"未指定"，避免脏数据进 prompt
+      wordCount: clampWordCount(body.word_count),
       creatorIdentityText,
       styleProfileText,
       evidenceText,
@@ -301,7 +285,23 @@ export async function POST(req: Request) {
       interestText: interestBlock || undefined,
     }
 
-    const plan = await generatePlan(planInput)
+    // ── 调用前余额预检 ────────────────────────────────────────
+    // 真正的扣费是 generatePlan 内部的「预扣」那一刀（行锁原子、并发安全）。
+    // 这里只是为了让余额不足时返回 402「请充值」，而不是让用户看到
+    // 含糊的 502「方案生成失败」后反复重试。
+    const budget = await hasEnoughFor(auth.supabase, auth.userId, 'generation')
+    if (!budget.ok) {
+      return NextResponse.json(
+        { error: INSUFFICIENT_POINTS_MESSAGE, code: 'insufficient_balance' },
+        { status: 402 }
+      )
+    }
+
+    const plan = await generatePlan(planInput, {
+      supabase: auth.supabase,
+      userId: auth.userId,
+      refId: crypto.randomUUID(),
+    })
     if (!plan) {
       // 失败原因优先取 LLM 真实错误码：余额耗尽要说"额度不足"，而不是让用户空重试
       return await aiFailureResponse('创作方案生成失败，请稍后重试或改用手动设置')

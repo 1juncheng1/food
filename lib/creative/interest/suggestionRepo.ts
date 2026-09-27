@@ -18,6 +18,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Candidate } from './candidates'
+import type { RankingFeatures } from './rescore'
 
 export interface SuggestionRow {
   id: string
@@ -38,6 +39,27 @@ export interface SuggestionRow {
   creation_angle: string | null
   related_knowledge: string[] | null
   reason_source: string | null
+  // RULE v5：在线重排输入（迁移 0018 落地前为 undefined/null → 该卡跳过重排）
+  embedding?: unknown
+  ranking_features?: unknown
+}
+
+/**
+ * 读列清单：基础列 / 含在线重排列。
+ *
+ * 为什么要两级：0018 是需要人工在 Supabase 执行的 DDL。在它落地之前，带新列的
+ * select 会被 PostgREST 打回 —— 若不降级，一次"忘了迁库"就是 Feed 整个 500。
+ * 见 rerankColumnsMissing() / withColumnFallback()。
+ */
+export const SUGGESTION_BASE_COLUMNS =
+  'id, cluster_code, slot, source, title, description, topic, form_hint, score, score_breakdown, evidence, market_refs, core_question, why_recommend, creation_angle, related_knowledge, reason_source'
+
+export const SUGGESTION_RERANK_COLUMNS = `${SUGGESTION_BASE_COLUMNS}, embedding, ranking_features`
+
+/** PostgREST 报"列不存在"的两种文案（不同版本措辞不同） */
+export function rerankColumnsMissing(error: { message?: string } | null): boolean {
+  const m = error?.message ?? ''
+  return /does not exist|could not find the .{0,40}column|schema cache/i.test(m)
 }
 
 /** builder 落库前的输入结构 */
@@ -58,6 +80,15 @@ export interface SuggestionInsertInput {
   scoreBreakdown: Record<string, number>
   evidence: Record<string, unknown>
   marketRefs?: Record<string, unknown> | null
+  /**
+   * RULE v5：卡自身的语义向量（bge-m3@1024）。
+   * 不提供 → 该卡只能做"非语义维度"的在线重排（趋势/新鲜度/口味），语义维度走缺失重分配。
+   */
+  embedding?: number[] | null
+  /**
+   * RULE v5：卡片固有特征。不提供 → 该卡永远按库 score 排序（等同今日之前的行为）。
+   */
+  rankingFeatures?: RankingFeatures | null
   // WF6：AI 理由（可选；未提供时落 template 默认）
   coreQuestion?: string | null
   whyRecommend?: string | null
@@ -77,13 +108,23 @@ export async function getActiveSuggestions(
   userId: string,
   limit = 6
 ): Promise<SuggestionRow[]> {
-  const { data, error } = await supabase
-    .from('interest_suggestions')
-    .select('id, cluster_code, slot, source, title, description, topic, form_hint, score, score_breakdown, evidence, market_refs, core_question, why_recommend, creation_angle, related_knowledge, reason_source')
-    .eq('user_id', userId)
-    .eq('status', 'active')
-    .order('score', { ascending: false })
-    .limit(limit)
+  // 新列缺失时自动退回基础列（等价于今天之前的行为：按库 score 排序）
+  const query = async (columns: string) => {
+    const r = await supabase
+      .from('interest_suggestions')
+      .select(columns)
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .order('score', { ascending: false })
+      .limit(limit)
+    return { data: (r.data ?? null) as unknown[] | null, error: r.error }
+  }
+
+  let result = await query(SUGGESTION_RERANK_COLUMNS)
+  if (result.error && rerankColumnsMissing(result.error)) {
+    result = await query(SUGGESTION_BASE_COLUMNS)
+  }
+  const { data, error } = result
   if (error) {
     console.error('[interest] 读 active 推荐卡失败:', error)
     return []
@@ -106,7 +147,7 @@ export async function insertSuggestions(
 ): Promise<number> {
   if (!items.length) return 0
 
-  const rows = items.map((it) => ({
+  const base = items.map((it) => ({
     user_id: userId,
     build_id: buildId,
     cluster_code: it.clusterCode,
@@ -129,12 +170,33 @@ export async function insertSuggestions(
     status: 'active',
   }))
 
-  const { error } = await supabase.from('interest_suggestions').insert(rows)
+  const withRerank = base.map((row, i) => ({
+    ...row,
+    embedding: normalizeEmbedding(items[i].embedding),
+    ranking_features: items[i].rankingFeatures ?? null,
+  }))
+
+  let { error } = await supabase.from('interest_suggestions').insert(withRerank)
+  if (error && rerankColumnsMissing(error)) {
+    // 0018 尚未执行：降级为不带新列重插。宁可丢"在线重排能力"，
+    // 也不能让一次迁移漏执行变成"用户一张卡都拿不到"。
+    console.warn(
+      '[interest] interest_suggestions 缺少 v5 重排列（迁移 0018 未执行？），本次按基础列落库：',
+      error.message
+    )
+    ;({ error } = await supabase.from('interest_suggestions').insert(base))
+  }
   if (error) {
     console.error('[interest] 落库推荐卡失败:', error)
     return 0
   }
-  return rows.length
+  return base.length
+}
+
+/** 只接受 1024 维实向量；其余一律 null（脏向量进 pgvector 会直接炸掉整个 insert） */
+function normalizeEmbedding(v: number[] | null | undefined): number[] | null {
+  if (!Array.isArray(v) || v.length !== 1024) return null
+  return v.every((x) => typeof x === 'number' && Number.isFinite(x)) ? v : null
 }
 
 // ── 状态流转 ──
@@ -224,6 +286,30 @@ export async function supersedeOldBuild(
     .update({ status: 'superseded' })
     .eq('user_id', userId)
     .eq('status', 'active')
+}
+
+/**
+ * 新批次落库成功后：只把「非本批次」的旧 active 卡置 superseded。
+ *
+ * 为什么不能再用 supersedeOldBuild（无差别清空）：
+ *   它必须在 insert 之前调用才能不误伤新卡，而一旦本轮候选被过滤空或落库失败，
+ *   队列就被抹成 0 张 —— 用户首页一条推荐都没有。生产实测过：某用户上一轮
+ *   还有 14 张卡，下一个 build 产出 0 张，队列直接清零。
+ *
+ * 按 build_id 排除后，插入顺序可以安全地改成「先落新卡、后清旧卡」：
+ * 任意时刻用户手里都还有卡，最坏情况也只是短暂多看到几张旧卡。
+ */
+export async function supersedeExceptBuild(
+  supabase: SupabaseClient,
+  userId: string,
+  keepBuildId: string
+): Promise<void> {
+  await supabase
+    .from('interest_suggestions')
+    .update({ status: 'superseded' })
+    .eq('user_id', userId)
+    .eq('status', 'active')
+    .neq('build_id', keepBuildId)
 }
 
 /** 定时任务调用：过期 active/impressed 卡（默认 14 天） */

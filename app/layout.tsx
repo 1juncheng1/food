@@ -3,7 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import "./vision.css";
 import { AuthProvider } from "@/components/auth-provider";
-import { AuroraBackground } from "@/components/aurora";
+import { VisionAmbient } from "@/components/vision/ambient";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -28,12 +28,12 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
-      lang="en"
+      lang="zh-CN"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       {/* body 加深色背景：直接输入 URL 进入时不再出现白屏闪烁 */}
-      <body className="min-h-full flex flex-col bg-zinc-950">
-        <AuroraBackground />
+      <body className="min-h-full flex flex-col bg-[var(--vs-void)]">
+        <VisionAmbient />
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>

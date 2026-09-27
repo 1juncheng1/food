@@ -383,7 +383,7 @@ export default function MaterialsPage() {
 
   // ── 渲染 ──
   return (
-    <div className="inner-page gen-stage" data-mode="inspiration">
+    <div className="inner-page " data-mode="inspiration">
       <PageShell>
         {/* 定位：素材不是收藏夹，而是 AI 认识你的原始材料 */}
         <PageHeader
@@ -393,7 +393,7 @@ export default function MaterialsPage() {
           actions={
             <Link
               href="/add"
-              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500"
+              className="vs-btn vs-btn-primary"
             >
               ＋ 添加素材
             </Link>
@@ -413,20 +413,20 @@ export default function MaterialsPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-6">
           {/* ── 左侧分组侧栏 ── */}
-          <aside className="glass anim-rise rounded-2xl p-4 h-fit">
-            <div className="text-xs text-zinc-500 mb-3 px-2 tracking-wider">分组</div>
+          <aside className="vs-frame vs-rise p-4 h-fit">
+            <div className="vs-mark mb-3 px-2">分组</div>
             <ul className="space-y-1">
               <li>
                 <button
                   onClick={() => setSelectedGroupId('all')}
                   className={`w-full text-left text-sm px-3 py-2.5 rounded-lg transition flex items-center justify-between ${
                     selectedGroupId === 'all'
-                      ? 'bg-indigo-500/20 text-white border border-indigo-500/40'
-                      : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200 border border-transparent'
+                      ? 'border border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]'
+                      : 'border border-transparent text-[var(--vs-ink-3)] hover:text-[var(--vs-ink)]'
                   }`}
                 >
                   <span>全部</span>
-                  <span className="text-[11px] text-zinc-500">{materials.length}</span>
+                  <span className="vs-note">{materials.length}</span>
                 </button>
               </li>
               <li>
@@ -434,8 +434,8 @@ export default function MaterialsPage() {
                   onClick={() => setSelectedGroupId('uncategorized')}
                   className={`w-full text-left text-sm px-3 py-2.5 rounded-lg transition flex items-center justify-between ${
                     selectedGroupId === 'uncategorized'
-                      ? 'bg-indigo-500/20 text-white border border-indigo-500/40'
-                      : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200 border border-transparent'
+                      ? 'border border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]'
+                      : 'border border-transparent text-[var(--vs-ink-3)] hover:text-[var(--vs-ink)]'
                   }`}
                 >
                   <span>未分组</span>
@@ -460,12 +460,12 @@ export default function MaterialsPage() {
                               setRenameValue('')
                             }
                           }}
-                          className="flex-1 bg-zinc-900/70 border border-indigo-500/40 rounded-md px-2 py-1.5 text-xs text-white outline-none"
+                          className="vs-input vs-input-field flex-1 text-xs"
                           placeholder="新分组名"
                         />
                         <button
                           onClick={() => handleRenameGroup(g.id)}
-                          className="text-[11px] text-indigo-300 hover:text-indigo-200 px-1"
+                          className="vs-link text-[11px] px-1"
                           title="确认"
                         >
                           ✓
@@ -475,7 +475,7 @@ export default function MaterialsPage() {
                             setRenamingId(null)
                             setRenameValue('')
                           }}
-                          className="text-[11px] text-zinc-500 hover:text-zinc-400 px-1"
+                          className="vs-link text-[11px] px-1"
                           title="取消"
                         >
                           ✕
@@ -485,8 +485,8 @@ export default function MaterialsPage() {
                       <div
                         className={`flex items-center justify-between rounded-lg transition border ${
                           isSel
-                            ? 'bg-indigo-500/20 text-white border-indigo-500/40'
-                            : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200 border-transparent'
+                            ? 'border border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]'
+                            : 'border-transparent text-[var(--vs-ink-3)] hover:text-[var(--vs-ink)]'
                         }`}
                       >
                         <button
@@ -502,14 +502,14 @@ export default function MaterialsPage() {
                               setRenamingId(g.id)
                               setRenameValue(g.name)
                             }}
-                            className="text-[11px] text-zinc-500 hover:text-indigo-300 px-1"
+                            className="vs-link text-[11px] px-1"
                             title="重命名"
                           >
                             ✎
                           </button>
                           <button
                             onClick={() => handleDeleteGroup(g.id, g.name)}
-                            className="text-[11px] text-zinc-500 hover:text-red-400 px-1"
+                            className="vs-link-danger text-[11px] px-1"
                             title="删除"
                           >
                             ✕
@@ -540,12 +540,12 @@ export default function MaterialsPage() {
                     }}
                     placeholder="新分组名（最多 30 字）"
                     maxLength={30}
-                    className="w-full bg-zinc-900/70 border border-indigo-500/40 rounded-lg px-3 py-2 text-sm text-white outline-none"
+                    className="vs-input vs-input-field w-full"
                   />
                   <div className="flex gap-2">
                     <button
                       onClick={handleCreateGroup}
-                      className="flex-1 text-xs py-1.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/30 transition"
+                      className="vs-btn vs-btn-primary vs-btn-sm flex-1"
                     >
                       确认新建
                     </button>
@@ -554,7 +554,7 @@ export default function MaterialsPage() {
                         setNewGroupName('')
                         setCreatingGroup(false)
                       }}
-                      className="text-xs px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-500 hover:text-zinc-300 transition"
+                      className="vs-btn vs-btn-ghost vs-btn-sm"
                     >
                       取消
                     </button>
@@ -563,7 +563,7 @@ export default function MaterialsPage() {
               ) : (
                 <button
                   onClick={() => setCreatingGroup(true)}
-                  className="w-full text-xs text-zinc-500 hover:text-indigo-300 border border-dashed border-zinc-700 hover:border-indigo-500/40 rounded-lg py-2.5 transition"
+                  className="vs-btn vs-btn-ghost vs-btn-sm w-full"
                 >
                   ＋ 新建分组
                 </button>
@@ -574,19 +574,19 @@ export default function MaterialsPage() {
           {/* ── 右侧主区 ── */}
           <section>
             {/* 搜索 + 类型筛选 */}
-            <div className="glass anim-rise rounded-2xl p-4 mb-5 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+            <div className="vs-frame vs-rise p-4 mb-5 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
               <div className="flex-1 relative">
                 <input
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="搜索素材内容…"
-                  className="w-full bg-zinc-900/60 border border-zinc-800 rounded-lg px-4 py-2.5 text-sm text-white outline-none focus:border-indigo-500/50"
+                  className="vs-input vs-input-field w-full"
                 />
                 {query && (
                   <button
                     onClick={() => setQuery('')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 text-xs px-2"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 vs-link text-xs px-2"
                   >
                     ✕
                   </button>
@@ -595,7 +595,7 @@ export default function MaterialsPage() {
               <select
                 value={typeFilter}
                 onChange={(e) => setTypeFilter(e.target.value as MaterialType | '')}
-                className="bg-zinc-900/60 border border-zinc-800 rounded-lg px-3 py-2.5 text-sm text-white outline-none focus:border-indigo-500/50 cursor-pointer"
+                className="vs-input vs-select"
               >
                 <option value="">全部类型</option>
                 {MATERIAL_TYPES.map((t) => (
@@ -621,11 +621,11 @@ export default function MaterialsPage() {
             </div>
 
             {loadError && (
-              <div className="bg-red-500/10 text-red-400 text-sm rounded-lg p-3 mb-4">
+              <div className="vs-error mb-4">
                 {loadError}
                 <button
                   onClick={fetchMaterials}
-                  className="ml-2 underline hover:text-red-300"
+                  className="ml-2 underline hover:opacity-80"
                 >
                   重试
                 </button>
@@ -695,20 +695,20 @@ export default function MaterialsPage() {
                         <div className="flex items-center gap-3 text-xs shrink-0">
                           <button
                             onClick={() => setViewingAI(m)}
-                            className="text-zinc-500 hover:text-indigo-300 transition"
+                            className="vs-link"
                           >
                             {m.knowledge ? '查看 AI 理解' : 'AI 未分析'}
                           </button>
                           <button
                             onClick={() => openEdit(m)}
-                            className="text-zinc-500 hover:text-indigo-300 transition"
+                            className="vs-link"
                           >
                             编辑
                           </button>
                           <button
                             onClick={() => handleDelete(m.id)}
                             disabled={deletingId === m.id}
-                            className="text-zinc-500 hover:text-red-400 disabled:opacity-50 transition"
+                            className="vs-link-danger disabled:opacity-50"
                           >
                             {deletingId === m.id ? '删除中…' : '删除'}
                           </button>
@@ -724,7 +724,7 @@ export default function MaterialsPage() {
 
                       {/* 底部使用规则提示（若有 materialType） */}
                       {mtRule && (
-                        <p className="text-[11px] text-zinc-600 mt-2 italic">
+                        <p className="vs-note mt-2 italic">
                           使用规则：{mtRule.usageRule}
                         </p>
                       )}
@@ -744,14 +744,14 @@ export default function MaterialsPage() {
           onClick={closeEdit}
         >
           <div
-            className="glass material-edit-modal rounded-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto dark-scroll"
+            className="vs-panel p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto dark-scroll"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-5">
-              <h3 className="text-lg font-semibold text-white">编辑素材</h3>
+              <h3 className="vs-h3">编辑素材</h3>
               <button
                 onClick={closeEdit}
-                className="text-zinc-500 hover:text-white text-sm"
+                className="vs-note hover:text-[var(--vs-ink)]"
               >
                 ✕
               </button>
@@ -765,11 +765,11 @@ export default function MaterialsPage() {
                   value={editContent}
                   onChange={(e) => setEditContent(e.target.value)}
                   rows={8}
-                  className="w-full bg-zinc-900/60 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white outline-none focus:border-indigo-500/50 resize-y"
+                  className="vs-input vs-input-area vs-resizable w-full"
                   style={{ lineHeight: 1.7 }}
                   placeholder="素材原文"
                 />
-                <p className="text-[11px] text-zinc-500 mt-1.5">
+                <p className="vs-note mt-1.5">
                   编辑内容后 AI 理解可能过时，需要手动重新分析（Phase 2 暂不自动重分析）
                 </p>
               </div>
@@ -806,7 +806,7 @@ export default function MaterialsPage() {
                 <select
                   value={editGroupId}
                   onChange={(e) => setEditGroupId(e.target.value)}
-                  className="w-full bg-zinc-900/60 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white outline-none focus:border-indigo-500/50 cursor-pointer"
+                  className="vs-input vs-select w-full"
                 >
                   <option value="">不分组</option>
                   {groups.map((g) => (
@@ -823,7 +823,7 @@ export default function MaterialsPage() {
                 <select
                   value={editSource}
                   onChange={(e) => setEditSource(e.target.value as MaterialSource)}
-                  className="w-full bg-zinc-900/60 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white outline-none focus:border-indigo-500/50 cursor-pointer"
+                  className="vs-input vs-select w-full"
                 >
                   {SOURCE_OPTIONS.map((s) => (
                     <option key={s} value={s}>
@@ -834,14 +834,14 @@ export default function MaterialsPage() {
               </div>
 
               {editError && (
-                <p className="text-red-400 text-sm text-center">{editError}</p>
+                <p className="vs-error text-center">{editError}</p>
               )}
 
               <div className="flex gap-3 pt-2">
                 <button
                   type="button"
                   onClick={closeEdit}
-                  className="px-5 py-2.5 rounded-xl text-sm border border-zinc-700 text-zinc-400 hover:border-zinc-600 transition"
+                  className="vs-btn vs-btn-ghost"
                 >
                   取消
                 </button>
@@ -849,7 +849,7 @@ export default function MaterialsPage() {
                   type="button"
                   onClick={handleSaveEdit}
                   disabled={savingEdit}
-                  className="flex-1 btn-shine bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium py-2.5 rounded-xl transition"
+                  className="vs-btn vs-btn-primary flex-1 disabled:opacity-50"
                 >
                   {savingEdit ? '保存中…' : '保存'}
                 </button>
@@ -904,16 +904,16 @@ function AIKnowledgeDrawer({
       onClick={onBackdropClick}
     >
       <aside
-        className="material-drawer glass fixed right-0 top-0 h-full w-full sm:w-[440px] z-50 overflow-y-auto dark-scroll"
+        className="material-drawer fixed right-0 top-0 h-full w-full sm:w-[440px] z-50 overflow-y-auto dark-scroll border-l border-[var(--vs-line)] bg-[var(--vs-void-1)]"
         style={{ borderRadius: '0' }}
       >
         <div className="p-6 space-y-5">
           {/* 抽屉头 */}
           <div className="flex items-center justify-between">
-            <h3 className="text-base font-semibold text-white">AI 理解</h3>
+            <h3 className="vs-h3">AI 理解</h3>
             <button
               onClick={onClose}
-              className="text-zinc-500 hover:text-white text-sm"
+              className="vs-note hover:text-[var(--vs-ink)]"
             >
               ✕
             </button>
@@ -933,9 +933,9 @@ function AIKnowledgeDrawer({
 
           {/* 主体 */}
           {!k ? (
-            <div className="glass rounded-xl px-5 py-8 text-center">
-              <p className="text-sm text-zinc-300">该素材尚未 AI 分析</p>
-              <p className="text-xs text-zinc-500 mt-2">
+            <div className="vs-frame px-5 py-8 text-center">
+              <p className="text-[14px] text-[var(--vs-ink-2)]">该素材尚未 AI 分析</p>
+              <p className="vs-note mt-2">
                 添加时若 AI 分析不可用，或素材为 legacy 数据，knowledge 字段为空
               </p>
             </div>
@@ -943,8 +943,8 @@ function AIKnowledgeDrawer({
             <>
               {/* 摘要 */}
               <div>
-                <p className="text-xs text-zinc-500 mb-2 tracking-wider">摘要</p>
-                <div className="glass rounded-xl px-4 py-3 text-sm text-zinc-200 leading-relaxed">
+                <p className="vs-mark mb-2">摘要</p>
+                <div className="vs-frame px-4 py-3 text-[14px] leading-relaxed text-[var(--vs-ink-2)]">
                   {material.ai_summary || k.meaning}
                 </div>
               </div>
@@ -952,16 +952,16 @@ function AIKnowledgeDrawer({
               {/* 使用场景 */}
               {k.context && (
                 <div>
-                  <p className="text-xs text-zinc-500 mb-2 tracking-wider">使用场景</p>
-                  <p className="text-sm text-zinc-300 leading-relaxed">{k.context}</p>
+                  <p className="vs-mark mb-2">使用场景</p>
+                  <p className="text-[14px] leading-relaxed text-[var(--vs-ink-2)]">{k.context}</p>
                 </div>
               )}
 
               {/* 创作用途 */}
               {k.creation_usage && (
                 <div>
-                  <p className="text-xs text-zinc-500 mb-2 tracking-wider">创作用途</p>
-                  <p className="text-sm text-zinc-300 leading-relaxed">
+                  <p className="vs-mark mb-2">创作用途</p>
+                  <p className="text-[14px] leading-relaxed text-[var(--vs-ink-2)]">
                     {k.creation_usage}
                   </p>
                 </div>
@@ -976,23 +976,23 @@ function AIKnowledgeDrawer({
 
               {/* materialType 使用规则 */}
               {mtRule && (
-                <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/5 px-4 py-3">
-                  <p className="text-[11px] text-indigo-300 mb-1 tracking-wider">
+                <div className="vs-frame px-4 py-3">
+                  <p className="vs-mark mb-1">
                     {mtRule.label} · 使用规则
                   </p>
-                  <p className="text-sm text-zinc-200">{mtRule.usageRule}</p>
+                  <p className="text-[14px] text-[var(--vs-ink-2)]">{mtRule.usageRule}</p>
                 </div>
               )}
 
               {/* 相关主题（标签云） */}
               {material.related_topics && material.related_topics.length > 0 && (
                 <div>
-                  <p className="text-xs text-zinc-500 mb-2 tracking-wider">相关主题</p>
+                  <p className="vs-mark mb-2">相关主题</p>
                   <div className="flex flex-wrap gap-2">
                     {material.related_topics.map((t) => (
                       <span
                         key={t}
-                        className="text-xs px-2.5 py-1 rounded-full border border-indigo-500/30 bg-indigo-500/10 text-indigo-300"
+                        className="vs-verdict"
                       >
                         {t}
                       </span>
@@ -1004,18 +1004,18 @@ function AIKnowledgeDrawer({
               {/* 6 维标签 */}
               {traits.length > 0 && (
                 <div>
-                  <p className="text-xs text-zinc-500 mb-3 tracking-wider">6 维标签</p>
+                  <p className="vs-mark mb-3">6 维标签</p>
                   <div className="space-y-3">
                     {traits.map((t) => (
                       <div key={t.dimension} className="flex items-start gap-2 flex-wrap">
-                        <span className="text-[11px] text-zinc-500 w-16 shrink-0 pt-0.5">
+                        <span className="vs-note w-16 shrink-0 pt-0.5">
                           {t.label}
                         </span>
                         <div className="flex flex-wrap gap-1.5 flex-1">
                           {t.tags.map((tag) => (
                             <span
                               key={tag}
-                              className="text-[11px] px-2 py-0.5 rounded-full border border-zinc-700/60 bg-white/5 text-zinc-300"
+                              className="vs-verdict"
                             >
                               {tag}
                             </span>
@@ -1028,7 +1028,7 @@ function AIKnowledgeDrawer({
               )}
 
               {/* 置信度 + 分析时间 */}
-              <div className="text-[11px] text-zinc-600 pt-2 border-t border-white/5">
+              <div className="vs-note pt-2 border-t border-[var(--vs-line)]">
                 置信度 {Math.round((k.confidence ?? 0) * 100)}% · 分析于{' '}
                 {new Date(k.analyzed_at).toLocaleString('zh-CN')}
                 {k.ai_model && ` · ${k.ai_model}`}
@@ -1053,10 +1053,10 @@ type SaveKnowledgeFn = (
 ) => Promise<{ ok: boolean; error?: string }>
 
 const CLAIM_KIND_STYLE: Record<ClaimKind, string> = {
-  事实: 'border-sky-500/30 bg-sky-500/10 text-sky-300',
-  数据: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
-  观点: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
-  经历: 'border-violet-500/30 bg-violet-500/10 text-violet-300',
+  事实: 'vs-verdict',
+  数据: 'vs-verdict',
+  观点: 'vs-verdict',
+  经历: 'vs-verdict',
 }
 
 function ClaimsBlock({
@@ -1135,16 +1135,16 @@ function ClaimsBlock({
 
   return (
     <div>
-      <p className="text-xs text-zinc-500 mb-2 tracking-wider">知识主张</p>
+      <p className="vs-mark mb-2">知识主张</p>
 
       {claims.length === 0 ? (
-        <p className="text-xs text-zinc-600 leading-relaxed">
+        <p className="vs-note leading-relaxed">
           这条素材暂未提炼出可引用的事实 / 数据 / 观点 / 经历
         </p>
       ) : (
         <div className="space-y-2">
           {claims.map((c, i) => (
-            <div key={c.text} className="glass rounded-xl px-3.5 py-3">
+            <div key={c.text} className="vs-frame px-3.5 py-3">
               <div className="flex items-start gap-2">
                 <span
                   className={`text-[10px] px-1.5 py-0.5 rounded border shrink-0 mt-0.5 ${
@@ -1153,23 +1153,23 @@ function ClaimsBlock({
                 >
                   {c.kind}
                 </span>
-                <p className="text-sm text-zinc-200 leading-relaxed flex-1">{c.text}</p>
+                <p className="text-[14px] leading-relaxed text-[var(--vs-ink-2)] flex-1">{c.text}</p>
                 <button
                   onClick={() => handleDelete(i)}
                   disabled={busy}
-                  className="text-[10px] text-zinc-600 hover:text-red-400 transition shrink-0 disabled:opacity-40"
+                  className="vs-link-danger shrink-0 disabled:opacity-40"
                 >
                   删除
                 </button>
               </div>
 
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-zinc-500">
+              <div className="mt-2 flex flex-wrap items-center gap-2 vs-note">
                 <span>可信度 {Math.round((c.confidence ?? 0) * 100)}%</span>
                 {c.source && <span>· 来源：{c.source}</span>}
                 {c.applicableScopes?.map((s) => (
                   <span
                     key={s}
-                    className="px-1.5 py-0.5 rounded-full border border-zinc-700/60 bg-white/5"
+                    className="vs-chip-xs"
                   >
                     {s}
                   </span>
@@ -1185,7 +1185,7 @@ function ClaimsBlock({
         {!openCorrect ? (
           <button
             onClick={() => setOpenCorrect(true)}
-            className="text-[11px] text-indigo-400 hover:text-indigo-300 transition"
+            className="vs-link text-[11px]"
           >
             纠正理解
           </button>
@@ -1197,13 +1197,13 @@ function ClaimsBlock({
               rows={3}
               disabled={busy}
               placeholder="说明 AI 哪里理解错了，例如：这不是事实，是我的个人观察 / 漏掉了「…」这组数据 / 这个观点我说反了"
-              className="w-full rounded-lg bg-white/5 border border-zinc-700/60 px-3 py-2 text-xs text-zinc-200 placeholder:text-zinc-600 outline-none focus:border-indigo-500/50 disabled:opacity-60"
+              className="vs-input vs-input-field w-full text-xs disabled:opacity-60"
             />
             <div className="flex items-center gap-3">
               <button
                 onClick={handleReAnalyze}
                 disabled={busy || !correction.trim()}
-                className="text-[11px] px-3 py-1.5 rounded-lg bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 disabled:opacity-40"
+                className="vs-btn vs-btn-primary vs-btn-sm disabled:opacity-40"
               >
                 {busy ? '处理中…' : '重新分析'}
               </button>
@@ -1214,7 +1214,7 @@ function ClaimsBlock({
                   setError('')
                 }}
                 disabled={busy}
-                className="text-[11px] text-zinc-500 hover:text-zinc-300"
+                className="vs-link text-[11px]"
               >
                 取消
               </button>
@@ -1222,7 +1222,7 @@ function ClaimsBlock({
           </div>
         )}
 
-        {error && <p className="text-[11px] text-red-400 mt-2">{error}</p>}
+        {error && <p className="vs-error mt-2">{error}</p>}
       </div>
     </div>
   )

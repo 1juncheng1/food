@@ -33,8 +33,8 @@ export default function LoginPage() {
   // AuthProvider 鉴权中：显示加载态，避免已登录用户看到表单闪烁
   if (authLoading) {
     return (
-      <div className="inner-page gen-stage flex items-center justify-center" data-mode="inspiration">
-        <div className="animate-pulse text-zinc-600 text-sm">加载中…</div>
+      <div className="inner-page flex items-center justify-center" data-mode="inspiration">
+        <div className="animate-pulse text-[var(--vs-ink-4)] text-sm">加载中…</div>
       </div>
     )
   }
@@ -63,20 +63,20 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="inner-page gen-stage flex items-center justify-center p-4" data-mode="inspiration">
-      <div className="glass w-full max-w-md rounded-2xl p-8">
-        <h1 className="text-2xl font-bold text-white mb-2">登录</h1>
-        <p className="text-zinc-400 text-sm mb-6">登录你的视界账号</p>
+    <div className="inner-page flex items-center justify-center p-4" data-mode="inspiration">
+      <div className="vs-frame w-full max-w-md rounded-2xl p-8">
+        <h1 className="text-2xl font-bold text-[var(--vs-ink)] mb-2">登录</h1>
+        <p className="vs-note mb-6">登录你的视界账号</p>
 
         {message && (
-          <div className="bg-indigo-500/10 text-indigo-300 text-sm rounded-lg p-3 mb-4">
+          <div className="vs-frame p-3 mb-4 text-[14px]">
             {message}
           </div>
         )}
 
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-sm text-zinc-400 mb-2">邮箱</label>
+            <label className="block text-[14px] mb-2 text-[var(--vs-ink-3)]">邮箱</label>
             <Input
               type="email"
               value={email}
@@ -86,7 +86,7 @@ export default function LoginPage() {
             />
           </div>
           <div>
-            <label className="block text-sm text-zinc-400 mb-2">密码</label>
+            <label className="block text-[14px] mb-2 text-[var(--vs-ink-3)]">密码</label>
             <Input
               type="password"
               value={password}
@@ -97,7 +97,7 @@ export default function LoginPage() {
           </div>
 
           {error && (
-            <div className="bg-red-500/10 text-red-400 text-sm rounded-lg p-3">
+            <div className="vs-error">
               {error}
             </div>
           )}
@@ -111,9 +111,9 @@ export default function LoginPage() {
           </Button>
         </form>
 
-        <p className="text-sm text-zinc-500 mt-6 text-center">
+        <p className="vs-note mt-6 text-center">
           还没有账号？{' '}
-          <Link href="/register" className="text-indigo-400 hover:underline">
+          <Link href="/register" className="text-[var(--vs-ink)] hover:underline">
             去注册
           </Link>
         </p>

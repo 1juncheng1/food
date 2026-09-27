@@ -13,6 +13,7 @@ import { clusterConfidence } from './confidence'
 import {
   ageDays,
   adjudicateWithdrawals,
+  hasWorkLevelSignal,
   reasonFactor,
   scoreClusters,
 } from './scoring'
@@ -320,5 +321,77 @@ describe('趋势', () => {
     expect(slope(10, 5)).toBeCloseTo(0.5, 5)
     expect(ewma(null, 3)).toBe(3)
     expect(ewma(2, 4, 0.5)).toBe(3)
+  })
+})
+
+// ============================================================
+// 作品级强信号：CLUSTER_MIN_MEMBERS 的例外通道
+//
+// 跨领域创作者「N 篇作品 N 个方向」，每簇只有 1 个成员。若无差别按
+// MIN_MEMBERS=2 滤掉，画像只剩一两个方向，造卡只能围着它反复改写
+// —— 实测 23 个原始簇里 21 个是单成员，最终只有 2 个方向进画像。
+// 例外只开给作品级行为，弱信号（曝光/点击）仍须凑够门槛，
+// 否则"误点一下"就会变成一个兴趣方向。
+// ============================================================
+describe('hasWorkLevelSignal：单成员簇的例外通道', () => {
+  it('单篇作品 → 单成员簇含作品级信号，应纳入画像', () => {
+    const clusters = scoreClusters(
+      [
+        ev({
+          type: 'work_generate',
+          targetType: 'generation',
+          targetId: 'g1',
+          occurredAt: isoDaysAgo(2),
+          embedding: vector('ai'),
+        }),
+      ],
+      NOW
+    )
+    expect(clusters).toHaveLength(1)
+    expect(clusters[0].eventCount).toBe(1)
+    expect(hasWorkLevelSignal(clusters[0])).toBe(true)
+  })
+
+  it('单次点击推荐 → 弱信号，不享受例外（仍被 MIN_MEMBERS 挡住）', () => {
+    const clusters = scoreClusters(
+      [
+        ev({
+          type: 'recommend_click',
+          targetType: 'inspiration',
+          targetId: 'r1',
+          occurredAt: isoDaysAgo(2),
+          embedding: vector('ai'),
+        }),
+      ],
+      NOW
+    )
+    expect(clusters).toHaveLength(1)
+    expect(clusters[0].eventCount).toBe(1)
+    expect(hasWorkLevelSignal(clusters[0])).toBe(false)
+  })
+
+  it('作品被删除 → 撤回裁决先于本判据，不再贡献作品级信号', () => {
+    const clusters = scoreClusters(
+      [
+        ev({
+          type: 'work_generate',
+          targetType: 'generation',
+          targetId: 'g1',
+          projectId: 'p1',
+          occurredAt: isoDaysAgo(5),
+          embedding: vector('ai'),
+        }),
+        ev({
+          type: 'work_delete',
+          targetType: 'generation',
+          targetId: 'g1',
+          occurredAt: isoDaysAgo(1),
+          embedding: vector('ai'),
+        }),
+      ],
+      NOW
+    )
+    // 作品被撤回后，任何簇都不该再因为这篇作品获得例外通道
+    for (const c of clusters) expect(hasWorkLevelSignal(c)).toBe(false)
   })
 })

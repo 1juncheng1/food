@@ -109,7 +109,7 @@ ${problem.task_breakdown.map((t, i) => `${i + 1}. ${t}`).join('\n')}
         temperature: 0.5,
         max_tokens: 7000,
         jsonMode: true,
-        timeoutMs: llmTimeoutMs(7000),
+        timeoutMs: llmTimeoutMs(7000, 60),
         // 计费：3 次尝试各用各的 refId——复用会让第 2 次起被判重复预扣（reserved=0）
         ...(billing
           ? {
@@ -221,7 +221,7 @@ ${JSON.stringify(previous, null, 2)}`
         temperature: 0.5,
         max_tokens: 7000,
         jsonMode: true,
-        timeoutMs: llmTimeoutMs(7000),
+        timeoutMs: llmTimeoutMs(7000, 60),
         // 计费：3 次尝试各用各的 refId——复用会让第 2 次起被判重复预扣（reserved=0）
         ...(billing
           ? {

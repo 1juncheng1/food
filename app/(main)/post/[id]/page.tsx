@@ -189,7 +189,7 @@ export default function PostDetailPage() {
     <PageShell width="narrow">
         <Link
           href="/explore"
-          className="mb-6 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
+          className="mb-6 inline-flex items-center gap-1.5 text-[13px] text-[var(--vs-ink-4)] transition hover:text-[var(--vs-ink)]"
         >
           ← 返回灵感广场
         </Link>
@@ -210,13 +210,13 @@ export default function PostDetailPage() {
             {/* ── 标题 + 元信息 ── */}
             <header>
               {isArchive && (
-                <span className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg bg-indigo-500/15 text-indigo-300 border border-indigo-500/25 mb-3">
-                  📖 创作档案 · AI 协作全过程
+                <span className="vs-verdict mb-3 inline-flex items-center gap-1">
+                   创作档案 · AI 协作全过程
                 </span>
               )}
-              <h1 className="text-xl font-bold text-zinc-100 leading-snug">{heading}</h1>
-              <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-3 text-xs text-zinc-500">
-                <span className="px-2 py-0.5 rounded bg-zinc-800/80 text-zinc-400">
+              <h1 className="text-xl font-bold text-[var(--vs-ink)] leading-snug">{heading}</h1>
+              <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-3 text-xs text-[var(--vs-ink-4)]">
+                <span className="vs-verdict">
                   {post.category}
                 </span>
                 <span>{formatDateTime(post.created_at)}</span>
@@ -224,7 +224,7 @@ export default function PostDetailPage() {
             </header>
 
             {/* ── 作者卡：点击头像/昵称进作者主页 ── */}
-            <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-6 py-5">
+            <section className="vs-frame px-6 py-5">
               <AuthorBadge
                 userId={post.user_id}
                 name={post.author_name}
@@ -234,7 +234,7 @@ export default function PostDetailPage() {
               <div className="flex items-center gap-3 mt-4 flex-wrap">
                 <Link
                   href={`/profile/${post.user_id}`}
-                  className="text-xs text-indigo-400 hover:text-indigo-300 transition"
+                  className="text-xs text-[var(--vs-ink)] hover:text-[var(--vs-ink)] transition"
                 >
                   查看 TA 的主页与更多作品 →
                 </Link>
@@ -243,7 +243,7 @@ export default function PostDetailPage() {
                     type="button"
                     onClick={() => void handleDeletePost()}
                     disabled={deleting}
-                    className="text-xs text-zinc-600 hover:text-red-400 disabled:opacity-40 transition"
+                    className="vs-link-danger disabled:opacity-40"
                   >
                     {deleting ? '删除中…' : '删除这篇'}
                   </button>
@@ -255,8 +255,8 @@ export default function PostDetailPage() {
             {isArchive ? (
               <ArchiveStory archive={post.archive!} />
             ) : (
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-6 py-5">
-                <p className="text-sm text-zinc-300 leading-loose whitespace-pre-wrap">
+              <div className="vs-frame px-6 py-5">
+                <p className="text-[14px] leading-loose text-[var(--vs-ink-2)] whitespace-pre-wrap">
                   {post.content}
                 </p>
                 {post.image_url && (
@@ -264,7 +264,7 @@ export default function PostDetailPage() {
                   <img
                     src={post.image_url}
                     alt="配图"
-                    className="mt-4 rounded-lg max-w-full border border-zinc-800"
+                    className="mt-4 rounded-lg max-w-full border border-[var(--vs-line)]"
                   />
                 )}
               </div>
@@ -276,7 +276,7 @@ export default function PostDetailPage() {
                 {post.tags.map((t) => (
                   <span
                     key={t}
-                    className="text-xs px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
+                    className="vs-verdict"
                   >
                     #{t}
                   </span>
@@ -285,7 +285,7 @@ export default function PostDetailPage() {
             )}
 
             {/* ── 互动按钮 ── */}
-            <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-6 py-4">
+            <section className="vs-frame px-6 py-4">
               <PostActionBar
                 postId={post.id}
                 liked={post.current_user_liked}
@@ -301,8 +301,8 @@ export default function PostDetailPage() {
             </section>
 
             {/* ── 评论区 ── */}
-            <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-6 py-5">
-              <h2 className="text-sm font-medium text-zinc-200 mb-1">
+            <section className="vs-frame px-6 py-5">
+              <h2 className="text-[14px] font-medium text-[var(--vs-ink)] mb-1">
                 评论 {post.comment_count > 0 ? `· ${post.comment_count}` : ''}
               </h2>
               <CommentSection
@@ -343,27 +343,27 @@ function ArchiveStory({ archive }: { archive: ArchiveSnapshot }) {
   return (
     <>
       {/* 1. 灵感起点 */}
-      <section className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-6 py-5">
-        <h2 className="text-sm font-semibold text-amber-200/90 mb-2">💡 灵感起点</h2>
-        <p className="text-sm text-zinc-300 leading-loose whitespace-pre-wrap">
+      <section className="vs-frame px-6 py-5">
+        <h2 className="vs-h3 mb-2"> 灵感起点</h2>
+        <p className="text-[14px] leading-loose text-[var(--vs-ink-2)] whitespace-pre-wrap">
           {archive.inspiration}
         </p>
       </section>
 
       {/* 2. AI 创作方向（蓝图） */}
       {directionRows.length > 0 && (
-        <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-6 py-5">
-          <h2 className="text-sm font-semibold text-zinc-200 mb-3">
-            🧭 AI 创作方向
-            <span className="text-[11px] font-normal text-zinc-600 ml-2">
+        <section className="vs-frame px-6 py-5">
+          <h2 className="text-sm font-semibold text-[var(--vs-ink)] mb-3">
+             AI 创作方向
+            <span className="vs-note ml-2">
               基于灵感与风格画像生成的创作蓝图
             </span>
           </h2>
           <dl className="grid sm:grid-cols-2 gap-x-6 gap-y-3">
             {directionRows.map((r) => (
               <div key={r.label}>
-                <dt className="text-[11px] text-zinc-500 mb-0.5">{r.label}</dt>
-                <dd className="text-xs text-zinc-300 leading-relaxed">{r.value}</dd>
+                <dt className="text-[11px] text-[var(--vs-ink-4)] mb-0.5">{r.label}</dt>
+                <dd className="text-[13px] leading-relaxed text-[var(--vs-ink-2)]">{r.value}</dd>
               </div>
             ))}
           </dl>
@@ -371,50 +371,50 @@ function ArchiveStory({ archive }: { archive: ArchiveSnapshot }) {
       )}
 
       {/* 3. 版本变化记录 */}
-      <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-6 py-5">
-        <h2 className="text-sm font-semibold text-zinc-200 mb-4">
-          🔄 版本变化记录
-          <span className="text-[11px] font-normal text-zinc-600 ml-2">
+      <section className="vs-frame px-6 py-5">
+        <h2 className="text-sm font-semibold text-[var(--vs-ink)] mb-4">
+           版本变化记录
+          <span className="vs-note ml-2">
             共 {archive.versions.length} 个版本
           </span>
         </h2>
-        <ol className="relative space-y-4 before:absolute before:left-[7px] before:top-2 before:bottom-2 before:w-px before:bg-zinc-800">
+        <ol className="relative space-y-4 before:absolute before:left-[7px] before:top-2 before:bottom-2 before:w-px before:bg-[var(--vs-void-2)]">
           {archive.versions.map((v) => (
             <li key={v.n} className="relative pl-6">
               <span
                 className={`absolute left-0 top-1.5 w-3.5 h-3.5 rounded-full border-2 ${
                   v.n === archive.finalVersionNumber
-                    ? 'bg-emerald-500/80 border-emerald-400'
-                    : 'bg-zinc-800 border-zinc-600'
+                    ? 'border-[var(--vs-beam-line)] bg-[var(--vs-beam)]'
+                    : 'border-[var(--vs-line-2)] bg-transparent'
                 }`}
               />
               <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5">
-                <span className="text-xs font-medium text-zinc-200">V{v.n}</span>
+                <span className="text-xs font-medium text-[var(--vs-ink)]">V{v.n}</span>
                 {v.directionLabel ? (
-                  <span className="text-[11px] text-indigo-300">
+                  <span className="text-[11px] text-[var(--vs-ink)]">
                     {v.directionEmoji} {v.directionLabel}迭代
                   </span>
                 ) : (
-                  <span className="text-[11px] text-zinc-500">初稿</span>
+                  <span className="text-[11px] text-[var(--vs-ink-4)]">初稿</span>
                 )}
                 {v.n === archive.finalVersionNumber && (
-                  <span className="text-[10px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 rounded px-1.5 py-0.5">
+                  <span className="vs-verdict">
                     最终版
                   </span>
                 )}
               </div>
               {v.note && (
-                <p className="mt-1 text-xs text-zinc-400 leading-relaxed">
-                  <span className="text-indigo-400/80">AI 修改说明：</span>
+                <p className="mt-1 text-xs text-[var(--vs-ink-3)] leading-relaxed">
+                  <span className="text-[var(--vs-ink-4)]">AI 修改说明：</span>
                   {v.note}
                 </p>
               )}
               {v.n !== archive.finalVersionNumber && (
                 <details className="mt-1 group">
-                  <summary className="text-[11px] text-zinc-600 hover:text-zinc-400 cursor-pointer select-none list-none">
+                  <summary className="vs-note hover:text-[var(--vs-ink-3)] cursor-pointer select-none list-none">
                     ▸ 查看该版片段
                   </summary>
-                  <p className="mt-1.5 text-[11px] text-zinc-500 leading-relaxed border-l-2 border-zinc-800 pl-3">
+                  <p className="mt-1.5 text-[11px] text-[var(--vs-ink-4)] leading-relaxed border-l-2 border-[var(--vs-line)] pl-3">
                     {v.excerpt}
                   </p>
                 </details>
@@ -425,30 +425,30 @@ function ArchiveStory({ archive }: { archive: ArchiveSnapshot }) {
       </section>
 
       {/* 4. 最终作品 */}
-      <section className="rounded-xl border border-emerald-500/20 bg-zinc-900/40 px-6 py-5">
-        <h2 className="text-sm font-semibold text-emerald-200/90 mb-3">
+      <section className="vs-frame px-6 py-5">
+        <h2 className="vs-h3 mb-3">
           ✍️ 最终作品
-          <span className="text-[11px] font-normal text-zinc-600 ml-2">
+          <span className="vs-note ml-2">
             V{archive.finalVersionNumber}
           </span>
         </h2>
-        <p className="text-sm text-zinc-200 leading-loose whitespace-pre-wrap">
+        <p className="text-sm text-[var(--vs-ink)] leading-loose whitespace-pre-wrap">
           {archive.finalWork}
         </p>
       </section>
 
       {/* 5. 作者总结 */}
       {archive.authorSummary && (
-        <section className="rounded-xl border border-indigo-500/25 bg-indigo-500/5 px-6 py-5">
-          <h2 className="text-sm font-semibold text-indigo-200/90 mb-2">📝 作者总结</h2>
-          <p className="text-sm text-zinc-300 leading-loose whitespace-pre-wrap">
+        <section className="vs-frame px-6 py-5">
+          <h2 className="vs-h3 mb-2"> 作者总结</h2>
+          <p className="text-[14px] leading-loose text-[var(--vs-ink-2)] whitespace-pre-wrap">
             {archive.authorSummary}
           </p>
         </section>
       )}
 
       {archive.styleTags.length > 0 && (
-        <p className="text-[11px] text-zinc-600">
+        <p className="vs-note">
           创作身份与风格：{archive.styleTags.join(' · ')}
         </p>
       )}

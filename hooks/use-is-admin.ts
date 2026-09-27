@@ -19,10 +19,7 @@ export function useIsAdmin(enabled = true): boolean | null {
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null)
 
   useEffect(() => {
-    if (!enabled) {
-      setIsAdmin(null)
-      return
-    }
+    if (!enabled) return
     let cancelled = false
 
     void (async () => {
@@ -40,5 +37,6 @@ export function useIsAdmin(enabled = true): boolean | null {
     }
   }, [enabled])
 
-  return isAdmin
+  // enabled=false 时不查也不展示：这里直接判定，避免在 effect 里同步 setState 触发级联渲染
+  return enabled ? isAdmin : null
 }

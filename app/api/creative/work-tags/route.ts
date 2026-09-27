@@ -12,6 +12,7 @@
 // ============================================================
 
 import { NextResponse } from 'next/server'
+import { withAiDeadline } from '@/lib/aiDeadline'
 import { authenticateWithToken } from '@/lib/storage'
 import { rateLimit } from '@/lib/rateLimit'
 import { hasEnoughFor } from '@/lib/aiCost'
@@ -39,7 +40,12 @@ function str(v: unknown, maxLen: number): string {
   return typeof v === 'string' ? v.trim().slice(0, maxLen) : ''
 }
 
-export async function POST(req: Request) {
+// 下面的 30 必须等于本文件的 maxDuration。
+// workAnalysis 内部有 3 次重试，而整条请求只有 25s AI 预算——
+// 意味着实际上只有第 1 次尝试能跑完，之后会被主动放弃。
+// 这是有意的取舍：放弃 = 不发起 = 不预扣，绝不会产生"退不回的扣费"。
+// 想让重试真正生效，应调高本路由的 maxDuration。见 lib/aiDeadline.ts
+async function handlePost(req: Request) {
   try {
     // ── 强制鉴权 ──
     // 传了 token 就必须验证出结果：网络故障（503）与凭证过期（401）如实返回，
@@ -140,3 +146,5 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '服务器内部错误' }, { status: 500 })
   }
 }
+
+export const POST = withAiDeadline(30, handlePost)

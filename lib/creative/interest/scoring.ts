@@ -17,6 +17,7 @@ import {
   LOOSE_TARGET_CAP,
   PROJECT_CAP_PER_CLUSTER,
   SCORING_WINDOW_DAYS,
+  WORK_LEVEL_EVENT_TYPES,
 } from './config'
 import { clusterEvents, type RawCluster } from './clustering'
 import { cosineSimilarity } from './vectorMath'
@@ -207,4 +208,19 @@ export function scoreClusters(events: EngineEvent[], now: Date = new Date()): Sc
   }
 
   return scored.sort((a, b) => b.rawScore - a.rawScore)
+}
+
+/**
+ * 簇内是否含作品级强信号（写完 / 定稿 / 发布）。
+ *
+ * 这是 CLUSTER_MIN_MEMBERS 的例外通道：跨领域创作者「N 篇作品 N 个方向」，
+ * 每簇只有 1 个成员，若无差别按门槛滤掉，画像只剩一两个方向，推荐随之退化。
+ * 作品是真实投入，一篇即足以证明一个方向（完整依据见 config.WORK_LEVEL_EVENT_TYPES）。
+ *
+ * 注意不需要在这里判撤回：scoreClusters 入口已做 adjudicateWithdrawals，
+ * 被删除的作品不会出现在 members 里。
+ */
+export function hasWorkLevelSignal(cluster: ScoredCluster): boolean {
+  const types: readonly string[] = WORK_LEVEL_EVENT_TYPES
+  return cluster.members.some((m) => types.includes(m.type))
 }

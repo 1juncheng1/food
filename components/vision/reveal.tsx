@@ -4,13 +4,14 @@ import { useEffect, useRef, type ElementType, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 // ────────────────────────────────────────────────────────────
-// 滚动渐入：整个首页共用一个 IntersectionObserver，
-// 避免每个卡片各建一个 observer 造成的额外开销。
+// 滚动渐入：全站共用一个 IntersectionObserver，
+// 避免每个元素各建一个 observer 造成的额外开销。
 //
+// 动效原则：慢、克制、只做 opacity 与 transform。
 // 降级策略：
 //   1. 不支持 IntersectionObserver → 直接显示
 //   2. 用户偏好减少动效 → 直接显示
-// CSS 侧另有 @media (scripting: none) 兜底，JS 不可用时不隐藏内容。
+//   CSS 侧另有 @media (scripting: none) 兜底，JS 不可用时不隐藏内容。
 // ────────────────────────────────────────────────────────────
 
 type RevealCallback = () => void
@@ -32,27 +33,30 @@ function getSharedObserver(): IntersectionObserver | null {
         cb?.()
       }
     },
-    // 元素进入视口下缘以上约 12% 时触发，滚动感更自然
     { threshold: 0.08, rootMargin: '0px 0px -12% 0px' },
   )
   return sharedObserver
 }
 
 function prefersReducedMotion(): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function')
+    return false
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
-interface RevealProps {
+export function Reveal({
+  children,
+  className,
+  delay = 0,
+  as,
+}: {
   children: ReactNode
   className?: string
-  /** 延迟毫秒数，用于同组元素交错 */
+  /** 延迟毫秒数，用于同组元素交错出现 */
   delay?: number
   /** 渲染标签，默认 div */
   as?: ElementType
-}
-
-export function Reveal({ children, className, delay = 0, as }: RevealProps) {
+}) {
   const ref = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
@@ -63,7 +67,6 @@ export function Reveal({ children, className, delay = 0, as }: RevealProps) {
       el.dataset.revealed = 'true'
     }
 
-    // 无 observer 或用户要求减少动效：立即显示，不做入场动画
     const observer = getSharedObserver()
     if (!observer || prefersReducedMotion()) {
       show()
@@ -83,7 +86,7 @@ export function Reveal({ children, className, delay = 0, as }: RevealProps) {
   return (
     <Tag
       ref={ref}
-      className={cn('reveal', className)}
+      className={cn('vs-reveal', className)}
       style={delay ? { transitionDelay: `${delay}ms` } : undefined}
     >
       {children}

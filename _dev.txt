@@ -1,0 +1,23 @@
+
+> food@0.1.0 dev
+> next dev
+
+▲ Next.js 16.3.3 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://10.223.13.8:3000
+- Environments: .env.local
+✓ Ready in 913ms
+✓ Running next.config.ts took 66ms
+⚠ Turbopack's filesystem cache has been deleted because we previously detected an internal error in Turbopack. Builds or page loads may be slower as a result.
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead.
+
+  To migrate automatically, run:
+  npx @next/codemod@canary middleware-to-proxy .
+
+  Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+
+ HEAD /generate 200 in 2.3s (next.js: 2.1s, proxy.ts: 47ms, application-code: 181ms)
+ HEAD /add 200 in 301ms (next.js: 251ms, proxy.ts: 4ms, application-code: 46ms)
+ HEAD /dashboard 200 in 293ms (next.js: 245ms, proxy.ts: 3ms, application-code: 45ms)
+ HEAD /login 200 in 341ms (next.js: 275ms, proxy.ts: 3ms, application-code: 63ms)
+ HEAD /materials 200 in 249ms (next.js: 200ms, proxy.ts: 8ms, application-code: 41ms)

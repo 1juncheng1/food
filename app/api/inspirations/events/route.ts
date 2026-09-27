@@ -19,10 +19,17 @@ import { trackEvent } from '@/lib/creative/interest/eventTracker'
 import { runBuild } from '@/lib/creative/interest/builder'
 import { generateEmbedding } from '@/lib/storage'
 import { rateLimit } from '@/lib/rateLimit'
-import { EVENT_RATE_LIMIT_PER_MIN } from '@/lib/creative/interest/config'
+import { afterResponse } from '@/lib/afterResponse'
+import {
+  EVENT_RATE_LIMIT_PER_MIN,
+  DISMISS_REASON_CODES,
+  type DismissReasonCode,
+} from '@/lib/creative/interest/config'
 import type { CreatorEventType } from '@/lib/creative/interest/types'
 
 export const dynamic = 'force-dynamic'
+// dismiss 后会挂一个 20–150s 的增量重建，需要实例存活窗口
+export const maxDuration = 60
 
 const VALID_TYPES = ['impression', 'click', 'dismiss'] as const
 type RecEventType = (typeof VALID_TYPES)[number]
@@ -55,9 +62,20 @@ export async function POST(req: Request) {
     }
 
     // ── 入参校验 ──
-    const body = (await req.json().catch(() => ({}))) as { type?: unknown; rec_id?: unknown }
+    const body = (await req.json().catch(() => ({}))) as {
+      type?: unknown
+      rec_id?: unknown
+      reason?: unknown
+    }
     const type = body.type
     const recId = typeof body.rec_id === 'string' ? body.rec_id.trim() : ''
+    // ✕ 的原因（可选）：Taste Model 的原料。不参与兴趣权重，只作为"为什么不要"的证据。
+    // 非法值一律丢弃而非报错——反馈比原因码重要，不能因为多传一个字段就把 -1.5 丢掉。
+    const reason: DismissReasonCode | null =
+      typeof body.reason === 'string' &&
+      (DISMISS_REASON_CODES as readonly string[]).includes(body.reason)
+        ? (body.reason as DismissReasonCode)
+        : null
     if (typeof type !== 'string' || !VALID_TYPES.includes(type as RecEventType)) {
       return NextResponse.json({ error: '无效的反馈类型' }, { status: 400 })
     }
@@ -87,11 +105,17 @@ export async function POST(req: Request) {
         targetId: recId,
         topicExcerpt: card.topic || null,
         embedding,
-        payload: { title: card.title, cluster_code: card.cluster_code, slot: card.slot },
+        payload: {
+          title: card.title,
+          cluster_code: card.cluster_code,
+          slot: card.slot,
+          ...(reason ? { reason_code: reason } : {}),
+        },
       })
 
-      // serverless 可能冻结后台任务（known limitation）；本地 dev 正常生效
-      void runBuild(supabase, userId, 'incremental').catch(() => {})
+      // 走 afterResponse：void 的后台 build 在 serverless 上会被响应后的冻结掐断，
+      // 表现为"点了不感兴趣，下次刷新还是那几张"。
+      afterResponse(() => runBuild(supabase, userId, 'incremental').catch(() => {}))
     } else {
       // 曝光/点击：不改队列状态（consumed 发生在 plan 采纳时）；
       // dailyKey 让同卡同天反复上报被幂等吞掉

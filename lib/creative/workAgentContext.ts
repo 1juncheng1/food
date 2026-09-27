@@ -25,9 +25,11 @@ import { parseEditingProfile, formatEditingProfileForPrompt } from './editingMem
 import { parseDiagnosis } from './diagnosisMeta'
 import { splitParagraphs } from './patchEngine'
 import { retrieveMaterials, MAX_INJECT_TOTAL } from '@/lib/material/retrieval'
+import { buildKnowledgeInjection } from './knowledgeInject'
 import {
   MAX_EXTERNAL_ITEMS,
   type ExternalKnowledgeItem,
+  type RevisionTrace,
   type WorkAgentContext,
   type WorkAgentKnowledgeSource,
 } from './workAgent'
@@ -42,10 +44,14 @@ export const MATERIAL_SNIPPET_LIMIT = 400
 export const CONTEXT_MATERIAL_LIMIT = 5
 /** 单条外部知识注入上限 */
 export const EXTERNAL_SNIPPET_LIMIT = 300
+/** 注入上下文的历史修改轨迹条数上限（只要最近几次，够判断"用户刚否决过什么"） */
+export const CONTEXT_REVISION_LIMIT = 3
 
 export interface AssembleContextInput {
   client: ReturnType<typeof createServerClient>
   userId: string
+  /** 项目 id（用于读取本项目历史修改轨迹；老作品无项目时留空） */
+  projectId?: string | null
   /** 基底版本行（必须从服务端查出，不信任客户端带来的正文） */
   versionRow: {
     id: string
@@ -99,6 +105,32 @@ export async function assembleWorkContext(
 
   // ── 3. 原始创作目标（blueprint.problem_understanding）——防止迭代跑偏的最后一道锁 ──
   const goal = extractOriginalGoal(versionRow.blueprint)
+
+  // ── 3b. 目标读者（blueprint.target_audience）——"该让谁读懂"是修改取舍的裁决依据 ──
+  const audience = extractTargetAudience(versionRow.blueprint)
+
+  // ── 3c. Creator Knowledge（用户亲手确认过的知识单元）──
+  // 生成链路三条都已注入，唯独修改链路此前没注入：会造成"生成时遵守的主张，
+  // 改的时候被改掉"。复用 buildKnowledgeInjection 保持同一个打分口径。
+  let knowledge = ''
+  if (topic) {
+    try {
+      const injected = await buildKnowledgeInjection(
+        client as unknown as SupabaseClient,
+        userId,
+        topic
+      )
+      knowledge = injected.block
+    } catch (e) {
+      // 知识是增强项：读取失败只降级，绝不中断共创
+      console.error('WorkAgent：知识单元读取失败（降级为无知识）:', e)
+      degraded.push('知识库读取失败')
+    }
+  }
+
+  // ── 3d. 历史修改轨迹（本项目上一版改了什么、依据哪句反馈）──
+  // 没有它，AI 会在同一轮对话里重复提出用户刚刚否决过的改法。
+  const revisionHistory = await fetchRevisionTraces(client, input.projectId, userId)
 
   // ── 4+5. Creator Profile + 编辑偏好（同一次 style_profiles 查询）──
   let creator = ''
@@ -166,7 +198,65 @@ export async function assembleWorkContext(
     }
   }
 
-  return { work, diagnosis, goal, creator, editing, materials, external, degraded }
+  return {
+    work,
+    diagnosis,
+    goal,
+    audience,
+    knowledge,
+    revisionHistory,
+    creator,
+    editing,
+    materials,
+    external,
+    degraded,
+  }
+}
+
+/**
+ * 读取本项目最近几次修改轨迹。
+ *
+ * 只读 improve_note / improve_direction / user_feedback 三个轻字段（不取正文），
+ * 目的不是复现全文，而是让 AI 知道「上一版往哪个方向改过、用户当时说了什么」。
+ * 查不动一律返回空数组：没有轨迹只是少一份参考，不该让对话卡在 loading。
+ */
+async function fetchRevisionTraces(
+  client: ReturnType<typeof createServerClient>,
+  projectId: string | null | undefined,
+  userId: string
+): Promise<RevisionTrace[]> {
+  if (!projectId) return []
+  try {
+    const { data, error } = await client
+      .from('generation_history')
+      .select('version_number, improve_direction, improve_note, user_feedback')
+      .eq('project_id', projectId)
+      .eq('user_id', userId)
+      .order('version_number', { ascending: false })
+      .limit(CONTEXT_REVISION_LIMIT)
+    if (error || !Array.isArray(data)) return []
+    return data.map((r: Record<string, unknown>) => ({
+      versionNumber: Number(r.version_number ?? 0) || 0,
+      direction: typeof r.improve_direction === 'string' ? r.improve_direction.slice(0, 40) : null,
+      note: typeof r.improve_note === 'string' ? r.improve_note.slice(0, 120) : null,
+      feedback: typeof r.user_feedback === 'string' ? r.user_feedback.slice(0, 120) : null,
+    }))
+  } catch (e) {
+    console.error('WorkAgent：历史修改轨迹读取失败（降级为空）:', e)
+    return []
+  }
+}
+
+/**
+ * 从 blueprint 中提取目标读者。
+ * 直接读原始字段而不走 normalizeBlueprint：老蓝图可能是 FrozenPlan 形态，
+ * 严格校验会把本来就有的 audience 判成无效，而这里只需要一句话。
+ */
+export function extractTargetAudience(blueprint: unknown): string {
+  if (typeof blueprint !== 'object' || blueprint === null) return ''
+  const o = blueprint as Record<string, unknown>
+  const raw = o.target_audience ?? o.targetAudience
+  return typeof raw === 'string' ? raw.trim().slice(0, 200) : ''
 }
 
 /**
@@ -249,6 +339,33 @@ export function formatContextForPrompt(
 
   if (ctx.goal) {
     blocks.push(`【用户原始创作目标（不可偏离的锚点）】\n${ctx.goal.slice(0, 1200)}`)
+  }
+
+  if (ctx.audience) {
+    blocks.push(`【目标读者（修改取舍以"他们能否读懂/被打动"为准）】\n${ctx.audience}`)
+  }
+
+  if (ctx.knowledge) {
+    // 与生成链路同一口径：这是用户亲手确认过的命题，修改时不得改掉或违背
+    blocks.push(ctx.knowledge.slice(0, 1500))
+  }
+
+  // 历史修改轨迹：让 AI 知道"这一稿已经走过哪些弯路"，避免同一轮里重提被否决的改法
+  if (ctx.revisionHistory.length > 0) {
+    const lines = ctx.revisionHistory
+      .filter((r) => r.versionNumber > 0)
+      .map((r) => {
+        const parts: string[] = [`V${r.versionNumber}`]
+        if (r.direction) parts.push(`方向=${r.direction}`)
+        if (r.note) parts.push(`改了：${r.note}`)
+        if (r.feedback) parts.push(`用户当时说：${r.feedback}`)
+        return `  - ${parts.join('｜')}`
+      })
+    if (lines.length > 0) {
+      blocks.push(
+        ['【这篇作品的修改历史（避免重复已经试过或被否决的改法）】', ...lines].join('\n')
+      )
+    }
   }
 
   if (ctx.creator) {

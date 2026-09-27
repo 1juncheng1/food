@@ -8,7 +8,7 @@
 // ============================================================
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { getMarketCandidates, getExplorationCandidates, buildExplorationSeeds } from './suggestionSynthesizer'
+import { getMarketCandidates, getExplorationCandidates, buildExplorationSeeds, toFreshWorkSeeds } from './suggestionSynthesizer'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { InterestLayer } from './types'
 
@@ -275,5 +275,29 @@ describe('getExplorationCandidates：扩批与跨簇标记（WF11 P1）', () => 
       { count: 16 },
     )
     expect(out).toEqual([])
+  })
+})
+
+// ── 新作品种子（builder 与 refill 共用，口径必须一致）──
+
+describe('toFreshWorkSeeds（新作品种子）', () => {
+  it('给定主题 → 1 个 fresh 种子：label 截断到 40 字，summary 要求「下一个可写问题」', () => {
+    const out = toFreshWorkSeeds(['AI 如何影响数学教育'])
+    expect(out).toHaveLength(1)
+    expect(out[0].label).toBe('AI 如何影响数学教育')
+    expect(out[0].fresh).toBe(true)
+    // 必须是"承接"，且显式禁止复述——复述等于把用户刚写过的再推一遍
+    expect(out[0].summary).toContain('下一个可写问题')
+    expect(out[0].summary).toContain('不要复述')
+    const long = toFreshWorkSeeds(['x'.repeat(80)])
+    expect(long[0].label).toHaveLength(40)
+  })
+
+  it('空/纯空格主题不产种子；重复主题去重', () => {
+    expect(toFreshWorkSeeds(['', '   ', 'A', 'A', 'B'])).toHaveLength(2)
+  })
+
+  it('空输入返回空数组（builder 与 refill 都靠它做「有没有新作品」的分支）', () => {
+    expect(toFreshWorkSeeds([])).toEqual([])
   })
 })

@@ -1,8 +1,9 @@
 'use client'
 
+'use client'
+
 import { useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { CATEGORIES } from '@/lib/constants'
 import { supabase } from '@/lib/supabaseClient'
 import {
   AiStatus,
@@ -24,8 +25,6 @@ export default function PublishPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [content, setContent] = useState('')
-  const [category, setCategory] = useState<string>(CATEGORIES[0])
-  const [tags, setTags] = useState('')
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -88,8 +87,6 @@ export default function PublishPage() {
       // 构造 FormData（支持图片文件上传）
       const formData = new FormData()
       formData.append('content', content.trim())
-      formData.append('category', category)
-      formData.append('tags', tags.trim())
       if (imageFile) {
         formData.append('file', imageFile)
         formData.append('hasImage', 'true')
@@ -112,7 +109,6 @@ export default function PublishPage() {
       // 发布成功：清空表单，提示成功
       setSuccess(true)
       setContent('')
-      setTags('')
       removeImage()
       // 2 秒后跳转到灵感广场
       setTimeout(() => router.push('/explore'), 2000)
@@ -124,7 +120,7 @@ export default function PublishPage() {
   }
 
   return (
-    <div className="inner-page gen-stage" data-mode="inspiration">
+    <div className="inner-page " data-mode="inspiration">
       <PageShell width="narrow">
         {/* 定位：把还没成型的想法交给社区，也让 AI 更懂你在关注什么 */}
         <PageHeader
@@ -139,8 +135,8 @@ export default function PublishPage() {
 
         {/* ── 成功提示 ── */}
         {success && (
-          <SurfaceCard className="mb-6 border-emerald-500/25 bg-emerald-500/[0.06]">
-            <p className="text-sm text-emerald-300">
+          <SurfaceCard className="mb-6 border-[var(--vs-line)] bg-[var(--vs-void-1)]">
+            <p className="text-[14px] text-[var(--vs-ink)]">
               发布成功！正在跳转到灵感广场…
             </p>
           </SurfaceCard>
@@ -148,40 +144,24 @@ export default function PublishPage() {
 
         {/* ── 发布表单 ── */}
         <form onSubmit={handleSubmit} className="space-y-8 pt-2">
-          {/* 分类选择 */}
-          <div>
-            <label className="block text-sm font-medium text-zinc-200 mb-4">分类</label>
-            <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-200 focus:outline-none focus:border-indigo-500 transition"
-            >
-              {CATEGORIES.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
-                </option>
-              ))}
-            </select>
-          </div>
-
           {/* 内容输入 */}
           <div>
-            <label className="block text-sm font-medium text-zinc-200 mb-4">
-              内容 <span className="text-zinc-500 text-xs">（必填，图片场景下可不填）</span>
+            <label className="vs-h3 mb-4 block">
+              内容 <span className="vs-note">（必填，图片场景下可不填）</span>
             </label>
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
               rows={6}
               placeholder="写下你的灵感…"
-              className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-200 focus:outline-none focus:border-indigo-500 transition resize-y"
+              className="vs-input vs-input-field w-full resize-y"
             />
           </div>
 
           {/* 图片上传 */}
           <div>
-            <label className="block text-sm font-medium text-zinc-200 mb-4">
-              图片 <span className="text-zinc-500 text-xs">（可选，最多 5MB）</span>
+            <label className="vs-h3 mb-4 block">
+              图片 <span className="vs-note">（可选，最多 5MB）</span>
             </label>
             {imagePreview ? (
               <div className="relative inline-block">
@@ -189,12 +169,12 @@ export default function PublishPage() {
                 <img
                   src={imagePreview}
                   alt="预览"
-                  className="max-w-xs max-h-48 rounded-xl border border-zinc-700"
+                  className="max-w-xs max-h-48 rounded-xl border border-[var(--vs-line-2)]"
                 />
                 <button
                   type="button"
                   onClick={removeImage}
-                  className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80 transition"
+                  className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/60 text-[var(--vs-ink)] flex items-center justify-center hover:bg-black/80 transition"
                 >
                   ×
                 </button>
@@ -203,7 +183,7 @@ export default function PublishPage() {
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="w-full border-2 border-dashed border-zinc-700 rounded-xl px-4 py-8 text-sm text-zinc-500 hover:border-zinc-600 hover:text-zinc-400 transition flex flex-col items-center gap-2"
+                className="w-full border-2 border-dashed border-[var(--vs-line-2)] rounded-xl px-4 py-8 vs-note hover:border-[var(--vs-line-2)] hover:text-[var(--vs-ink-3)] transition flex flex-col items-center gap-2"
               >
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -211,7 +191,7 @@ export default function PublishPage() {
                   <path d="M21 15l-5-5L5 21" />
                 </svg>
                 <span>点击上传图片</span>
-                <span className="text-xs text-zinc-600">支持 jpg/png/webp/gif</span>
+                <span className="vs-note">支持 jpg/png/webp/gif</span>
               </button>
             )}
             <input
@@ -223,26 +203,12 @@ export default function PublishPage() {
             />
           </div>
 
-          {/* 标签输入 */}
-          <div>
-            <label className="block text-sm font-medium text-zinc-200 mb-4">
-              标签 <span className="text-zinc-500 text-xs">（可选，逗号分隔）</span>
-            </label>
-            <input
-              type="text"
-              value={tags}
-              onChange={(e) => setTags(e.target.value)}
-              placeholder="如：电影, 悬疑, 轻松"
-              className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-200 focus:outline-none focus:border-indigo-500 transition"
-            />
-          </div>
-
           {/* 发布按钮 */}
           <div className="pt-2">
             <button
               type="submit"
               disabled={submitting}
-              className="px-8 py-3 rounded-xl text-sm font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              className="vs-btn vs-btn-primary disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {submitting ? '发布中…' : '发布灵感'}
             </button>

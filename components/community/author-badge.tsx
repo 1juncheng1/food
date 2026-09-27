@@ -47,13 +47,13 @@ export function AuthorAvatar({
       <img
         src={avatarUrl}
         alt={name}
-        className={`${cls} rounded-full object-cover shrink-0 border border-zinc-700`}
+        className={`${cls} rounded-full object-cover shrink-0 border border-[var(--vs-line-2)]`}
       />
     )
   }
   return (
     <div
-      className={`${cls} rounded-full bg-indigo-500/20 text-indigo-300 flex items-center justify-center font-medium shrink-0`}
+      className={`${cls} rounded-full bg-[var(--vs-beam-wash)] text-[var(--vs-ink)] flex items-center justify-center font-medium shrink-0`}
     >
       {initialOf(name)}
     </div>
@@ -80,14 +80,14 @@ export default function AuthorBadge({
     <>
       <AuthorAvatar name={displayName} avatarUrl={avatarUrl} size={size} />
       <div className="min-w-0 flex-1">
-        <span className={`${s.name} text-zinc-300 font-medium block truncate`}>
+        <span className={`${s.name} text-[var(--vs-ink-2)] font-medium block truncate`}>
           {displayName}
         </span>
         {timeText && (
-          <span className={`${s.text} text-zinc-600`}>{timeText}</span>
+          <span className={`${s.text} text-[var(--vs-ink-4)]`}>{timeText}</span>
         )}
         {metaText && (
-          <span className={`${s.text} block truncate text-zinc-500`}>
+          <span className={`${s.text} block truncate text-[var(--vs-ink-4)]`}>
             {metaText}
           </span>
         )}
@@ -105,7 +105,7 @@ export default function AuthorBadge({
           className="flex items-center gap-3 min-w-0 group"
           title={`查看 ${displayName} 的主页`}
         >
-          <span className="flex items-center gap-3 min-w-0 group-hover:text-indigo-300 transition">
+          <span className="flex items-center gap-3 min-w-0 group-hover:text-[var(--vs-ink)] transition">
             {inner}
           </span>
         </Link>

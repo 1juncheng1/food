@@ -18,7 +18,9 @@
 // ============================================================
 
 import { NextResponse } from 'next/server'
+import { withAiDeadline } from '@/lib/aiDeadline'
 import { aiFailureResponse, authFailureResponse } from '@/lib/apiAuth'
+import { guardRateLimit } from '@/lib/rateLimit'
 import { createServerClient } from '@/lib/supabaseServer'
 import { hasEnoughFor } from '@/lib/aiCost'
 import { INSUFFICIENT_POINTS_MESSAGE } from '@/lib/balance'
@@ -26,8 +28,12 @@ import { assembleWorkContext, formatContextForPrompt } from '@/lib/creative/work
 import { clarifyIntent } from '@/lib/creative/intentClarifier'
 import { proposeRevisions } from '@/lib/creative/revisionPlan'
 import { generateEditPatches, type ModificationPatch } from '@/lib/creative/patchEngine'
+import { composeAgentDialogue } from '@/lib/creative/workAgentDialogue'
+import { detectInteractionMode } from '@/lib/creative/workAgentMode'
+import { assessRevisionRequest } from '@/lib/creative/revisionGuard'
 import {
   mapMessageRow,
+  type AgentAdvisory,
   type AgentMessageKind,
   type AgentPhase,
   type AgentSessionMeta,
@@ -66,7 +72,11 @@ const ACTION_KIND: Record<ChatAction, AgentMessageKind> = {
   select_plan: 'patch_preview',
 }
 
-export async function POST(req: Request) {
+// 下面的 60 必须等于本文件的 maxDuration。
+// 本端点按阶段串行调用多个 LLM 能力（意图澄清 → 修改方案 → 局部补丁），
+// 每个内部还有重试，各拿一份预算会远超 maxDuration → 被平台硬杀、预扣退不回。
+// 共享一份总预算可避免。见 lib/aiDeadline.ts
+async function handlePost(req: Request) {
   try {
     const authHeader = req.headers.get('authorization') ?? ''
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
@@ -77,6 +87,11 @@ export async function POST(req: Request) {
       error: authErr,
     } = await supabase.auth.getUser(token)
     if (authErr || !user) return authFailureResponse(authErr)
+
+    // 限流（跨实例）：本端点每一轮对话都可能调 LLM，是全站最贵的入口。
+    // 放在鉴权之后——限流 key 是 userId，未鉴权时无从限流。
+    const limited = await guardRateLimit(user.id, 'work-agent-chat', 20, 60_000)
+    if (limited) return limited
 
     const body = (await req.json().catch(() => ({}))) as ChatBody
     const generationId = str(body.generationId, 200)
@@ -180,6 +195,8 @@ export async function POST(req: Request) {
       content: string
       payload?: unknown
       selectedIndex?: number | null
+      /** 覆盖默认 kind（讨论/陪伴回应、守门提示走这里） */
+      kind?: AgentMessageKind
     }) => {
       const { data: m, error: e } = await supabase
         .from('work_agent_messages')
@@ -187,7 +204,7 @@ export async function POST(req: Request) {
           session_id: sessionId,
           user_id: user.id,
           role: p.role,
-          kind,
+          kind: p.kind ?? kind,
           content: p.content.slice(0, 4000),
           payload: p.payload ?? null,
           selected_index: p.selectedIndex ?? null,
@@ -234,6 +251,7 @@ export async function POST(req: Request) {
       const context = await assembleWorkContext({
         client: supabase,
         userId: user.id,
+        projectId: typeof row.project_id === 'string' ? row.project_id : null,
         versionRow: {
           id: row.id as string,
           topic: typeof row.topic === 'string' ? row.topic : null,
@@ -245,6 +263,67 @@ export async function POST(req: Request) {
         },
         intentHint: message.slice(0, 60),
       })
+
+      // ── 模式路由 + 修改守门 ──
+      // 两者都是确定性规则（零 LLM）：判定发生在每一轮对话的第一步，
+      // 多一次模型调用就是多几秒等待，而这两件事本就是可枚举的规则问题。
+      const mode = detectInteractionMode(message)
+      const advisory: AgentAdvisory | null = assessRevisionRequest(message)
+
+      // 直接修改模式：用户明示"别问了直接改"，再给他一轮候选就是违背指令。
+      // 复用既有的 skipToPlan 降级通道（前端会自动连推到补丁预览），
+      // 最终仍然要经过用户点"接受"才落新版本——跳过的是讨论，不是确认权。
+      if (mode.mode === 'direct') {
+        const notice = await insertMessage({
+          role: 'assistant',
+          kind: 'system_notice',
+          content: '好，跳过讨论，我直接按你的意思改。改完仍需你确认才会生成新版本。',
+          payload: advisory ? { advisory } : null,
+        })
+        await setPhase('clarify', { lastMode: mode.mode })
+        return NextResponse.json({
+          ok: true,
+          degraded: false,
+          phase: 'clarify',
+          sessionId,
+          message: notice,
+          mode: mode.mode,
+          advisory,
+          skipToPlan: true,
+          degradedReasons: context.degraded,
+        })
+      }
+
+      // 讨论 / 陪伴模式：用户还没决定要改（或正在受挫），先给分析与提问。
+      // 注意这一步**不产出候选按钮**——给按钮等于替他做了"开始改"这个决定。
+      if (mode.mode === 'discuss' || mode.mode === 'companion') {
+        const reply = await composeAgentDialogue(
+          { mode: mode.mode, freeText: message, context },
+          { supabase, userId: user.id, refId: `${sessionId}:dialogue` }
+        )
+        if (reply) {
+          const assistant = await insertMessage({
+            role: 'assistant',
+            kind: 'dialogue',
+            content: reply.content,
+            payload: { ...reply.dialogue, advisory },
+          })
+          await setPhase('clarify', { lastMode: mode.mode })
+          return NextResponse.json({
+            ok: true,
+            degraded: false,
+            phase: 'clarify',
+            sessionId,
+            message: assistant,
+            mode: mode.mode,
+            advisory,
+            degradedReasons: context.degraded,
+          })
+        }
+        // 降级：陪伴/讨论没能生成回应时绝不报错卡住，继续走正常澄清流水线。
+        // 用户看到的最坏结果是"像以前一样给候选"，比"AI 没反应"好得多。
+        console.error('chat：讨论/陪伴回应生成失败，降级为意图澄清')
+      }
 
       const clarification = await clarifyIntent(
         { freeText: message, context },
@@ -258,7 +337,7 @@ export async function POST(req: Request) {
           role: 'assistant',
           content:
             '我没能把这句反馈拆成明确的候选方向，将直接按你的原话来处理。你可以再补充一句更具体的描述（比如"开头不够吸引人"），我会给出方案。',
-          payload: { degraded: true },
+          payload: advisory ? { degraded: true, advisory } : { degraded: true },
         })
         await setPhase('clarify', { turnCount: (history.length + 2) / 2, lastError: 'clarify_failed' })
         return NextResponse.json({
@@ -267,6 +346,8 @@ export async function POST(req: Request) {
           phase: 'clarify',
           sessionId,
           message: notice,
+          mode: mode.mode,
+          advisory,
           skipToPlan: true, // 前端据此直接拿方案，不必卡在候选选择
         })
       }
@@ -277,15 +358,17 @@ export async function POST(req: Request) {
       const assistant = await insertMessage({
         role: 'assistant',
         content: `${clarification.understanding}${issues}\n\n你希望优先往哪个方向改？`,
-        payload: clarification,
+        payload: advisory ? { ...clarification, advisory } : clarification,
       })
-      await setPhase('clarify', { turnCount: Math.floor((history.length + 2) / 2) })
+      await setPhase('clarify', { turnCount: Math.floor((history.length + 2) / 2), lastMode: mode.mode })
       return NextResponse.json({
         ok: true,
         degraded: false,
         phase: 'clarify',
         sessionId,
         message: assistant,
+        mode: mode.mode,
+        advisory,
         degradedReasons: context.degraded,
       })
     }
@@ -324,6 +407,7 @@ export async function POST(req: Request) {
       const context = await assembleWorkContext({
         client: supabase,
         userId: user.id,
+        projectId: typeof row.project_id === 'string' ? row.project_id : null,
         versionRow: {
           id: row.id as string,
           topic: typeof row.topic === 'string' ? row.topic : null,
@@ -440,6 +524,7 @@ export async function POST(req: Request) {
     const context = await assembleWorkContext({
       client: supabase,
       userId: user.id,
+      projectId: typeof row.project_id === 'string' ? row.project_id : null,
       versionRow: {
         id: row.id as string,
         topic: typeof row.topic === 'string' ? row.topic : null,
@@ -518,3 +603,5 @@ export async function POST(req: Request) {
     return await aiFailureResponse('对话处理失败，请重试')
   }
 }
+
+export const POST = withAiDeadline(60, handlePost)

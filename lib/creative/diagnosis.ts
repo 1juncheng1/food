@@ -7,9 +7,12 @@
 // 纯类型 + 纯函数 + 服务端 LLM 调用，前端只 import 类型与元数据。
 // ============================================================
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatBlueprintForPrompt, normalizeBlueprint, type CreativeBlueprint } from './blueprint'
-import { llmTimeoutSignal } from '@/lib/llm'
+import { llmTimeoutSignal, parseUsage } from '@/lib/llm'
 import { languageDirective, resolveTargetLanguage, type LanguageCode } from '@/lib/languageConsistency'
+import { refundAiCost, reserveAiCost, settleAiCost } from '@/lib/aiCost'
+import { ZERO_USAGE, type TokenUsage } from '@/lib/balance'
 
 import {
   normalizeDiagnosis,
@@ -60,7 +63,12 @@ export type DiagnosisLlmResult =
  * 「诊断失败，请稍后重试」，余额耗尽这类只有人能修的原因被完全吞掉）。
  */
 export async function generateDiagnosis(
-  input: DiagnosisInput
+  input: DiagnosisInput,
+  /**
+   * 计费上下文（可选）。不传则行为与改造前完全一致——老调用点不必一次性全改。
+   * 传了才是「调用前预扣 → 按真实 token 结算 → 失败全额退」。
+   */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
 ): Promise<DiagnosisLlmResult> {
   // 诊断的是 input.sampleText 这篇稿件 → 以它的语言为准；topic 仅作次要依据
   const target =
@@ -104,6 +112,48 @@ ${input.sampleText.slice(0, 6000)}
 输出 strengths（表现良好，保持即可）与 improvements（需要改进：问题 → 怎么改）两部分，各 2-3 条；
 再附 lenses：从观点、证据、表达三个镜头各给一条 good 与一条 fix。`
 
+  // ── 计费：预扣 → 诊断 → 按真实 token 结算 ──────────────────
+  // 预扣必须在发起请求之前：先生成、再发现没钱，那笔 token 成本就是平台自己吞了。
+  const billingRef = `${billing?.refId ?? crypto.randomUUID()}:diagnosis`
+  let reserved = 0
+  let usage: TokenUsage = ZERO_USAGE
+  if (billing) {
+    const r = await reserveAiCost({
+      supabase: billing.supabase,
+      userId: billing.userId,
+      ability: 'diagnosis',
+      refId: billingRef,
+      description: '作品诊断',
+    })
+    // 余额不足：一个 token 都不发给上游，直接让调用方提示充值
+    if (!r.ok) return { ok: false, error: 'insufficient_points' }
+    reserved = r.reserved
+  }
+
+  /** 统一收口：成功按用量结算，失败把预扣原路退回（没结果就不该收钱） */
+  const billed = async (r: DiagnosisLlmResult): Promise<DiagnosisLlmResult> => {
+    if (!billing || reserved <= 0) return r
+    if (r.ok) {
+      await settleAiCost({
+        supabase: billing.supabase,
+        userId: billing.userId,
+        refId: billingRef,
+        reserved,
+        usage,
+        description: '作品诊断',
+      })
+    } else {
+      await refundAiCost({
+        supabase: billing.supabase,
+        userId: billing.userId,
+        refId: billingRef,
+        amount: reserved,
+        reason: `作品诊断失败（${r.error}），预扣全额退还`,
+      })
+    }
+    return r
+  }
+
   try {
     const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
@@ -130,19 +180,20 @@ ${input.sampleText.slice(0, 6000)}
       // 402 = 余额耗尽（Insufficient Balance）。这类必须单独识别：
       // 它与网络抖动、超时不同，重试一万次也不会好，只有充值才能解决。
       console.error(`作品诊断失败: HTTP ${res.status}`, body.slice(0, 200))
-      return { ok: false, error: `http_${res.status}` }
+      return billed({ ok: false, error: `http_${res.status}` })
     }
     const data = await res.json()
+    usage = parseUsage(data)
     const text: string = data?.choices?.[0]?.message?.content
     if (typeof text !== 'string' || !text.trim()) {
-      return { ok: false, error: 'empty_content' }
+      return billed({ ok: false, error: 'empty_content' })
     }
 
     const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
     const parsed: unknown = JSON.parse(cleaned)
     const normalized = normalizeDiagnosis(parsed)
-    if (!normalized) return { ok: false, error: 'parse_failed' }
-    return { ok: true, data: normalized }
+    if (!normalized) return billed({ ok: false, error: 'parse_failed' })
+    return billed({ ok: true, data: normalized })
   } catch (e) {
     const isAbort = e instanceof Error && e.name === 'AbortError'
     const code = isAbort
@@ -151,7 +202,7 @@ ${input.sampleText.slice(0, 6000)}
         ? 'network_error'
         : 'parse_failed'
     console.error('作品诊断异常:', e)
-    return { ok: false, error: code }
+    return billed({ ok: false, error: code })
   }
 }
 

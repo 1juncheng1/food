@@ -128,6 +128,9 @@ export async function fetchEvents(
       embedding: emb && emb.length === 1024 ? emb : null,
       interpretation: (r.interpretation as EngineEvent['interpretation']) ?? null,
       _topic: (r.payload as Record<string, unknown>)?.topic_excerpt as string | undefined,
+      // v4：payload 整体透出（✕ 原因码 reason_code 落在这里，评分 v3 的口味惩罚要读它）。
+      // 与 _topic 同形态挂在 EngineEvent 之外，不污染事件类型本体。
+      _payload: (r.payload as Record<string, unknown>) ?? null,
     }
   }) as EngineEvent[]
 }

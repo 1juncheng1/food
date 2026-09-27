@@ -19,11 +19,19 @@ import { BUILD_MAX_AGE_HOURS } from '@/lib/creative/interest/config'
 import { findRunningBuild } from '@/lib/creative/interest/interestRepo'
 import { evaluateRebuild } from '@/lib/creative/interest/rebuildTrigger'
 import { refillSuggestions } from '@/lib/creative/interest/refill'
+import { applyRescore, loadRescoreContext } from '@/lib/creative/interest/rescore'
+import { loadFreshSuggestions } from '@/lib/creative/interest/feedRepo'
+import {
+  DASHBOARD_FRESH_INJECT_MAX,
+  DASHBOARD_QUEUE_SCAN_LIMIT,
+} from '@/lib/creative/interest/config'
+import { afterResponse } from '@/lib/afterResponse'
 import { resolveDegradeReason, type DegradeReason } from '@/lib/creative/interest/degrade'
 import { buildReasonText } from '@/lib/creative/interest/reasonAi'
 import { getGlobalTrending, ingestGlobalTrending } from '@/lib/ci/globalTrending'
 
-export const maxDuration = 30
+// 响应体秒级返回；afterResponse 里的完整重建需要更长的实例存活窗口
+export const maxDuration = 60
 export const dynamic = 'force-dynamic'
 
 interface SuggestionRow {
@@ -156,28 +164,51 @@ export async function GET(req: Request) {
       : false
 
     // hasProfile 由 && 链推出，类型是 truthy 联合而非 boolean，此处显式收敛
+    // 画像生成时的评分公式版本。缺失也算过期（早于版本化之前生成）
+    const rawRuleVersion = (profile as Record<string, unknown> | null)?.rule_version
+    const profileRuleVersion: string | null =
+      typeof rawRuleVersion === 'string' ? rawRuleVersion : null
+
     const rebuild = await evaluateRebuild(supabase, userId, {
       hasProfile: !!hasProfile,
       profileUpdatedAt,
+      profileRuleVersion,
     })
     if (!building && rebuild.needed) {
-      if (rebuild.workSignal) {
-        // 作品级信号：走轻量补货，不清空队列。dashboard 一次只展示 3 张卡，
-        // 若这里 supersede 清空队列，用户会看到"卡片突然全换/变少"的跳变；
-        // 追加新卡则自然得多，且与 Feed 端点同口径。
-        void refillSuggestions(supabase, userId, {
+      if (rebuild.reason === 'rule_upgrade') {
+        // 规则版本升级必须整体重建，不能走下面的 workSignal refill 分支：
+        // refill 是追加新卡，会让"旧公式卡 + 新公式卡同队列排序"更深。
+        // 一次性迁移——重建后画像打上当前 RULE_VERSION，判定不再命中。
+        afterResponse(() => runBuild(supabase, userId, 'full').catch(() => {}))
+      } else if (rebuild.workSignal) {
+        // 作品级信号：走轻量补货（1 次 LLM、秒级），不清空队列。dashboard 一次只展示 3 张卡，
+        // 若这里 supersede 清空队列，用户会看到"卡片突然全换/变少"的跳变。
+        //
+        // 关键：同步 await 而不是 fire-and-forget（与 Feed 端点同口径）。
+        // 旧实现用 void，结果"新增/删除作品后必须刷新第二次才看得到变化"——
+        // 后台任务要在 20s+ 后才落库，而用户此刻就站在页面上。
+        // 成本由 refill 自身的 5 分钟最小间隔 + 在途锁兜底，不随刷新频率放大。
+        await refillSuggestions(supabase, userId, {
           freshWorkTopics: rebuild.freshWorkTopics,
-        }).catch(() => {})
+        })
       } else {
-        // 首建 / 画像过期 / 一般行为累积：完整重建（本端点队列小，supersede 代价可控）
-        void runBuild(supabase, userId, rebuild.reason === 'first_build' ? 'full' : 'incremental').catch(
-          () => {}
-        )
+        // 首建 / 画像过期 / 一般行为累积：完整重建（本端点队列小，supersede 代价可控）。
+        // 走 afterResponse：void 的后台 build 在 serverless 上会被响应后冻结掐断。
+        const mode = rebuild.reason === 'first_build' ? 'full' : 'incremental'
+        afterResponse(() => runBuild(supabase, userId, mode).catch(() => {}))
       }
     }
 
     // ── 读 active 推荐卡 ──
-    const suggestions = await getActiveSuggestions(supabase, userId, 6)
+    // RULE v5：一次读完整队列而不是 Top 6。
+    // 此前的写法是"DB 按冻结 score 取前 6 张 → 分槽选 3 张"，在线重排引入后
+    // 这个窗口会塌掉：真正该排进前 3 的卡可能因为 build 时刻分低压根没进这 6 张。
+    // 队列规模是几十张级别，全读再重排的代价远小于漏掉正确答案。
+    const rescore = await loadRescoreContext(supabase, userId)
+    const suggestions = applyRescore(
+      await getActiveSuggestions(supabase, userId, DASHBOARD_QUEUE_SCAN_LIMIT),
+      rescore
+    ).slice(0, 6)
 
     // ── 冷启动 / 队列空 → 降级（两种原因严格区分，便于可观测） ──
     if (!hasProfile) {
@@ -189,42 +220,62 @@ export async function GET(req: Request) {
       return await fallbackResponse('empty_queue', building, stale)
     }
 
-    // ── 分槽配额：从 active 卡中选 3 张 ──
-    const rows = suggestions as unknown as SuggestionRow[]
-    const selected = selectSlots(
-      rows.map((r) => ({
-        id: r.id,
-        clusterCode: r.cluster_code,
-        slot: r.slot as 'core_gap' | 'evidence_followup' | 'exploration' | 'continuation',
-        score: r.score,
-        title: r.title,
-        description: r.description,
-        topic: r.topic,
-        formHint: r.form_hint ?? '其他',
-        scoreBreakdown: r.score_breakdown ?? {},
-        evidence: r.evidence ?? {},
-        marketFlags: r.market_refs ?? {},
-        coreQuestion: r.core_question ?? null,
-        whyRecommend: r.why_recommend ?? null,
-        creationAngle: r.creation_angle ?? null,
-        relatedKnowledge: r.related_knowledge ?? [],
-        reasonSource: r.reason_source ?? 'template',
-      })),
-      {
-        maxCoreWeight: (() => {
-          const coreArr = (profile as Record<string, unknown>)?.core as
-            | Array<Record<string, unknown>>
-            | undefined
-          const w = coreArr?.[0]?.weight
-          return typeof w === 'number' ? w : 0
-        })(),
-      }
-    )
+    // ── 本轮新卡前置（仅首屏）──
+    // 补货往队尾追加，而读卡按 score 取 Top N —— 新卡大概率掉出首屏，
+    // "刚写完一篇就有新方向"这条闭环在体感上等于没发生。与 Feed 端点同一口径，
+    // 这里把上次 build 之后新生成的卡提到最前（翻页/其它端点不受影响）。
+    const freshRows = rebuild.sinceIso
+      ? ((await loadFreshSuggestions(
+          supabase,
+          userId,
+          rebuild.sinceIso,
+          DASHBOARD_FRESH_INJECT_MAX,
+          { rescore }
+        )) as unknown as SuggestionRow[])
+      : []
+    const freshIds = new Set(freshRows.map((r) => r.id))
+
+    // ── 分槽配额：新卡之外再按槽位选满 3 张 ──
+    const rows = (suggestions as unknown as SuggestionRow[]).filter((r) => !freshIds.has(r.id))
+    const toSlotRow = (r: SuggestionRow) => ({
+      id: r.id,
+      clusterCode: r.cluster_code,
+      slot: r.slot as 'core_gap' | 'evidence_followup' | 'exploration' | 'continuation',
+      score: r.score,
+      title: r.title,
+      description: r.description,
+      topic: r.topic,
+      formHint: r.form_hint ?? '其他',
+      scoreBreakdown: r.score_breakdown ?? {},
+      evidence: r.evidence ?? {},
+      marketFlags: r.market_refs ?? {},
+      coreQuestion: r.core_question ?? null,
+      whyRecommend: r.why_recommend ?? null,
+      creationAngle: r.creation_angle ?? null,
+      relatedKnowledge: r.related_knowledge ?? [],
+      reasonSource: r.reason_source ?? 'template',
+    })
+
+    const takeFresh = Math.min(freshRows.length, DASHBOARD_FRESH_INJECT_MAX, 3)
+    const rest = takeFresh < 3 ? selectSlots(rows.map(toSlotRow), {
+      count: 3 - takeFresh,
+      maxCoreWeight: (() => {
+        const coreArr = (profile as Record<string, unknown>)?.core as
+          | Array<Record<string, unknown>>
+          | undefined
+        const w = coreArr?.[0]?.weight
+        return typeof w === 'number' ? w : 0
+      })(),
+    }) : []
+    const selected = [...freshRows.slice(0, takeFresh).map(toSlotRow), ...rest]
 
     return NextResponse.json({
       personalized: true,
       stale,
       building,
+      // 推荐队列当前对应的用户状态锚点（上次 build 已消费到的事件时间）。
+      // 前端可据此判断"队列有没有跟上我最新的创作行为"，而不是靠刷新碰运气。
+      state_version: rebuild.sinceIso,
       inspirations: selected.map((s) => ({
         rec_id: s.id,
         title: s.title,
@@ -246,6 +297,7 @@ export async function GET(req: Request) {
         score_breakdown: s.scoreBreakdown,
         evidence: s.evidence,
         market_flags: s.marketFlags,
+        fresh: freshIds.has(s.id),
       })),
     })
   } catch (error) {

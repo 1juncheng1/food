@@ -15,6 +15,7 @@
 //   - 删除作品：用户反复删除口水化作品→ avoid_preference 增加"空洞鸡汤"
 // ============================================================
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   normalizeCreatorDeclaration,
   isDeclarationEmpty,
@@ -210,7 +211,7 @@ export function updateDeclarationFromBehavior(
  * 失败静默，不阻断生成主流程。
  */
 export async function persistDeclarationUpdate(
-  supabase: { from: (table: string) => any },
+  supabase: SupabaseClient,
   userId: string,
   acc: SignalAccumulator
 ): Promise<DeclarationUpdateResult | null> {

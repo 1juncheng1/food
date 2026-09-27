@@ -18,8 +18,12 @@ import {
 import { parseCreatorReport, type CreatorReport, type DnaItem } from './creatorReport'
 import type { ClarificationAnswer } from './intentClarity'
 import { KNOWLEDGE_DIMENSIONS, type UsageTag } from './knowledgeItem'
-import { llmTimeoutSignal } from '@/lib/llm'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { llmTimeoutSignal, parseUsage } from '@/lib/llm'
 import { languageDirective, resolveTargetLanguage, type LanguageCode } from '@/lib/languageConsistency'
+import { clampWordCount } from './wordCount'
+import { refundAiCost, reserveAiCost, settleAiCost } from '@/lib/aiCost'
+import { ZERO_USAGE, addUsage, type TokenUsage } from '@/lib/balance'
 
 /** 语言风格三维（结构化，替代旧的自由文本书写） */
 export interface PlanLanguageStyle {
@@ -207,13 +211,6 @@ function s(v: unknown, max = 500): string {
   return typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : ''
 }
 
-function num(v: unknown, min: number, max: number): number | null {
-  const n = Number(v)
-  if (!Number.isFinite(n)) return null
-  const rounded = Math.round(n)
-  return rounded >= min && rounded <= max ? rounded : null
-}
-
 function normalizeLanguageStyle(v: unknown): PlanLanguageStyle {
   const o = (typeof v === 'object' && v !== null ? v : {}) as Record<string, unknown>
   return {
@@ -300,8 +297,16 @@ function normalizeStrategy(raw: unknown): PlanStrategy | undefined {
   }
 }
 
-/** LLM 返回值兜底；无效方案返回 null，调用方降级为手动参数路径 */
-export function normalizePlan(raw: unknown): CreativePlan | null {
+/**
+ * LLM 返回值兜底；无效方案返回 null，调用方降级为手动参数路径。
+ *
+ * requestedWordCount：用户自定义目标字数（可选）。
+ * 传入时强制"推荐档 = 该字数，且三档中含该字数"，抵御 LLM 忽略字数指令。
+ */
+export function normalizePlan(
+  raw: unknown,
+  requestedWordCount?: number | null
+): CreativePlan | null {
   if (typeof raw !== 'object' || raw === null) return null
   const o = raw as Record<string, unknown>
 
@@ -314,19 +319,30 @@ export function normalizePlan(raw: unknown): CreativePlan | null {
   if (directions.length === 0) return null
 
   // 字数档：过滤有效整数，去重保序，不足三档用空补齐交给前端容错
-  const wordOptions = Array.isArray(o.word_count_options)
+  let wordOptions = Array.isArray(o.word_count_options)
     ? Array.from(
         new Set(
           o.word_count_options
-            .map((w) => num(w, 100, 5000))
+            .map((w) => clampWordCount(w))
             .filter((w): w is number => w !== null)
         )
       ).slice(0, 3)
     : []
   if (wordOptions.length === 0) return null
-  const recommendedWord =
-    wordOptions.find((w) => w === num(o.recommended_word_count, 100, 5000)) ??
+  let recommendedWord =
+    wordOptions.find((w) => w === clampWordCount(o.recommended_word_count)) ??
     wordOptions[Math.min(wordOptions.length - 1, 1)]
+
+  // 用户自定义字数是硬约束：必须同时落在"三档"与"推荐档"里。
+  // LLM 常见失效是三档照旧给 800/1200/2000，只把 recommended 换成 1500
+  // （或干脆忽略）——前端按三档渲染时用户填的字数就消失了，这里统一纠正。
+  const requestedWord = clampWordCount(requestedWordCount)
+  if (requestedWord !== null) {
+    wordOptions = [requestedWord, ...wordOptions.filter((w) => w !== requestedWord)]
+      .slice(0, 3)
+      .sort((a, b) => a - b)
+    recommendedWord = requestedWord
+  }
 
   const keys = new Set(directions.map((d) => d.key))
   const recommendedKey = keys.has(s(o.recommended_direction_key, 5))
@@ -465,6 +481,14 @@ export interface GeneratePlanInput {
   interestText?: string
   /** 目标输出语言；不传时从用户主题推断 */
   language?: LanguageCode
+  /**
+   * 用户自定义目标字数（生成页可选填写）。
+   * 传入后：recommended_word_count 必须等于该值，且该值必须出现在
+   * word_count_options 三档中——LLM 偶发不遵守时由 normalizePlan 兜底纠正，
+   * 保证"用户填了 1500，方案与正文就按 1500 走"，不出现 AI 悄悄改字数。
+   * undefined / null = 不限制，由 AI 按主题表达容量自主给档。
+   */
+  wordCount?: number | null
 }
 
 const PLAN_JSON_KEYS = [
@@ -552,6 +576,11 @@ function buildUserPrompt(input: GeneratePlanInput): string {
   lines.push('- target_audience：一句话观众画像')
   lines.push('- directions：3 个方向；每个方向的 structure 给 4-6 个按顺序的段落任务（如"Hook：用悬念场景开场"）')
   lines.push('- word_count_options：结合该主题的表达容量给短/中/长三档（如 800/1200/2000），recommended_word_count 必须是三档之一')
+  if (input.wordCount) {
+    lines.push(
+      `- 用户本次明确指定目标字数 ${input.wordCount} 字（最高优先级，不得自行改写）：word_count_options 必须包含 ${input.wordCount}，recommended_word_count 必须等于 ${input.wordCount}，其余两档围绕它上下浮动`
+    )
+  }
   lines.push('- language_style.pace/mood/expression 各用 2-6 个汉字的短词')
   lines.push('- problem：先判断用户"想解决什么问题"再给方案；is_content_creation=false 时方案部分按"做成内容"的探索口径输出')
   lines.push('- usage_tag：从枚举中选 1 个（' + KNOWLEDGE_DIMENSIONS.usage.values.join(' / ') + '），帮助知识库检索对齐素材用途')
@@ -604,7 +633,14 @@ function buildUserPrompt(input: GeneratePlanInput): string {
  * 仅服务端使用；失败返回 null，调用方降级为手动参数生成，不阻断主流程。
  * LLM 偶发返回非合法 JSON（尤其长输出被截断时），此处做最多 3 次尝试。
  */
-export async function generatePlan(input: GeneratePlanInput): Promise<CreativePlan | null> {
+export async function generatePlan(
+  input: GeneratePlanInput,
+  /**
+   * 计费上下文（可选）。不传则行为与改造前完全一致；
+   * 传了才是「调用前预扣 → 三次尝试的真实用量累加结算 → 全部失败全额退」。
+   */
+  billing?: { supabase: SupabaseClient; userId: string; refId?: string }
+): Promise<CreativePlan | null> {
   // 主题是创作者亲手写的表达，最能代表他期望的输出语言，权重最高
   const target =
     input.language ??
@@ -613,6 +649,48 @@ export async function generatePlan(input: GeneratePlanInput): Promise<CreativePl
       { text: input.hints?.style, weight: 30, label: 'style' },
       { text: input.inspirationContextText, weight: 10, label: 'inspiration' },
     ]).language
+
+  // ── 计费：预扣发生在任何一次请求之前 ────────────────────────
+  const billingRef = `${billing?.refId ?? crypto.randomUUID()}:plan`
+  let reserved = 0
+  let totalUsage: TokenUsage = ZERO_USAGE
+  if (billing) {
+    const r = await reserveAiCost({
+      supabase: billing.supabase,
+      userId: billing.userId,
+      ability: 'generation',
+      refId: billingRef,
+      description: '创作方案',
+    })
+    if (!r.ok) return null // 余额不足：一个 token 都不发给上游
+    reserved = r.reserved
+  }
+
+  /** 统一收口：出方案按累加用量结算，没出方案把预扣原路退回 */
+  const finish = async (plan: CreativePlan | null): Promise<CreativePlan | null> => {
+    if (!billing || reserved <= 0) return plan
+    if (plan) {
+      await settleAiCost({
+        supabase: billing.supabase,
+        userId: billing.userId,
+        refId: billingRef,
+        reserved,
+        // 三次尝试里失败的那几次也真实烧了 token，一并计入
+        usage: totalUsage,
+        description: '创作方案',
+      })
+    } else {
+      await refundAiCost({
+        supabase: billing.supabase,
+        userId: billing.userId,
+        refId: billingRef,
+        amount: reserved,
+        reason: '创作方案生成失败，预扣全额退还',
+      })
+    }
+    return plan
+  }
+
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
@@ -636,21 +714,23 @@ export async function generatePlan(input: GeneratePlanInput): Promise<CreativePl
 
       if (!res.ok) {
         console.error('创作方案生成失败:', await res.text())
-        return null
+        return finish(null)
       }
       const data = await res.json()
+      totalUsage = addUsage(totalUsage, parseUsage(data))
       const text: string = data?.choices?.[0]?.message?.content
-      if (typeof text !== 'string' || !text.trim()) return null
+      if (typeof text !== 'string' || !text.trim()) return finish(null)
 
       const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-      const parsed = normalizePlan(JSON.parse(cleaned))
-      if (parsed) return parsed
+      // 带上用户自定义字数：LLM 忽略字数指令时由 normalizePlan 兜底纠正
+      const parsed = normalizePlan(JSON.parse(cleaned), input.wordCount ?? null)
+      if (parsed) return finish(parsed)
       // normalizePlan 返回 null 说明字段不全，重试
     } catch (e) {
       console.error(`创作方案生成异常（第 ${attempt + 1} 次）:`, e)
     }
   }
-  return null
+  return finish(null)
 }
 
 // ── 我的模式：真实证据装配（防幻觉，数字必须有出处） ─────────

@@ -16,12 +16,17 @@
 // ============================================================
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+// 从 diagnosisMeta 直接取，不要经过 ./diagnosis：
+// diagnosis 会连带拉进 @/lib/llm → aiDeadline → node:async_hooks。
+// 本模块虽以服务端为主，但 parseStyleDimensions 被 tasteView 使用，
+// 而 tasteView 由 'use client' 页面 /style-profile 导入 ——
+// 那条链会让生产构建在浏览器 chunk 阶段失败。
 import {
   DIMENSION_META,
   type CreativeDiagnosis,
   type DimensionKey,
   type NextActionKey,
-} from './diagnosis'
+} from './diagnosisMeta'
 
 /** style_profiles.style_dimensions 的持久化结构 */
 export interface StyleDimensionsState {

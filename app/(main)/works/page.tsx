@@ -126,7 +126,7 @@ export default function WorksArchivePage() {
         actions={
           <Link
             href="/generate"
-            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500"
+            className="vs-btn vs-btn-primary"
           >
             <PenLine size={15} />
             开始新作品
@@ -185,18 +185,18 @@ export default function WorksArchivePage() {
                       </TagChip>
                     </div>
 
-                    <h3 className="mt-2.5 text-[16px] font-semibold leading-snug text-white">
+                    <h3 className="vs-h3 mt-2.5 leading-snug">
                       {p.title}
                     </h3>
                     {p.topic && p.topic !== p.title && (
-                      <p className="mt-1 text-[13px] leading-relaxed text-zinc-400 line-clamp-2">
+                      <p className="mt-1 text-[13px] leading-relaxed text-[var(--vs-ink-3)] line-clamp-2">
                         {p.topic}
                       </p>
                     )}
 
                     {/* 成长数据 */}
                     <div className="vs-divider my-3" />
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[12px] text-zinc-500">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 vs-note">
                       <span className="inline-flex items-center gap-1.5">
                         <GitBranch size={12} />
                         {p.versionCount} 个版本
@@ -224,9 +224,9 @@ export default function WorksArchivePage() {
                           .map((v) => (
                             <p
                               key={v.versionNumber}
-                              className="text-[13px] leading-relaxed text-zinc-400"
+                              className="text-[13px] leading-relaxed text-[var(--vs-ink-3)]"
                             >
-                              <span className="text-zinc-500">
+                              <span className="text-[var(--vs-ink-4)]">
                                 V{v.versionNumber} 你的反馈：
                               </span>
                               {v.userFeedback}
@@ -240,7 +240,7 @@ export default function WorksArchivePage() {
                   {p.versions.length > 0 && (
                     <Link
                       href={`/article/${p.versions[p.versions.length - 1].id}`}
-                      className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-white/[0.1] px-3 py-1.5 text-[12px] font-medium text-zinc-300 transition hover:border-white/20 hover:text-white"
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-[var(--vs-line)] px-3 py-1.5 text-[12px] font-medium text-[var(--vs-ink-2)] transition hover:border-white/20 hover:text-[var(--vs-ink)]"
                     >
                       继续
                       <ArrowRight size={13} />

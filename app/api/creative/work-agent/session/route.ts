@@ -13,6 +13,7 @@
 
 import { NextResponse } from 'next/server'
 import { authenticateWithToken } from '@/lib/storage'
+import { guardRateLimit } from '@/lib/rateLimit'
 import {
   mapMessageRow,
   mapSessionRow,
@@ -42,6 +43,10 @@ export async function POST(req: Request) {
     if (!token) return NextResponse.json({ error: '请先登录' }, { status: 401 })
     const auth = await authenticateWithToken(token)
     if (!auth.ok) return auth.response
+
+    // 限流（跨实例）：会话创建会写库，且是 chat 入口的前置调用
+    const limited = await guardRateLimit(auth.userId, 'work-agent-session', 30, 60_000)
+    if (limited) return limited
 
     const body = (await req.json().catch(() => ({}))) as PostBody
     const projectId = str(body.projectId, 100) || null

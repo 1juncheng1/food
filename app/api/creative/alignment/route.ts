@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { authenticateRequest } from '@/lib/apiAuth'
+import { guardRateLimit } from '@/lib/rateLimit'
 import { normalizeRevisionPlan } from '@/lib/creative/workAgent'
 import { verifyFeedbackAlignment } from '@/lib/creative/feedbackAlignment'
 import { hasEnoughFor } from '@/lib/aiCost'
@@ -49,6 +50,10 @@ export async function POST(req: Request) {
     const auth = await authenticateRequest(req)
     if (!auth.ok) return auth.response
     const { supabase, userId } = auth
+
+    // 限流（跨实例）：比对新旧两个版本正文，输入 token 很大
+    const limited = await guardRateLimit(userId, 'creative-alignment', 10, 60_000)
+    if (limited) return limited
 
     const body = (await req.json().catch(() => ({}))) as AlignmentBody
     const generationId = str(body.generationId, 200)

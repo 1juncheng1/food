@@ -1,6 +1,11 @@
 import { cn } from '@/lib/utils'
 
-/** 页面顶部的数据沉淀条：让用户看到"积累"本身 */
+/**
+ * 页面顶部的数据沉淀条：让用户看到"积累"本身。
+ *
+ * 不用卡片墙：数字本身就是视觉，用细线分栏承载，
+ * 数字一律等宽（tabular-nums），这是精密感的来源。
+ */
 export function StatRow({
   items,
   className,
@@ -9,26 +14,28 @@ export function StatRow({
   className?: string
 }) {
   return (
-    <div
+    <dl
       className={cn(
-        'grid grid-cols-2 gap-3 sm:grid-cols-4',
+        'grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4',
         className
       )}
     >
       {items.map((it) => (
         <div
           key={it.label}
-          className="rounded-xl border border-white/[0.07] bg-white/[0.025] px-3.5 py-3"
+          className="border-l border-[var(--vs-line)] pl-4"
         >
-          <p className="text-xl font-semibold tracking-tight text-white">
+          <dt className="vs-mark mb-1.5">{it.label}</dt>
+          <dd className="vs-num text-[22px] leading-none text-[var(--vs-ink)]">
             {it.value}
-          </p>
-          <p className="mt-0.5 text-[12px] text-zinc-500">{it.label}</p>
+          </dd>
           {it.hint && (
-            <p className="mt-0.5 text-[11px] text-zinc-600">{it.hint}</p>
+            <p className="mt-1.5 text-[11px] text-[var(--vs-ink-5)]">
+              {it.hint}
+            </p>
           )}
         </div>
       ))}
-    </div>
+    </dl>
   )
 }

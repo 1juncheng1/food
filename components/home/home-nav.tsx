@@ -68,11 +68,11 @@ export function HomeNav() {
             aria-haspopup="menu"
             aria-expanded={menuOpen}
           >
-            <span className="w-7 h-7 rounded-full bg-indigo-500/20 text-indigo-300 flex items-center justify-center text-xs font-medium">
+            <span className="w-7 h-7 rounded-full bg-[var(--vs-beam-wash)] text-[var(--vs-ink)] flex items-center justify-center text-xs font-medium">
               {initial}
             </span>
-            <span className="text-sm text-zinc-200 max-w-[120px] truncate">{displayName}</span>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-400">
+            <span className="text-sm text-[var(--vs-ink)] max-w-[120px] truncate">{displayName}</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--vs-ink-3)]">
               <path d="M6 9l6 6 6-6" />
             </svg>
           </button>
@@ -80,21 +80,21 @@ export function HomeNav() {
           {menuOpen && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-              <div className="absolute right-0 top-full mt-2 w-48 bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl py-1 z-50" role="menu">
-                <Link href="/dashboard" className="block px-4 py-2.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white transition" onClick={() => setMenuOpen(false)}>
+              <div className="absolute right-0 top-full mt-2 w-48 bg-[var(--vs-void-1)] border border-[var(--vs-line)] rounded-lg shadow-xl py-1 z-50" role="menu">
+                <Link href="/dashboard" className="block px-4 py-2.5 text-[14px] text-[var(--vs-ink-2)] hover:bg-[var(--vs-void-2)] hover:text-[var(--vs-ink)] transition" onClick={() => setMenuOpen(false)}>
                   进入工作台
                 </Link>
-                <Link href="/profile/me" className="block px-4 py-2.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white transition" onClick={() => setMenuOpen(false)}>
+                <Link href="/profile/me" className="block px-4 py-2.5 text-[14px] text-[var(--vs-ink-2)] hover:bg-[var(--vs-void-2)] hover:text-[var(--vs-ink)] transition" onClick={() => setMenuOpen(false)}>
                   我的主页
                 </Link>
-                <Link href="/settings" className="block px-4 py-2.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white transition" onClick={() => setMenuOpen(false)}>
+                <Link href="/settings" className="block px-4 py-2.5 text-[14px] text-[var(--vs-ink-2)] hover:bg-[var(--vs-void-2)] hover:text-[var(--vs-ink)] transition" onClick={() => setMenuOpen(false)}>
                   设置
                 </Link>
-                <div className="border-t border-zinc-800 my-1" />
+                <div className="border-t border-[var(--vs-line)] my-1" />
                 <button
                   onClick={handleLogout}
                   disabled={loggingOut}
-                  className="w-full text-left px-4 py-2.5 text-sm text-red-400 hover:bg-zinc-800 transition disabled:opacity-40"
+                  className="w-full text-left px-4 py-2.5 text-sm vs-error-text hover:bg-[var(--vs-void-2)] transition disabled:opacity-40"
                 >
                   {loggingOut ? '退出中…' : '退出登录'}
                 </button>

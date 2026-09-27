@@ -2,8 +2,8 @@
 // 文案遵循全站规则：说明系统在为你准备什么，而不是"加载中"
 export default function Loading() {
   return (
-    <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
-      <div className="flex items-center gap-2.5 text-[13px] text-indigo-200/90">
+    <div className="min-h-screen bg-[var(--vs-void)] flex items-center justify-center">
+      <div className="flex items-center gap-2.5 text-[13px] text-[var(--vs-ink-3)]">
         <span className="inline-flex items-center gap-[3px]">
           <i className="vs-ai-dot" />
           <i className="vs-ai-dot" />

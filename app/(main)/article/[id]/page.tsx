@@ -24,6 +24,7 @@ import {
 } from '@/lib/creative/diagnosisMeta'
 import { DiagnosisCard } from '@/components/creative/diagnosis-card'
 import type { AlignmentReport } from '@/lib/creative/feedbackAlignment'
+import type { ConsistencyCheck } from '@/lib/creative/consistencyCheck'
 // Work Agent：用对话式共创替换原「自由反馈输入框」（保留其内部快捷方向入口）
 import { WorkAgentChat } from '@/components/creative/work-agent-chat'
 import { PerformanceCard } from '@/components/creative/performance-card'
@@ -116,6 +117,9 @@ export default function ArticlePage() {
   >('idle')
   const [diagnosisError, setDiagnosisError] = useState<string | null>(null)
   const [diagnosisRefreshing, setDiagnosisRefreshing] = useState(false)
+  // 创作一致性三问（是否符合你的知识 / 兴趣 / 禁忌）：诊断接口随诊断一起返回，
+  // 纯读取、不额外消耗 LLM；无可判定结论时为 null，卡片整块不渲染。
+  const [consistency, setConsistency] = useState<ConsistencyCheck | null>(null)
   // 历史版本手动诊断中（记录 version 行 id）
   const [historyDiagId, setHistoryDiagId] = useState<string | null>(null)
   // ── 阶段 5：作品标签分析（异步加载，失败静默降级）──
@@ -172,6 +176,7 @@ export default function ArticlePage() {
     setDiagnosisStatus('idle')
     setDiagnosisError(null)
     setDiagnosisRefreshing(false)
+    setConsistency(null)
     setHistoryDiagId(null)
     setWorkTags(null)
     setWorkTagsStatus('idle')
@@ -616,7 +621,7 @@ export default function ArticlePage() {
         body: JSON.stringify({ generationId, force }),
       })
       const data = (await res.json().catch(() => null)) as
-        | { analysis?: CreativeDiagnosis; error?: string }
+        | { analysis?: CreativeDiagnosis; error?: string; consistency?: ConsistencyCheck | null }
         | null
 
       if (!res.ok || !data?.analysis) {
@@ -636,6 +641,7 @@ export default function ArticlePage() {
         return
       }
       setDiagnosis(analysis)
+      setConsistency(data.consistency ?? null)
       setDiagnosisStatus('done')
       // 回填本地作品，刷新页面直接展示，不重复消耗 LLM
       if (work) patchWork(work.id, { analysis })
@@ -1036,24 +1042,23 @@ export default function ArticlePage() {
     // 蓝图已就绪、V1 自动续写中：展示蓝图卡（用户可阅读，也可换个方向中断重构思）
     if (blueprint) {
       return (
-        <div className="inner-page gen-stage px-6 py-16" data-mode="inspiration">
+        <div className="inner-page px-6 py-16">
           <div className="max-w-2xl mx-auto">
-            <div className="flex items-center gap-2 mb-6">
-              <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:-0.3s]" />
-              <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:-0.15s]" />
-              <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce" />
-              <p className="ml-3 text-sm text-zinc-300">创作蓝图已就绪，AI 正在按此方向撰写 V1…</p>
+            <div className="flex items-center gap-3 mb-6">
+              <span className="vs-ai-dots" aria-hidden="true">
+                <i className="vs-ai-dot" />
+                <i className="vs-ai-dot" />
+                <i className="vs-ai-dot" />
+              </span>
+              <p className="vs-note">创作蓝图已就绪，AI 正在按此方向撰写 V1…</p>
             </div>
 
             <BlueprintCard bp={blueprint} />
 
-            <div className="flex items-center justify-between mt-5">
-              <p className="text-xs text-zinc-600">正文通常还需 10-15 秒，请勿刷新页面</p>
-              <button
-                onClick={handleReplan}
-                className="text-xs text-zinc-400 hover:text-indigo-300 border border-zinc-800 hover:border-indigo-500/40 px-3 py-1.5 rounded-lg transition"
-              >
-                🔄 换个方向重新构思
+            <div className="flex flex-wrap items-center justify-between gap-3 mt-5">
+              <p className="vs-note">正文通常还需 10-15 秒，请勿刷新页面</p>
+              <button onClick={handleReplan} className="vs-btn vs-btn-ghost vs-btn-sm">
+                换个方向重新构思
               </button>
             </div>
           </div>
@@ -1068,36 +1073,33 @@ export default function ArticlePage() {
       : null
     if (improveMeta) {
       return (
-        <div className="inner-page gen-stage text-white flex flex-col items-center justify-center px-6" data-mode="inspiration">
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:-0.3s]" />
-            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:-0.15s]" />
-            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce" />
-          </div>
-          <p className="mt-6 text-sm text-zinc-200">
+        <div className="inner-page flex flex-col items-center justify-center px-6 text-center">
+          <span className="vs-ai-dots" aria-hidden="true">
+            <i className="vs-ai-dot" />
+            <i className="vs-ai-dot" />
+            <i className="vs-ai-dot" />
+          </span>
+          <p className="mt-6 text-[15px] text-[var(--vs-ink)]">
             {improveMeta.emoji} AI 正按「{improveMeta.label}」方向迭代下一版…
           </p>
-          <p className="mt-2 text-xs text-zinc-500 max-w-sm text-center leading-relaxed">
+          <p className="vs-note mt-2 max-w-sm leading-relaxed">
             正在结合上一版诊断（优势 / 问题 / 建议）重写完整新版本，旧版本会原样保留
           </p>
-          <p className="mt-2 text-xs text-zinc-600">通常需要 15-25 秒，请勿关闭或刷新页面</p>
+          <p className="vs-note mt-2">通常需要 15-25 秒，请勿关闭或刷新页面</p>
         </div>
       )
     }
 
     // 无蓝图（蓝图构思中 / 游客单次生成）：沿用原思考动画
     return (
-      <div className="inner-page gen-stage text-white flex flex-col items-center justify-center px-6" data-mode="inspiration">
-        {/* 思考中的三点跳动动画 */}
-        <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:-0.3s]" />
-          <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:-0.15s]" />
-          <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-bounce" />
-        </div>
-        <p className="mt-6 text-sm text-zinc-300">AI 正在构思方向并撰写文案…</p>
-        <p className="mt-2 text-xs text-zinc-600">
-          通常需要 10-20 秒，请勿关闭或刷新页面
-        </p>
+      <div className="inner-page flex flex-col items-center justify-center px-6 text-center">
+        <span className="vs-ai-dots" aria-hidden="true">
+          <i className="vs-ai-dot" />
+          <i className="vs-ai-dot" />
+          <i className="vs-ai-dot" />
+        </span>
+        <p className="vs-note mt-6">AI 正在构思方向并撰写文案…</p>
+        <p className="vs-note mt-2">通常需要 10-20 秒，请勿关闭或刷新页面</p>
       </div>
     )
   }
@@ -1105,20 +1107,17 @@ export default function ArticlePage() {
   // ── 生成失败 / 链接无效：提供恢复表单与返回主页入口 ──
   if (error) {
     return (
-      <div className="inner-page gen-stage text-white flex items-center justify-center px-6" data-mode="inspiration">
+      <div className="inner-page flex items-center justify-center px-6">
         <div className="text-center max-w-sm">
-          <p className="text-sm text-red-400 leading-relaxed">{error}</p>
-          <div className="flex items-center justify-center gap-3 mt-6">
+          <p className="vs-error">{error}</p>
+          <div className="flex flex-wrap items-center justify-center gap-3 mt-6">
             <button
               onClick={() => router.push('/generate?restore=1')}
-              className="text-sm bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg transition"
+              className="vs-btn vs-btn-primary"
             >
               返回修改表单
             </button>
-            <Link
-              href="/dashboard"
-              className="text-sm bg-zinc-800 hover:bg-zinc-700 px-4 py-2 rounded-lg transition"
-            >
+            <Link href="/dashboard" className="vs-btn vs-btn-ghost">
               返回主页
             </Link>
           </div>
@@ -1130,13 +1129,10 @@ export default function ArticlePage() {
   // ── 兜底：数据为空（正常流程不会走到）──
   if (!work) {
     return (
-      <div className="inner-page gen-stage text-white flex items-center justify-center px-6" data-mode="inspiration">
+      <div className="inner-page flex items-center justify-center px-6">
         <div className="text-center">
-          <p className="text-zinc-400 text-sm">文章不存在，或已被本地缓存清除</p>
-          <Link
-            href="/dashboard"
-            className="inline-block mt-4 text-sm text-indigo-400 hover:underline"
-          >
+          <p className="vs-note">文章不存在，或已被本地缓存清除</p>
+          <Link href="/dashboard" className="vs-link inline-block mt-4">
             返回主页
           </Link>
         </div>
@@ -1221,7 +1217,7 @@ export default function ArticlePage() {
       <button
         type="button"
         onClick={() => backToDashboard(router)}
-        className="mb-5 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
+        className="mb-5 vs-link"
       >
         ← 返回主页
       </button>
@@ -1249,7 +1245,7 @@ export default function ArticlePage() {
         {/* 阶段四：登场角色快照（本篇生成时锁定的设定，悬停可看详情） */}
         {work.characters && work.characters.length > 0 && (
           <div className="flex items-center flex-wrap gap-2 mt-4">
-            <span className="text-xs text-zinc-500 mr-1">登场角色</span>
+            <span className="vs-note mr-1">登场角色</span>
             {work.characters.map((c) => {
               const detail = [
                 CHARACTER_ROLE_LABELS[c.role],
@@ -1263,10 +1259,12 @@ export default function ArticlePage() {
                 <span
                   key={c.name}
                   title={detail}
-                  className="inline-flex items-center gap-1.5 text-xs text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-full px-3 py-1"
+                  className="vs-verdict"
                 >
                   {c.name}
-                  {c.isSelf && <span className="text-[10px] text-emerald-400">我</span>}
+                  {c.isSelf && (
+                    <span className="text-[10px] text-[var(--vs-ink-4)]">我</span>
+                  )}
                 </span>
               )
             })}
@@ -1276,7 +1274,7 @@ export default function ArticlePage() {
         {/* 创作进化系统阶段 3：版本切换 tab（仅项目作品；V2 生成后可回看 V1） */}
         {work.projectId && versions.length > 0 && (
           <div className="flex items-center flex-wrap gap-2 mt-6">
-            <span className="text-xs text-zinc-500 mr-1">版本</span>
+            <span className="vs-note mr-1">版本</span>
             {versions.map((v) => {
               const isActive =
                 activeVersion === v.versionNumber ||
@@ -1291,10 +1289,10 @@ export default function ArticlePage() {
                       ? ` · 按「${NEXT_ACTION_META.find((m) => m.key === v.improveDirection)?.label ?? v.improveDirection}」迭代`
                       : ' · 初稿'
                   }`}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition border ${
+                  className={`px-3.5 py-1.5 rounded-[var(--vs-r-sm)] text-xs font-medium transition border ${
                     isActive
-                      ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/50'
-                      : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-600 hover:text-zinc-200'
+                      ? 'bg-[var(--vs-beam-wash)] text-[var(--vs-ink)] border-[var(--vs-beam-line)]'
+                      : 'bg-transparent text-[var(--vs-ink-3)] border-[var(--vs-line)] hover:border-[var(--vs-line-2)] hover:text-[var(--vs-ink)]'
                   }`}
                 >
                   V{v.versionNumber}
@@ -1306,7 +1304,9 @@ export default function ArticlePage() {
                       {NEXT_ACTION_META.find((m) => m.key === v.improveDirection)?.emoji ?? '↻'}
                     </span>
                   )}
-                  {isLatest && <span className="ml-1 text-[10px] text-indigo-400/80">最新</span>}
+                  {isLatest && (
+                    <span className="ml-1 text-[11px] text-[var(--vs-ink-4)]">最新</span>
+                  )}
                 </button>
               )
             })}
@@ -1318,27 +1318,23 @@ export default function ArticlePage() {
               <button
                 onClick={() => setShareOpen(true)}
                 title="把灵感、创作过程与最终作品分享到灵感广场"
-                className={
-                  projectStatus === 'finalized'
-                    ? 'text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 rounded-lg px-3 py-1.5 transition'
-                    : 'text-xs text-zinc-400 hover:text-indigo-300 border border-zinc-800 hover:border-indigo-500/40 rounded-lg px-3 py-1.5 transition'
-                }
+                className={`vs-btn vs-btn-sm ${
+                  projectStatus === 'finalized' ? 'vs-btn-primary' : 'vs-btn-ghost'
+                }`}
               >
-                📢 发布到灵感广场
+                发布到灵感广场
               </button>
               {/* 阶段 5：定稿为最终作品 / 已定稿徽标 */}
               {projectStatus === 'finalized' ? (
-                <span className="inline-flex items-center gap-1 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-3 py-1.5">
-                  ✓ 最终作品 V{latestVersionNumber ?? '?'}
-                </span>
+                <span className="vs-verdict">最终作品 V{latestVersionNumber ?? '?'}</span>
               ) : (
                 <button
                   onClick={handleToggleFinalize}
                   disabled={finalizeBusy || !diagnosis}
                   title={!diagnosis ? 'AI 诊断完成后即可定稿' : '把当前最新版本确定为最终作品'}
-                  className="text-xs text-zinc-400 hover:text-emerald-300 border border-zinc-800 hover:border-emerald-500/40 rounded-lg px-3 py-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="vs-btn vs-btn-ghost vs-btn-sm disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  {finalizeBusy ? '处理中…' : '✓ 定为最终作品'}
+                  {finalizeBusy ? '处理中…' : '定为最终作品'}
                 </button>
               )}
             </div>
@@ -1350,23 +1346,20 @@ export default function ArticlePage() {
             而用户此刻恰恰刚完成「我认可这个作品」的心理动作，是最该被提示的时机。
             给一个明确的下一步，但不强制（可「暂不」关掉）。 */}
         {justFinalized && projectStatus === 'finalized' && (
-          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-3">
-            <p className="min-w-[12rem] flex-1 text-[13px] leading-relaxed text-zinc-300">
-              ✅ 已定为最终作品。要让它被更多人看到吗？
+          <div className="vs-sec mt-3 flex flex-wrap items-center gap-3">
+            <p className="min-w-[12rem] flex-1 text-[13px] leading-relaxed text-[var(--vs-ink-2)]">
+              已定为最终作品。要让它被更多人看到吗？
             </p>
             <button
               onClick={() => {
                 setShareOpen(true)
                 setJustFinalized(false)
               }}
-              className="text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg px-3.5 py-1.5 transition"
+              className="vs-btn vs-btn-primary vs-btn-sm"
             >
-              📢 发布到灵感广场
+              发布到灵感广场
             </button>
-            <button
-              onClick={() => setJustFinalized(false)}
-              className="text-xs text-zinc-400 hover:text-zinc-200 transition"
-            >
+            <button onClick={() => setJustFinalized(false)} className="vs-link">
               暂不
             </button>
           </div>
@@ -1374,9 +1367,9 @@ export default function ArticlePage() {
 
         {/* 第四阶段：版本元信息条——版本名 / 生成时间 / 本次优化方向 / AI 为什么这样修改 */}
         {displayVersionMeta && (displayVersionMeta.direction || displayVersionMeta.note || displayVersionMeta.userFeedback) && (
-          <div className="mt-3 rounded-lg border border-zinc-800/80 bg-zinc-900/50 px-4 py-3">
-            <div className="flex items-center flex-wrap gap-x-3 gap-y-1 text-[11px]">
-              <span className="text-zinc-300 font-medium">
+          <div className="vs-sec mt-3">
+            <div className="flex items-center flex-wrap gap-x-3 gap-y-1">
+              <span className="text-[13px] font-medium text-[var(--vs-ink)]">
                 V{displayVersionMeta.versionNumber}
                 {displayVersionMeta.direction
                   ? ` · ${NEXT_ACTION_META.find((m) => m.key === displayVersionMeta.direction)?.emoji ?? '↻'} ${
@@ -1386,7 +1379,7 @@ export default function ArticlePage() {
                   : ' · 初稿'}
               </span>
               {displayVersionMeta.createdAt && (
-                <span className="text-zinc-600">
+                <span className="vs-note">
                   {new Date(displayVersionMeta.createdAt).toLocaleString('zh-CN', {
                     month: 'numeric',
                     day: 'numeric',
@@ -1397,14 +1390,14 @@ export default function ArticlePage() {
               )}
             </div>
             {displayVersionMeta.userFeedback && (
-              <p className="mt-1.5 text-xs text-zinc-400 leading-relaxed">
-                <span className="text-amber-400/90">💬 你的反馈：</span>
+              <p className="vs-note mt-1.5 leading-relaxed">
+                <span className="text-[var(--vs-ink-2)]">你的反馈：</span>
                 {displayVersionMeta.userFeedback}
               </p>
             )}
             {displayVersionMeta.note && (
-              <p className="mt-1.5 text-xs text-zinc-400 leading-relaxed">
-                <span className="text-indigo-400/90">🤖 AI 修改说明：</span>
+              <p className="vs-note mt-1.5 leading-relaxed">
+                <span className="text-[var(--vs-ink-2)]">AI 修改说明：</span>
                 {displayVersionMeta.note}
               </p>
             )}
@@ -1414,17 +1407,17 @@ export default function ArticlePage() {
                 也就没法判断 AI 有没有越界改了他不想动的地方。 */}
             {displayVersionMeta.editPatches.length > 0 && (
               <details className="mt-2 group">
-                <summary className="text-[11px] text-zinc-500 cursor-pointer select-none hover:text-zinc-300">
-                  ✏️ 本版改动 {displayVersionMeta.editPatches.length} 处
+                <summary className="vs-note cursor-pointer select-none hover:text-[var(--vs-ink)]">
+                  本版改动 {displayVersionMeta.editPatches.length} 处
                   {displayVersionMeta.revisePlan && (
-                    <span className="ml-1.5 text-zinc-600">
+                    <span className="ml-1.5 text-[var(--vs-ink-4)]">
                       · 方案「{displayVersionMeta.revisePlan.title}」
                     </span>
                   )}
-                  <span className="ml-1.5 text-zinc-600">（点击查看明细）</span>
+                  <span className="ml-1.5 text-[var(--vs-ink-4)]">（点击查看明细）</span>
                 </summary>
                 {displayVersionMeta.revisePlan && (
-                  <p className="mt-1.5 text-[11px] text-zinc-500 leading-relaxed">
+                  <p className="vs-note mt-1.5 leading-relaxed">
                     承诺保持不变：{displayVersionMeta.revisePlan.preserveItems.join('、')}
                   </p>
                 )}
@@ -1432,15 +1425,15 @@ export default function ArticlePage() {
                   {displayVersionMeta.editPatches.map((p, i) => (
                     <div
                       key={`${p.segmentIndex}-${i}`}
-                      className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2"
+                      className="border-t border-[var(--vs-line)] pt-2"
                     >
-                      <p className="text-[10px] text-zinc-500 mb-1.5">
+                      <p className="vs-note mb-1.5">
                         第 {p.segmentIndex} 段 · {p.reason}
                       </p>
-                      <p className="text-[11px] text-zinc-600 leading-relaxed line-through decoration-zinc-700">
+                      <p className="text-[11px] leading-relaxed text-[var(--vs-ink-5)] line-through decoration-[var(--vs-line-2)]">
                         {p.originalExcerpt.slice(0, 200)}
                       </p>
-                      <p className="text-[11px] text-zinc-300 leading-relaxed mt-1">
+                      <p className="mt-1 text-[11px] leading-relaxed text-[var(--vs-ink-2)]">
                         {p.revisedText.slice(0, 400)}
                       </p>
                     </div>
@@ -1456,16 +1449,17 @@ export default function ArticlePage() {
           <div className="mt-8">
             <button
               onClick={() => setBlueprintExpanded((v) => !v)}
-              className="w-full flex items-center justify-between bg-zinc-900/60 border border-indigo-500/20 rounded-xl px-5 py-3 text-sm text-zinc-300 hover:border-indigo-500/40 transition"
+              className="w-full flex items-center justify-between gap-4 border-b border-[var(--vs-line)] px-5 py-3 text-left text-[14px] text-[var(--vs-ink)] transition hover:border-[var(--vs-line-2)]"
             >
-              <span className="flex items-center gap-2">
-                <span>🧭</span>
+              <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span className="font-medium">创作蓝图</span>
-                <span className="text-xs text-zinc-500">
+                <span className="vs-note">
                   {viewingVersion ? `V${viewingVersion.versionNumber} 按此方向生成` : '本篇按此方向生成'}
                 </span>
               </span>
-              <span className={`text-xs text-zinc-500 transition-transform ${blueprintExpanded ? 'rotate-180' : ''}`}>
+              <span
+                className={`vs-note inline-block transition-transform ${blueprintExpanded ? 'rotate-180' : ''}`}
+              >
                 ▾
               </span>
             </button>
@@ -1479,16 +1473,16 @@ export default function ArticlePage() {
 
         {/* 历史版本查看提示条：内容只读，但可直接基于本版选择方向继续迭代（新版本追加到链尾） */}
         {viewingVersion && (
-          <div className="mt-8 flex items-center justify-between gap-4 bg-zinc-900/70 border border-zinc-700/60 rounded-xl px-5 py-3">
-            <p className="text-xs text-zinc-400">
-              正在查看历史版本 <span className="text-zinc-200 font-medium">V{viewingVersion.versionNumber}</span>
-              。原文为只读；在下方选择方向即可
-              <span className="text-indigo-300">基于 V{viewingVersion.versionNumber} 继续迭代</span>
-              ，新版本将追加为 V{latestVersionNumber ? latestVersionNumber + 1 : '?'}，不会覆盖任何版本。
+          <div className="vs-sec mt-8 flex flex-wrap items-center justify-between gap-4">
+            <p className="vs-note min-w-[16rem] flex-1 leading-relaxed">
+              正在查看历史版本{' '}
+              <span className="vs-num text-[var(--vs-ink)]">V{viewingVersion.versionNumber}</span>
+              。原文为只读；在下方选择方向即可基于 V{viewingVersion.versionNumber} 继续迭代，
+              新版本将追加为 V{latestVersionNumber ? latestVersionNumber + 1 : '?'}，不会覆盖任何版本。
             </p>
             <button
               onClick={() => setActiveVersion(null)}
-              className="shrink-0 text-xs bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded-lg transition"
+              className="vs-btn vs-btn-ghost vs-btn-sm shrink-0"
             >
               返回最新版 V{latestVersionNumber}
             </button>
@@ -1498,11 +1492,9 @@ export default function ArticlePage() {
         {/* ── 阶段 5：本次生成参考（Creator Profile + Knowledge Base + 声明约束）── */}
         {activeVersion === null && (
           (work.personalization || (work.declarationTraits && work.declarationTraits.length > 0)) && (
-            <div className="mt-8 rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-4">
-              <div className="flex items-center gap-2 mb-3">
-                <span className="text-[10px] font-medium text-amber-400 tracking-wide uppercase">
-                  本次生成参考
-                </span>
+            <div className="vs-sec mt-8">
+              <div className="mb-3">
+                <span className="vs-mark">本次生成参考</span>
               </div>
               {/* Creator Profile + 素材库参考 */}
               {work.personalization && (
@@ -1510,18 +1502,13 @@ export default function ArticlePage() {
               )}
               {/* Creator Declaration 约束 */}
               {work.declarationTraits && work.declarationTraits.length > 0 && (
-                <div className={`flex flex-wrap items-center gap-2 ${work.personalization ? 'mt-3 pt-3 border-t border-zinc-800/60' : ''}`}>
-                  <span className="text-[11px] text-zinc-500 leading-relaxed">
-                    创作者声明：
-                  </span>
+                <div className={`flex flex-wrap items-center gap-2 ${work.personalization ? 'mt-3 pt-3 border-t border-[var(--vs-line)]' : ''}`}>
+                  <span className="vs-note leading-relaxed">创作者声明：</span>
                   {work.declarationTraits.map((t, idx) => (
                     <span
                       key={idx}
-                      className={`text-[11px] px-2 py-0.5 rounded-full border ${
-                        t.hard
-                          ? 'border-red-500/30 bg-red-500/10 text-red-300'
-                          : 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300'
-                      }`}
+                      className="vs-verdict"
+                      data-verdict={t.hard ? 'partial' : undefined}
                       title={t.hard ? '硬约束' : '软约束'}
                     >
                       {t.dimension}：{t.label}
@@ -1538,53 +1525,50 @@ export default function ArticlePage() {
             就该在"这次参考了什么"同一个位置看到，而不是散落在页面别处。
             空数组不渲染 —— 没参考就是没参考，不画空壳卡片。 */}
         {displayKnowledge.length > 0 && (
-          <div className="mt-3 rounded-xl border border-violet-500/25 bg-violet-500/5 px-5 py-4">
+          <div className="vs-sec mt-3">
             <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
-              <span className="text-[10px] font-medium text-violet-300 tracking-wide uppercase">
+              <span className="vs-mark">
                 {activeVersion !== null
                   ? `V${activeVersion} 参考了你的 ${displayKnowledge.length} 条知识`
                   : `本次参考了你的 ${displayKnowledge.length} 条知识`}
               </span>
-              <Link
-                href="/knowledge"
-                className="text-[10px] text-zinc-500 hover:text-violet-300 transition"
-              >
+              <Link href="/knowledge" className="vs-link">
                 去管理 →
               </Link>
             </div>
             <ul className="space-y-2.5">
               {displayKnowledge.map((u, i) => (
                 <li key={i} className="flex items-start gap-2">
-                  <span className="shrink-0 mt-1.5 w-1 h-1 rounded-full bg-violet-400/70" />
+                  <span className="shrink-0 mt-1.5 w-1 h-1 rounded-full bg-[var(--vs-ink-5)]" />
                   <div className="min-w-0">
-                    <span className="text-xs text-violet-200/90">{u.concept}</span>
-                    {u.kind && <span className="ml-1.5 text-[10px] text-zinc-500">{u.kind}</span>}
-                    <p className="text-xs text-zinc-300 leading-relaxed mt-0.5">{u.claim}</p>
+                    <span className="text-[13px] text-[var(--vs-ink)]">{u.concept}</span>
+                    {u.kind && <span className="vs-note ml-1.5">{u.kind}</span>}
+                    <p className="mt-0.5 text-[13px] leading-relaxed text-[var(--vs-ink-3)]">
+                      {u.claim}
+                    </p>
                   </div>
                 </li>
               ))}
             </ul>
             {activeVersion !== null && (
-              <p className="mt-3 text-[10px] text-zinc-600 leading-relaxed">
+              <p className="vs-note mt-3 leading-relaxed">
                 这是该版本生成当时的记录，与你现在的知识库可能已有出入
               </p>
             )}
           </div>
         )}
 
-        <div className="bg-zinc-900 border border-zinc-800/80 rounded-xl mt-6 overflow-hidden">
-          <div className="flex items-center justify-between px-6 py-3 border-b border-zinc-800">
-            <h2 className="text-sm font-semibold text-zinc-200">
-              解说范文
-            </h2>
+        <div className="vs-sec mt-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="vs-mark">解说范文</h2>
             <button
               onClick={() => handleCopy(displayContent)}
-              className="text-xs bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded transition"
+              className="vs-btn vs-btn-ghost vs-btn-sm"
             >
               {copied === 'sample' ? '已复制' : '复制'}
             </button>
           </div>
-          <p className="px-6 py-5 text-sm text-zinc-300 whitespace-pre-wrap break-words leading-relaxed">
+          <p className="mt-3 whitespace-pre-wrap break-words text-[15px] leading-[1.9] text-[var(--vs-ink-2)]">
             {displayContent}
           </p>
         </div>
@@ -1593,17 +1577,19 @@ export default function ArticlePage() {
         {workTagsStatus !== 'error' && (
           <div className="mt-8">
             {workTagsStatus === 'loading' && (
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-4 flex items-center gap-3">
-                <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-                <p className="text-xs text-zinc-500">AI 正在分析作品标签…</p>
+              <div className="flex items-center gap-3">
+                <span className="vs-ai-dots" aria-hidden="true">
+                  <i className="vs-ai-dot" />
+                  <i className="vs-ai-dot" />
+                  <i className="vs-ai-dot" />
+                </span>
+                <p className="vs-note">AI 正在分析作品标签…</p>
               </div>
             )}
             {workTags && workTagsStatus === 'done' && (
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <span className="text-[10px] font-medium text-indigo-400 tracking-wide uppercase">
-                    作品 DNA
-                  </span>
+              <div className="vs-sec">
+                <div className="mb-3">
+                  <span className="vs-mark">作品 DNA</span>
                 </div>
 
                 {/* 6 枚举维度 DNA（与 KnowledgeItem 完全对齐，作品/素材同构） */}
@@ -1611,61 +1597,61 @@ export default function ArticlePage() {
                   {/* 内容 */}
                   {workTags.content_tags.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[10px] text-zinc-500 w-10 shrink-0">内容</span>
+                      <span className="vs-note w-10 shrink-0">内容</span>
                       {workTags.content_tags.map((t) => (
-                        <span key={t} className="rounded-full border border-blue-700/40 bg-blue-900/20 px-2 py-0.5 text-[11px] text-blue-300">{t}</span>
+                        <span key={t} className="vs-verdict">{t}</span>
                       ))}
                     </div>
                   )}
                   {/* 思想 */}
                   {workTags.thought_tags.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[10px] text-zinc-500 w-10 shrink-0">思想</span>
+                      <span className="vs-note w-10 shrink-0">思想</span>
                       {workTags.thought_tags.map((t) => (
-                        <span key={t} className="rounded-full border border-indigo-700/40 bg-indigo-900/20 px-2 py-0.5 text-[11px] text-indigo-300">{t}</span>
+                        <span key={t} className="vs-verdict">{t}</span>
                       ))}
                     </div>
                   )}
                   {/* 情绪 */}
                   {workTags.emotion_tags.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[10px] text-zinc-500 w-10 shrink-0">情绪</span>
+                      <span className="vs-note w-10 shrink-0">情绪</span>
                       {workTags.emotion_tags.map((t) => (
-                        <span key={t} className="rounded-full border border-rose-700/40 bg-rose-900/20 px-2 py-0.5 text-[11px] text-rose-300">{t}</span>
+                        <span key={t} className="vs-verdict">{t}</span>
                       ))}
                     </div>
                   )}
                   {/* 表达 */}
                   {workTags.expression_tags.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[10px] text-zinc-500 w-10 shrink-0">表达</span>
+                      <span className="vs-note w-10 shrink-0">表达</span>
                       {workTags.expression_tags.map((t) => (
-                        <span key={t} className="rounded-full border border-amber-700/40 bg-amber-900/20 px-2 py-0.5 text-[11px] text-amber-300">{t}</span>
+                        <span key={t} className="vs-verdict">{t}</span>
                       ))}
                     </div>
                   )}
                   {/* 用途 */}
                   {workTags.usage_tags.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[10px] text-zinc-500 w-10 shrink-0">用途</span>
+                      <span className="vs-note w-10 shrink-0">用途</span>
                       {workTags.usage_tags.map((t) => (
-                        <span key={t} className="rounded-full border border-emerald-700/40 bg-emerald-900/20 px-2 py-0.5 text-[11px] text-emerald-300">{t}</span>
+                        <span key={t} className="vs-verdict">{t}</span>
                       ))}
                     </div>
                   )}
                   {/* 受众 */}
                   {workTags.audience_tags.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[10px] text-zinc-500 w-10 shrink-0">受众</span>
+                      <span className="vs-note w-10 shrink-0">受众</span>
                       {workTags.audience_tags.map((t) => (
-                        <span key={t} className="rounded-full border border-purple-700/40 bg-purple-900/20 px-2 py-0.5 text-[11px] text-purple-300">{t}</span>
+                        <span key={t} className="vs-verdict">{t}</span>
                       ))}
                     </div>
                   )}
                 </div>
 
                 {/* 7 自由文本描述维度 */}
-                <div className="flex flex-wrap gap-2 pt-2 border-t border-zinc-800/60 mb-2">
+                <div className="flex flex-wrap gap-2 pt-2 mb-2 border-t border-[var(--vs-line)]">
                   {[
                     { label: '类型', value: workTags.work_type },
                     { label: '主题', value: workTags.theme },
@@ -1676,17 +1662,17 @@ export default function ArticlePage() {
                   ].filter((t) => t.value).map((t) => (
                     <span
                       key={t.label}
-                      className="rounded-full border border-zinc-700 bg-zinc-800/60 px-3 py-1 text-xs text-zinc-300"
+                      className="vs-verdict"
                     >
-                      <span className="text-zinc-500 mr-1">{t.label}:</span>
+                      <span className="mr-1 text-[var(--vs-ink-4)]">{t.label}:</span>
                       {t.value}
                     </span>
                   ))}
                 </div>
 
                 {workTags.core_viewpoint && (
-                  <p className="text-xs text-zinc-400 leading-relaxed pt-1">
-                    <span className="text-zinc-500">核心观点：</span>
+                  <p className="vs-note pt-1 leading-relaxed">
+                    <span className="text-[var(--vs-ink-4)]">核心观点：</span>
                     {workTags.core_viewpoint}
                   </p>
                 )}
@@ -1705,11 +1691,11 @@ export default function ArticlePage() {
               <button
                 onClick={() => handleAnalyzeHistoryVersion(viewingVersion)}
                 disabled={historyDiagId === viewingVersion.id}
-                className="w-full bg-zinc-900/60 border border-dashed border-zinc-700 rounded-xl px-5 py-4 text-xs text-zinc-500 hover:border-indigo-500/40 hover:text-zinc-300 disabled:opacity-50 transition"
+                className="vs-btn vs-btn-ghost w-full disabled:opacity-50"
               >
                 {historyDiagId === viewingVersion.id
-                  ? '🧪 正在诊断 V' + viewingVersion.versionNumber + '…'
-                  : `🧪 为历史版本 V${viewingVersion.versionNumber} 生成 AI 诊断`}
+                  ? '正在诊断 V' + viewingVersion.versionNumber + '…'
+                  : `为历史版本 V${viewingVersion.versionNumber} 生成 AI 诊断`}
               </button>
             )
           ) : (
@@ -1719,14 +1705,14 @@ export default function ArticlePage() {
               <>
                 {/* 定稿项目：诊断卡上方显示最终作品状态 + 重新开启入口 */}
                 {work.projectId && projectStatus === 'finalized' && (
-                  <div className="mb-3 flex items-center justify-between gap-4 bg-emerald-500/10 border border-emerald-500/25 rounded-xl px-5 py-3">
-                    <p className="text-xs text-emerald-300">
-                      ✓ 已定为最终作品（V{latestVersionNumber ?? '?'}）。该项目的版本链已完整保留。
+                  <div className="vs-sec mb-3 flex flex-wrap items-center justify-between gap-4">
+                    <p className="vs-note min-w-[16rem] flex-1">
+                      已定为最终作品（V{latestVersionNumber ?? '?'}）。该项目的版本链已完整保留。
                     </p>
                     <button
                       onClick={handleToggleFinalize}
                       disabled={finalizeBusy}
-                      className="shrink-0 text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-700 hover:border-zinc-500 px-3 py-1.5 rounded-lg transition disabled:opacity-40"
+                      className="vs-btn vs-btn-ghost vs-btn-sm disabled:opacity-40"
                     >
                       重新开启迭代
                     </button>
@@ -1739,9 +1725,10 @@ export default function ArticlePage() {
                   onRetry={() => work && runDiagnosis(work.versionId ?? work.id, false)}
                   onRefresh={() => work && runDiagnosis(work.versionId ?? work.id, true)}
                   refreshing={diagnosisRefreshing}
+                  consistency={consistency}
                 />
                 {diagnosisRefreshing && diagnosis && (
-                  <p className="text-[11px] text-zinc-600 mt-2">正在重新诊断，当前展示的是上一次结果…</p>
+                  <p className="vs-note mt-2">正在重新诊断，当前展示的是上一次结果…</p>
                 )}
               </>
             )
@@ -1753,11 +1740,9 @@ export default function ArticlePage() {
             这是作品页的协作主入口：AI 不是按钮，而是带着上下文的编辑伙伴 */}
         {work.projectId && !viewingVersion && (
           <>
-            <div className="mb-3 mt-12">
-              <h2 className="text-[17px] sm:text-lg font-semibold tracking-tight text-zinc-100">
-                和 AI 一起改这一版
-              </h2>
-              <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-500">
+            <div className="mt-14">
+              <h2 className="vs-h3">和 AI 一起改这一版</h2>
+              <p className="vs-note mt-2">
                 直接说你的感觉，比如「这里太平淡」。AI 会先确认你指的是什么、再给出改法，不会擅自重写。
               </p>
             </div>
@@ -1790,21 +1775,19 @@ export default function ArticlePage() {
         {/* 第三阶段：老作品纳入持续创作入口（无项目归属的最新版才显示；
             纳入后版本 tab / 五维诊断 / 方向迭代 / 定稿全部自动激活） */}
         {!viewingVersion && !work.projectId && (
-          <div className="mt-8 rounded-xl border border-indigo-500/25 bg-gradient-to-br from-indigo-500/10 to-purple-500/5 px-6 py-5">
-            <div className="flex items-start justify-between gap-5 flex-wrap">
-              <div className="min-w-0">
-                <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-                  <span>🧭</span> 把这篇作品纳入持续创作
-                </h2>
-                <p className="mt-1.5 text-xs text-zinc-400 leading-relaxed">
+          <div className="vs-sec mt-8">
+            <div className="flex flex-wrap items-start justify-between gap-5">
+              <div className="min-w-[16rem] flex-1">
+                <h2 className="vs-h3">把这篇作品纳入持续创作</h2>
+                <p className="vs-note mt-1.5 leading-relaxed">
                   建立 V1 版本档案后开放：AI 五维诊断、按方向迭代 V2/V3、版本对比与最终定稿。当前内容原样保留为第一版。
                 </p>
-                {adoptError && <p className="mt-2 text-xs text-red-400">{adoptError}</p>}
+                {adoptError && <p className="vs-error mt-2">{adoptError}</p>}
               </div>
               <button
                 onClick={handleAdopt}
                 disabled={adopting}
-                className="shrink-0 px-5 py-2.5 rounded-xl text-sm font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-wait transition"
+                className="vs-btn vs-btn-primary shrink-0 disabled:opacity-50 disabled:cursor-wait"
               >
                 {adopting ? '纳入中…' : '纳入持续创作'}
               </button>
@@ -1816,41 +1799,30 @@ export default function ArticlePage() {
         {!viewingVersion && (
         <>
         {/* 底部操作：收藏至灵感库 + 再次生成同款风格 */}
-        <div className="flex flex-wrap gap-4 mt-8">
+        <div className="flex flex-wrap gap-3 mt-8">
           <button
             onClick={handleFavorite}
-            className={`px-6 py-3 rounded-xl font-medium text-sm transition border ${
-              favorited
-                ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
-                : 'bg-zinc-900 border-zinc-700 text-zinc-200 hover:bg-zinc-800 hover:border-zinc-600'
-            }`}
+            className={`vs-btn ${favorited ? 'vs-btn-primary' : 'vs-btn-ghost'}`}
           >
             {favorited ? '★ 已收藏至灵感库' : '☆ 收藏至灵感库'}
           </button>
-          <button
-            onClick={handleRegenerate}
-            className="px-6 py-3 rounded-xl font-medium text-sm bg-indigo-600 hover:bg-indigo-500 transition"
-          >
+          <button onClick={handleRegenerate} className="vs-btn vs-btn-ghost">
             ↻ 再次生成同款风格
           </button>
         </div>
 
         {/* ── 反馈区：四个按钮 ── */}
-        <div className="mt-10 pt-8 border-t border-zinc-800/80">
-          <p className="text-sm text-zinc-400 mb-4">这次生成结果怎么样？</p>
+        <div className="vs-sec mt-10">
+          <p className="mb-4 text-[14px] text-[var(--vs-ink-2)]">这次生成结果怎么样？</p>
           <div className="flex flex-wrap gap-3">
             {/* 🔁 乐观更新：点击瞬间变色；只有「自己的请求」在飞时才锁定并显示转圈，
                 不用全局遮罩/整体变灰，避免"点了没反应"的延迟感 */}
             <button
               onClick={() => handleFeedback('like')}
               disabled={feedbackPending === 'like'}
-              className={`px-5 py-2.5 rounded-xl text-sm font-medium transition border disabled:cursor-wait ${
-                feedback === 'like'
-                  ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40'
-                  : 'bg-zinc-900 border-zinc-700 text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800'
-              }`}
+              className={`vs-btn ${feedback === 'like' ? 'vs-btn-primary' : 'vs-btn-ghost'} disabled:cursor-wait`}
             >
-              👍 很像
+              很像
               {feedbackPending === 'like' && (
                 <span className="ml-1.5 inline-block h-3 w-3 rounded-full border-2 border-current border-t-transparent animate-spin align-[-1px]" />
               )}
@@ -1858,13 +1830,9 @@ export default function ArticlePage() {
             <button
               onClick={() => handleFeedback('dislike')}
               disabled={feedbackPending === 'dislike'}
-              className={`px-5 py-2.5 rounded-xl text-sm font-medium transition border disabled:cursor-wait ${
-                feedback === 'dislike'
-                  ? 'bg-red-500/15 text-red-400 border-red-500/40'
-                  : 'bg-zinc-900 border-zinc-700 text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800'
-              }`}
+              className={`vs-btn ${feedback === 'dislike' ? 'vs-btn-primary' : 'vs-btn-ghost'} disabled:cursor-wait`}
             >
-              👎 差点意思
+              差点意思
               {feedbackPending === 'dislike' && (
                 <span className="ml-1.5 inline-block h-3 w-3 rounded-full border-2 border-current border-t-transparent animate-spin align-[-1px]" />
               )}
@@ -1872,30 +1840,26 @@ export default function ArticlePage() {
             <button
               onClick={handleEditStart}
               disabled={feedbackPending !== null}
-              className={`px-5 py-2.5 rounded-xl text-sm font-medium transition border disabled:opacity-40 disabled:cursor-not-allowed ${
-                feedback === 'edit' && editMode
-                  ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/40'
-                  : 'bg-zinc-900 border-zinc-700 text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800'
-              }`}
+              className={`vs-btn ${
+                feedback === 'edit' && editMode ? 'vs-btn-primary' : 'vs-btn-ghost'
+              } disabled:opacity-40 disabled:cursor-not-allowed`}
             >
-              ✏️ 我改改
+              我改改
             </button>
             <button
               onClick={handleRegenerateFeedback}
               disabled={regenerating || feedbackPending !== null}
-              className={`px-5 py-2.5 rounded-xl text-sm font-medium transition border disabled:opacity-40 disabled:cursor-not-allowed ${
-                feedback === 'regenerate'
-                  ? 'bg-purple-500/15 text-purple-400 border-purple-500/40'
-                  : 'bg-zinc-900 border-zinc-700 text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800'
-              }`}
+              className={`vs-btn ${
+                feedback === 'regenerate' ? 'vs-btn-primary' : 'vs-btn-ghost'
+              } disabled:opacity-40 disabled:cursor-not-allowed`}
             >
-              {regenerating ? '重新生成中…' : '🔄 再来一版'}
+              {regenerating ? '重新生成中…' : '再来一版'}
             </button>
           </div>
 
           {/* 反馈失败提示（成功状态的变化已随按钮高亮体现） */}
           {feedbackError && (
-            <p className="text-xs text-red-400 mt-3">{feedbackError}</p>
+            <p className="vs-error mt-3">{feedbackError}</p>
           )}
 
           {/* 编辑模式：展开 textarea + 保存按钮。
@@ -1906,20 +1870,20 @@ export default function ArticlePage() {
                 value={editedText}
                 onChange={(e) => setEditedText(e.target.value)}
                 rows={12}
-                className="dark-scroll w-full max-h-[60vh] overflow-y-auto bg-zinc-900 border border-zinc-800 rounded-xl px-5 py-4 text-sm text-zinc-300 leading-relaxed focus:border-indigo-500 focus:outline-none transition resize-y"
+                className="dark-scroll vs-input vs-input-area vs-resizable w-full max-h-[60vh] overflow-y-auto"
                 placeholder="在这里修改文案…"
               />
               <div className="flex gap-3 mt-3">
                 <button
                   onClick={handleEditSave}
                   disabled={savingEdit || !editedText.trim()}
-                  className="px-5 py-2.5 rounded-xl text-sm font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 transition"
+                  className="vs-btn vs-btn-primary disabled:opacity-40"
                 >
                   {savingEdit ? '保存中…' : '保存修改'}
                 </button>
                 <button
                   onClick={() => { setEditMode(false); setFeedback(null) }}
-                  className="px-5 py-2.5 rounded-xl text-sm font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition"
+                  className="vs-btn vs-btn-ghost"
                 >
                   取消
                 </button>
@@ -1929,7 +1893,7 @@ export default function ArticlePage() {
 
           {/* 反馈提示 */}
           {feedback && !editMode && feedback !== 'regenerate' && (
-            <p className="text-xs text-zinc-500 mt-3">
+            <p className="vs-note mt-3">
               {feedback === 'like' && '感谢反馈！已记录为"很像"'}
               {feedback === 'dislike' && '感谢反馈！已记录为"差点意思"'}
               {feedback === 'edit' && '已保存修改内容'}
@@ -1939,7 +1903,7 @@ export default function ArticlePage() {
         </>
         )}
 
-        <p className="text-xs text-zinc-600 mt-6">
+        <p className="vs-note mt-6">
           {work.projectId
             ? '该作品属于创作项目，V1/V2/V3 历史版本已保存在云端'
             : '文章保存在浏览器本地，清除缓存后将无法通过此链接访问'}
@@ -1972,25 +1936,19 @@ function PersonalizationNote({
   // 关闭状态
   if (!evidence.enabled) {
     return (
-      <div className="mt-6 flex items-start gap-2 rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-3">
-        <span className="text-sm leading-none">🔕</span>
-        <p className="text-[11px] text-zinc-500 leading-relaxed">
-          本次按通用风格生成，未参考你的创作者人格、风格画像与素材库
-        </p>
-      </div>
+      <p className="vs-note mt-6 leading-relaxed">
+        本次按通用风格生成，未参考你的创作者人格、风格画像与素材库
+      </p>
     )
   }
 
   // 开启但尚无可用个人数据（新用户/人格与画像为空）
   if (evidence.layers.length === 0) {
     return (
-      <div className="mt-6 flex items-start gap-2 rounded-xl border border-indigo-500/20 bg-indigo-500/5 px-4 py-3">
-        <span className="text-sm leading-none">✨</span>
-        <p className="text-[11px] text-zinc-400 leading-relaxed">
-          已开启创作者人格——你的风格数据还在积累中。多创作、多给反馈、在风格卡设置人格后，
-          AI 会越来越像"懂你的专属创作伙伴"
-        </p>
-      </div>
+      <p className="vs-note mt-6 leading-relaxed">
+        已开启创作者人格——你的风格数据还在积累中。多创作、多给反馈、在风格卡设置人格后，
+        AI 会越来越像“懂你的专属创作伙伴”
+      </p>
     )
   }
 
@@ -2008,28 +1966,30 @@ function PersonalizationNote({
     typeof evidence.styleMatch === 'number' ? Math.round(evidence.styleMatch * 100) : null
 
   return (
-    <div className="mt-6 rounded-xl border border-indigo-500/20 bg-indigo-500/5 px-4 py-3">
+    <div className="vs-sec mt-6">
       <div className="flex items-start gap-2">
-        <span className="text-sm leading-none">✨</span>
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-medium text-indigo-200/90 leading-relaxed">
+          <p className="text-[13px] font-medium leading-relaxed text-[var(--vs-ink)]">
             本次作品采用了你的创作特征
           </p>
 
           {(styleMatchPct !== null || traits.length > 0) && (
             <div className="mt-1.5 space-y-0.5">
               {styleMatchPct !== null && (
-                <p className="text-[11px] text-zinc-300 leading-relaxed">
+                <p className="vs-note leading-relaxed">
                   语言风格一致度{' '}
-                  <span className="text-indigo-300 font-medium">{styleMatchPct}%</span>
-                  <span className="text-zinc-500">（与你历史作品向量比对）</span>
+                  <span className="vs-num font-medium text-[var(--vs-ink)]">
+                    {styleMatchPct}%
+                  </span>
+                  <span className="text-[var(--vs-ink-4)]">（与你历史作品向量比对）</span>
                 </p>
               )}
               {traits.map((t) => (
-                <p key={t.dimension} className="text-[11px] text-zinc-300 leading-relaxed">
-                  {t.dimension}：<span className="text-indigo-300 font-medium">{t.label}</span>
+                <p key={t.dimension} className="vs-note leading-relaxed">
+                  {t.dimension}：
+                  <span className="font-medium text-[var(--vs-ink)]">{t.label}</span>
                   {typeof t.ratio === 'number' && (
-                    <span className="text-zinc-500">
+                    <span className="text-[var(--vs-ink-4)]">
                       （占你历史样本 {Math.round(t.ratio * 100)}%）
                     </span>
                   )}
@@ -2038,8 +1998,9 @@ function PersonalizationNote({
             </div>
           )}
 
-          <p className="text-[11px] text-indigo-200/80 leading-relaxed mt-1.5">
-            参考数据：<span className="text-zinc-300">{rendered.join(' · ')}</span>
+          <p className="vs-note mt-1.5 leading-relaxed">
+            参考数据：
+            <span className="text-[var(--vs-ink-2)]">{rendered.join(' · ')}</span>
           </p>
         </div>
       </div>

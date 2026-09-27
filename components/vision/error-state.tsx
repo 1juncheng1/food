@@ -24,17 +24,17 @@ export function ErrorState({
   return (
     <div
       className={cn(
-        'flex flex-col items-start gap-3 rounded-2xl border border-red-500/25 bg-red-500/[0.06]',
+        'vs-error flex flex-col items-start gap-3',
         compact ? 'px-4 py-3.5' : 'px-5 py-5',
         className
       )}
     >
       <div className="flex items-start gap-2.5">
-        <AlertTriangle size={16} className="mt-0.5 shrink-0 text-red-400" />
+        <AlertTriangle size={16} className="mt-0.5 shrink-0 vs-error-text" />
         <div className="min-w-0">
-          <p className="text-sm font-medium text-red-200">{title}</p>
+          <p className="text-[14px] font-medium">{title}</p>
           {message && (
-            <p className="mt-1 text-[13px] leading-relaxed text-red-300/70">
+            <p className="vs-note mt-1 leading-relaxed">
               {message}
             </p>
           )}
@@ -43,7 +43,7 @@ export function ErrorState({
       {onRetry && (
         <button
           onClick={onRetry}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/30 px-3 py-1.5 text-[13px] font-medium text-red-200 transition hover:border-red-500/50 hover:bg-red-500/10"
+          className="vs-btn vs-btn-ghost vs-btn-sm vs-error-text"
         >
           <RefreshCw size={13} />
           {retryLabel}

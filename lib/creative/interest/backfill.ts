@@ -171,10 +171,13 @@ export async function runBackfill(
 
       if (!eventType) continue
 
-      // 查 post 拿 excerpt 和 style_vector
+      // 查 post 拿正文与 style_vector
+      // ⚠️ posts 没有 title / excerpt 列（真实列是 content），此前写错列名导致
+      // 整段查询 42703 失败 —— 而查询失败只累加 errors、不抛错，表现为
+      // "互动事件入账但没有主题"。列名改动之前已被单测的 mock 掩盖。
       const { data: post } = await supabase
         .from('posts')
-        .select('title, excerpt, style_vector, category')
+        .select('content, style_vector, category')
         .eq('id', it.post_id)
         .maybeSingle()
 
@@ -183,10 +186,10 @@ export async function runBackfill(
         targetType: 'post',
         targetId: it.post_id as string,
         embedding: Array.isArray(post?.style_vector) ? (post!.style_vector as number[]) : null,
-        topicExcerpt: (post?.title as string) || (post?.excerpt as string) || null,
+        topicExcerpt: titleFromContent(post?.content) || null,
         payload: {
           post_category: (post?.category as string) || null,
-          post_excerpt: cleanTopicExcerpt(post?.excerpt as string | undefined),
+          post_excerpt: titleFromContent(post?.content),
         },
         occurredAt: it.created_at as string,
       })
@@ -200,14 +203,15 @@ export async function runBackfill(
   // 项目被删后 source_project_id 就成了孤儿引用，发布证据随之丢失——
   // 实测就有用户明明发布过、却被算成从未发布（见 CURRENT.md §5.4）。
   // 用 join 会安静地把这批证据过滤掉，而它们恰恰是最需要救回来的。
-  // 事件只承诺「发布这件事发生过」，不承诺被引用的项目此刻还存在。
+  // 事件只承诺「发布这件事发生过」，不承诺被引用的项目此刻还存在 ——
+  // 外键不允许引用已删项目，故孤儿发布落 project_id=null + payload 留原始 id。
   //
   // 幂等键是 (post, post_id, work_publish)，重复执行不会重复计票。
   // 新增发布由 from-project route 实时入流，两者不冲突。
   const { data: publishedPosts, error: pubErr } = await supabase
     .from('posts')
     .select(
-      'id, title, excerpt, category, tags, post_type, style_vector, source_project_id, created_at'
+      'id, content, category, tags, post_type, style_vector, source_project_id, created_at'
     )
     .eq('user_id', userId)
     .not('source_project_id', 'is', null)
@@ -218,24 +222,35 @@ export async function runBackfill(
     stats.errors++
   } else if (publishedPosts) {
     stats.publish = publishedPosts.length
+
+    // 已存在的项目 id 集合（第 1 段已加载）。
+    // creator_events.project_id 有指向 creative_projects 的外键：孤儿引用硬写会被
+    // 数据库拒绝（23503），而 trackEvent 只 console.error、不抛错 —— 表现为
+    // "明明发布过却被算成从未发布"，正是这一段要救回来的那批证据。
+    // 因此项目已删时 project_id 置空，原始 id 留进 payload：
+    // 事件仍然如实记录「发布这件事发生过」。
+    const aliveProjectIds = new Set((projects ?? []).map((p) => p.id as string))
+
     for (const post of publishedPosts) {
+      const sourceProjectId = (post.source_project_id as string | null) ?? null
+      const alive = !!sourceProjectId && aliveProjectIds.has(sourceProjectId)
+
       const r = await trackEvent(supabase, userId, {
         type: 'work_publish',
         targetType: 'post',
         targetId: post.id as string,
-        projectId: post.source_project_id as string,
+        projectId: alive ? sourceProjectId : null,
         category: (post.category as string) || null,
         embedding: Array.isArray(post.style_vector)
           ? (post.style_vector as number[])
           : null,
-        topicExcerpt:
-          (post.title as string) ||
-          cleanTopicExcerpt(post.excerpt as string | undefined) ||
-          null,
+        topicExcerpt: titleFromContent(post.content) || null,
         payload: {
           post_type: (post.post_type as string) || 'work',
           tags: Array.isArray(post.tags) ? post.tags : [],
           backfill: true,
+          orphan_project: !alive,
+          source_project_id: sourceProjectId,
         },
         occurredAt: post.created_at as string,
       })
@@ -244,6 +259,20 @@ export async function runBackfill(
   }
 
   return stats
+}
+
+/**
+ * 从 posts.content 还原标题。
+ *
+ * posts 表只有 content 一列正文（没有 title / excerpt），发布接口写库时
+ * 对 work 模式拼的是 `# 标题\n\n正文`，故取首个非空行并剥掉 markdown 井号；
+ * 剥完为空（纯灵感/档案正文首行不是标题）则退回正文开头。
+ */
+function titleFromContent(content: unknown): string {
+  if (typeof content !== 'string' || !content.trim()) return ''
+  const firstLine = content.split('\n').find((l) => l.trim().length > 0) ?? ''
+  const stripped = firstLine.replace(/^#+\s*/, '').trim()
+  return cleanTopicExcerpt(stripped) || cleanTopicExcerpt(content)
 }
 
 // ── 辅助：从 inspiration_context 提取 content_domain ──

@@ -18,10 +18,7 @@ export function useBalance(enabled = true): number | null {
   const [balance, setBalance] = useState<number | null>(null)
 
   useEffect(() => {
-    if (!enabled) {
-      setBalance(null)
-      return
-    }
+    if (!enabled) return
     let cancelled = false
 
     void (async () => {
@@ -50,5 +47,6 @@ export function useBalance(enabled = true): number | null {
     }
   }, [enabled])
 
-  return balance
+  // enabled=false 时不查也不展示：这里直接判定，避免在 effect 里同步 setState 触发级联渲染
+  return enabled ? balance : null
 }

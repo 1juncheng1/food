@@ -62,7 +62,10 @@ function templateOutput(input: AiReasonInput): AiReasonOutput {
 /** 无 facts 候选的模板文案（探索卡等） */
 function buildReasonTextFromAiInput(input: AiReasonInput): string | null {
   if (!input.clusterLabel && !input.gapReason) return null
-  return input.gapReason ?? '基于你的创作兴趣推荐'
+  if (input.gapReason) return input.gapReason
+  // 有簇名就复述簇名（簇是从用户自己的行为聚出来的，这句话是真的）；
+  // 没有簇名也没有缺口说明时返回 null —— 宁可留空，也不写"基于你的创作兴趣推荐"。
+  return input.clusterLabel ? `来自你关注的「${input.clusterLabel}」方向` : null
 }
 
 interface LlmReasonItem {
@@ -198,6 +201,26 @@ export async function generateAiReasons(items: AiReasonInput[]): Promise<AiReaso
 // 模板理由（从 /api/inspirations route.ts 迁出，route 改为复用）
 // ──────────────────────────────────────────────────────────
 
+/**
+ * 无事实可复述时的兜底文案。
+ *
+ * 此前所有无 facts 的卡都统一兜底成「基于你的创作兴趣推荐」——这句话对
+ * exploration（相邻探索）卡是**假话**：那类卡本就不是从用户兴趣推出来的，
+ * 而是刻意推用户没写过的方向。用户读到"基于你的兴趣"却看到一个陌生领域，
+ * 只会觉得推荐系统不靠谱。
+ *
+ * 现在按槽位分别兜底，并且对探索卡明确说破"这不是基于你已有的兴趣"。
+ */
+const SLOT_FALLBACK: Record<string, string> = {
+  core_gap: '你的核心方向里还缺这类内容',
+  evidence_followup: '你最近的创作行为指向这个方向',
+  exploration: '相邻方向的探索 —— 这个不是从你已有兴趣推出来的',
+  continuation: '你在做的项目可以接着往这个方向走',
+}
+
+/** 槽位缺失/未知时的兜底（保持旧文案，避免无信息可依时更激进地编造） */
+const GENERIC_FALLBACK = '基于你的创作兴趣推荐'
+
 /** 从 evidence 事实包生成中文解释（与旧 route 版行为逐字一致） */
 export function buildReasonText(s: {
   slot: string
@@ -205,7 +228,7 @@ export function buildReasonText(s: {
   evidence: Record<string, unknown>
 }): string {
   const facts = s.evidence?.facts as Array<Record<string, unknown>> | undefined
-  if (!facts?.length) return '基于你的创作兴趣推荐'
+  if (!facts?.length) return SLOT_FALLBACK[s.slot] ?? GENERIC_FALLBACK
 
   const parts: string[] = []
   const clusterLabel = (facts[0]?.cluster_label as string) ?? '该方向'
@@ -222,5 +245,5 @@ export function buildReasonText(s: {
   const gapReason = s.evidence?.gap_reason as string | undefined
   if (gapReason) parts.push(gapReason)
 
-  return parts.length ? parts.join('，') : '基于你的创作兴趣推荐'
+  return parts.length ? parts.join('，') : SLOT_FALLBACK[s.slot] ?? GENERIC_FALLBACK
 }

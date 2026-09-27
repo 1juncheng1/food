@@ -27,18 +27,18 @@ export interface PointAccount {
   minGenerationCost: number | null
 }
 
+/** 空账户：未启用 / 未登录时的统一返回，避免各调用方各自拼 null */
+const EMPTY_ACCOUNT: PointAccount = {
+  balance: null,
+  pointsPerYuan: null,
+  minGenerationCost: null,
+}
+
 export function usePointAccount(enabled = true): PointAccount {
-  const [account, setAccount] = useState<PointAccount>({
-    balance: null,
-    pointsPerYuan: null,
-    minGenerationCost: null,
-  })
+  const [account, setAccount] = useState<PointAccount>(EMPTY_ACCOUNT)
 
   useEffect(() => {
-    if (!enabled) {
-      setAccount({ balance: null, pointsPerYuan: null, minGenerationCost: null })
-      return
-    }
+    if (!enabled) return
     let cancelled = false
 
     void (async () => {
@@ -78,5 +78,6 @@ export function usePointAccount(enabled = true): PointAccount {
     }
   }, [enabled])
 
-  return account
+  // enabled=false 时不查也不展示：这里直接判定，避免在 effect 里同步 setState 触发级联渲染
+  return enabled ? account : EMPTY_ACCOUNT
 }

@@ -21,23 +21,43 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   BUILD_DIRTY_EVENT_COUNT,
   BUILD_MAX_AGE_HOURS,
+  EVENT_REGISTRY,
   FIRST_BUILD_MIN_EVENTS,
   REBUILD_HIGH_SIGNAL_MIN,
   REBUILD_HIGH_SIGNAL_TYPES,
   REBUILD_SEED_EVENT_TYPES,
   REBUILD_FRESH_TOPIC_LIMIT,
   REBUILD_SCAN_EVENT_LIMIT,
+  RULE_VERSION,
 } from './config'
 import { cleanTopicExcerpt } from './normalize'
 import { getLastBuild } from './interestRepo'
+import type { CreatorEventType } from './types'
 
 /** 判定结论的原因码（可观测：写进日志与响应，便于定位"为什么又重建了"） */
-export type RebuildReason = 'none' | 'first_build' | 'stale' | 'work_signal' | 'dirty'
+export type RebuildReason =
+  | 'none'
+  | 'first_build'
+  | 'rule_upgrade'
+  | 'stale'
+  | 'work_signal'
+  | 'dirty'
 
 export interface RebuildInput {
   hasProfile: boolean
   /** 画像 jsonb 的 updated_at（ISO）；无画像传 null */
   profileUpdatedAt: string | null
+  /**
+   * 画像生成时的规则版本；无画像传 null。
+   *
+   * 取值来自 `style_profiles.interest_profile` 这个 **jsonb 列**的 `rule_version`
+   * 字段。没有独立叫 `interest_profile` 的表——按表名去找会查不到，然后误判成
+   * "画像没落库"（实测踩过：用 service_role 查 interest_profile 表返回
+   * PGRST205，但画像其实一直在 style_profiles 里）。
+   *
+   * null 也会判为过期：那表示画像早于版本化之前生成，一定不是当前口径。
+   */
+  profileRuleVersion: string | null
   /** 自上次 build 已消费事件点以来的事件总数 */
   dirtyCount: number
   /** 自上次 build 已消费事件点以来的作品级高信号事件数 */
@@ -74,12 +94,26 @@ export function decideRebuild(input: RebuildInput): RebuildVerdict {
       : none
   }
 
-  // 2) 作品级高信号：1 条即触发（本模块存在的主要理由）
+  // 2) 规则版本过期：评分公式变了，必须整体重建（优先级高于一切行为信号）。
+  //
+  // 为什么压过 work_signal：那条路只走 refill，而 refill 是**追加**新卡。旧卡按旧公式（interestMatch 0.4）
+  //   记分、新卡按新公式（0.16 + recency/knowledge 独立成维）记分，同一队列按一个
+  //   score 排序 = 两把尺子混排。继续补货只会让混排更深。
+  // 生产实锤：某用户 49 张 active 卡里 25 张 v2 口径 + 24 张 v3 口径；另两个用户的
+  // profile.rule_version 停在 interest-rules-v2，而代码已是 v4——在此之前没有任何
+  // 一处比较这两个值，谁都不知道画像过期了，评分公式升级等于没上线。
+  //
+  // 自终止：重建完成后画像被人打上当前 RULE_VERSION，判定不再命中，不会反复重建。
+  if (input.profileRuleVersion !== RULE_VERSION) {
+    return { needed: true, reason: 'rule_upgrade', workSignal: false }
+  }
+
+  // 3) 作品级高信号：1 条即触发（本模块存在的主要理由）
   if (input.highSignalCount >= REBUILD_HIGH_SIGNAL_MIN) {
     return { needed: true, reason: 'work_signal', workSignal: true }
   }
 
-  // 3) 画像过期
+  // 4) 画像过期
   if (input.profileUpdatedAt) {
     const ts = Date.parse(input.profileUpdatedAt)
     if (Number.isFinite(ts)) {
@@ -90,7 +124,7 @@ export function decideRebuild(input: RebuildInput): RebuildVerdict {
     }
   }
 
-  // 4) 一般行为累积到阈值（比等 1h 过期更及时）
+  // 5) 一般行为累积到阈值（比等 1h 过期更及时）
   if (input.dirtyCount >= BUILD_DIRTY_EVENT_COUNT) {
     return { needed: true, reason: 'dirty', workSignal: false }
   }
@@ -130,6 +164,47 @@ interface RebuildSignals {
 }
 
 /**
+ * 纯函数：从事件行统计重建判定信号（抽出来是为了能单测曝光过滤这条规则）。
+ *
+ * dirtyCount 的口径：只数"用户的表达"，不数"系统的动作"。
+ *
+ * 曝光（recommend_impression，effect=stats_only、weight=0）绝不计入——
+ * 它是系统把卡推到用户面前这个动作本身，不是用户点了什么。
+ * 生产实锤：此前它对 dirtyCount 照 +1 不误，于是
+ *   刷满 5 张卡 = 5 条脏事件 = 命中 BUILD_DIRTY_EVENT_COUNT
+ *   → 触发 runBuild（全窗口重算聚类 + 3 次 LLM，20-150s）
+ * 于是"看"这个动作竟然能驱动最贵的一次计算：刷得越多，重建越频繁。
+ * 代价是 LLM 成本与后台负载（以及 in-flight build 长期占用，前端一直显示
+ * "分析中"），而不是队列被清空——队列是原子切换的，见 suggestionRepo。
+ *
+ * 未知事件类型（不在 EVENT_REGISTRY 里）保守计入，保持与改动前一致，
+ * 避免新增事件类型时静默失去触发能力。
+ */
+export function countRebuildSignals(
+  rows: Array<{ event_type?: unknown; payload?: unknown }>
+): Omit<RebuildSignals, 'totalEvents'> {
+  let dirtyCount = 0
+  let highSignalCount = 0
+  const freshWorkTopics: string[] = []
+
+  for (const r of rows) {
+    const type = typeof r.event_type === 'string' ? r.event_type : ''
+    if (!type) continue
+    const entry = EVENT_REGISTRY[type as CreatorEventType]
+    if (entry?.effect === 'stats_only') continue
+    dirtyCount += 1
+    if (HIGH_SIGNAL_SET.has(type)) highSignalCount += 1
+    if (SEED_EVENT_SET.has(type)) {
+      const payload = (r.payload ?? {}) as Record<string, unknown>
+      const topic = cleanTopicExcerpt(payload.topic_excerpt)
+      if (topic && !freshWorkTopics.includes(topic)) freshWorkTopics.push(topic)
+    }
+  }
+
+  return { dirtyCount, highSignalCount, freshWorkTopics }
+}
+
+/**
  * 一次并行取数拿到全部判定信号。
  *
  * 只取「最新的 REBUILD_SCAN_EVENT_LIMIT 条」而非全表：判定只需要"最近有没有新东西"，
@@ -157,21 +232,7 @@ async function loadRebuildSignals(
   ])
 
   const rows = (recentRes.data ?? []) as Array<{ event_type?: unknown; payload?: unknown }>
-  let dirtyCount = 0
-  let highSignalCount = 0
-  const freshWorkTopics: string[] = []
-
-  for (const r of rows) {
-    const type = typeof r.event_type === 'string' ? r.event_type : ''
-    if (!type) continue
-    dirtyCount += 1
-    if (HIGH_SIGNAL_SET.has(type)) highSignalCount += 1
-    if (SEED_EVENT_SET.has(type)) {
-      const payload = (r.payload ?? {}) as Record<string, unknown>
-      const topic = cleanTopicExcerpt(payload.topic_excerpt)
-      if (topic && !freshWorkTopics.includes(topic)) freshWorkTopics.push(topic)
-    }
-  }
+  const { dirtyCount, highSignalCount, freshWorkTopics } = countRebuildSignals(rows)
 
   return {
     totalEvents: totalRes.count ?? 0,
@@ -197,7 +258,7 @@ export interface RebuildAssessment extends RebuildVerdict {
 export async function evaluateRebuild(
   supabase: SupabaseClient,
   userId: string,
-  opts: { hasProfile: boolean; profileUpdatedAt: string | null }
+  opts: { hasProfile: boolean; profileUpdatedAt: string | null; profileRuleVersion: string | null }
 ): Promise<RebuildAssessment> {
   const fallback: RebuildAssessment = {
     needed: false,
@@ -212,6 +273,7 @@ export async function evaluateRebuild(
     const verdict = decideRebuild({
       hasProfile: opts.hasProfile,
       profileUpdatedAt: opts.profileUpdatedAt,
+      profileRuleVersion: opts.profileRuleVersion,
       dirtyCount: signals.dirtyCount,
       highSignalCount: signals.highSignalCount,
       totalEvents: signals.totalEvents,

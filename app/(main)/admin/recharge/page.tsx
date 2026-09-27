@@ -15,7 +15,9 @@ import { CheckCircle2, Loader2, XCircle } from 'lucide-react'
 import { getValidSession } from '@/lib/supabaseClient'
 import {
   ORDER_STATUS_TEXT,
+  estimatePoints,
   type OrderStatus,
+  type RechargeConfig,
   type RechargeOrder,
 } from '@/lib/recharge'
 import {
@@ -49,6 +51,8 @@ export default function AdminRechargePage() {
   const [filter, setFilter] = useState<FilterStatus>('PAID')
   const [orders, setOrders] = useState<RechargeOrder[]>([])
   const [emails, setEmails] = useState<Record<string, string>>({})
+  /** 汇率只用于展示「预计获得积分」；真正入账的积分由服务端按实际到账金额算 */
+  const [pointsPerYuan, setPointsPerYuan] = useState<number>(20)
 
   const [selected, setSelected] = useState<RechargeOrder | null>(null)
   const [amount, setAmount] = useState('')
@@ -79,15 +83,21 @@ export default function AdminRechargePage() {
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
-    const res = await api<{ orders: RechargeOrder[]; emails: Record<string, string> }>(
-      `/api/admin/recharge?status=${filter}&limit=50`
-    )
-    if (!res.ok) {
-      setError(res.message)
+    const [orderRes, cfgRes] = await Promise.all([
+      api<{ orders: RechargeOrder[]; emails: Record<string, string> }>(
+        `/api/admin/recharge?status=${filter}&limit=50`
+      ),
+      api<RechargeConfig>('/api/recharge/config'),
+    ])
+    if (!orderRes.ok) {
+      setError(orderRes.message)
       setOrders([])
     } else {
-      setOrders(res.data.orders ?? [])
-      setEmails(res.data.emails ?? {})
+      setOrders(orderRes.data.orders ?? [])
+      setEmails(orderRes.data.emails ?? {})
+    }
+    if (cfgRes.ok && typeof cfgRes.data.pointsPerYuan === 'number') {
+      setPointsPerYuan(cfgRes.data.pointsPerYuan)
     }
     setLoading(false)
   }, [filter])
@@ -165,10 +175,11 @@ export default function AdminRechargePage() {
         <ErrorState title="无法加载订单" message={error} onRetry={load} />
       ) : (
         <>
+          {/* 需求 §7：管理员一进来先看到「待确认 N」，这就是他今天要干的活 */}
           <StatRow
             items={[
+              { label: '待确认', value: pendingCount, hint: '用户已声明付款，等你核实' },
               { label: '当前列表订单', value: orders.length },
-              { label: '其中待确认', value: pendingCount },
             ]}
             className="grid-cols-2 sm:grid-cols-2"
           />
@@ -182,8 +193,8 @@ export default function AdminRechargePage() {
                 onClick={() => setFilter(f.key)}
                 className={`rounded-xl border px-4 py-2 text-sm transition ${
                   filter === f.key
-                    ? 'border-indigo-500/40 bg-indigo-500/15 text-indigo-200'
-                    : 'border-white/[0.1] text-zinc-300 hover:border-white/20 hover:text-white'
+                    ? 'border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]'
+                    : 'border-[var(--vs-line)] text-[var(--vs-ink-2)] hover:border-white/20 hover:text-[var(--vs-ink)]'
                 }`}
               >
                 {f.label}
@@ -194,14 +205,14 @@ export default function AdminRechargePage() {
           <div className="h-6" />
 
           {loading ? (
-            <div className="flex items-center justify-center gap-2 py-16 text-sm text-zinc-500">
+            <div className="flex items-center justify-center gap-2 py-16 vs-note">
               <Loader2 size={16} className="animate-spin" />
               正在加载订单…
             </div>
           ) : orders.length === 0 ? (
             <EmptyState compact title="没有符合条件的订单" description="换一个筛选条件试试。" />
           ) : (
-            <Section title="订单列表">
+            <Section title={filter === 'PAID' ? '待确认充值' : '订单列表'}>
               <div className="space-y-2.5">
                 {orders.map((o) => (
                   <div
@@ -209,36 +220,36 @@ export default function AdminRechargePage() {
                     className="rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3"
                   >
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
-                      <span className="font-mono text-[12px] text-zinc-500">{o.orderNo}</span>
-                      <span className="text-[13px] text-zinc-300">
+                      <span className="font-mono vs-note">{o.orderNo}</span>
+                      <span className="text-[13px] text-[var(--vs-ink-2)]">
                         {emails[o.userId] ?? `用户 ${o.userId.slice(0, 8)}`}
                       </span>
-                      <span className="text-[13px] text-zinc-400">申请 {o.requestedAmount} 元</span>
-                      <span className="ml-auto text-[12px] text-zinc-400">
+                      <span className="text-[13px] text-[var(--vs-ink-3)]">申请 {o.requestedAmount} 元</span>
+                      <span className="vs-note ml-auto">
                         {ORDER_STATUS_TEXT[o.status]}
                       </span>
-                      <span className="text-[12px] text-zinc-600">
+                      <span className="text-[12px] text-[var(--vs-ink-4)]">
                         {o.createdAt ? new Date(o.createdAt).toLocaleString('zh-CN') : ''}
                       </span>
                     </div>
 
                     {o.userNote && (
-                      <p className="mt-1.5 text-[13px] text-zinc-500">用户备注：{o.userNote}</p>
+                      <p className="vs-note mt-1.5">用户备注：{o.userNote}</p>
                     )}
                     {o.status === 'CONFIRMED' && (
-                      <p className="mt-1.5 text-[13px] text-emerald-300/80">
+                      <p className="vs-note mt-1.5">
                         实际到账 {o.confirmedAmount} 元 → {o.points} 积分
                       </p>
                     )}
                     {o.adminNote && (
-                      <p className="mt-1.5 text-[13px] text-zinc-500">管理员备注：{o.adminNote}</p>
+                      <p className="vs-note mt-1.5">管理员备注：{o.adminNote}</p>
                     )}
 
                     {(o.status === 'PENDING' || o.status === 'PAID') && (
                       <div className="mt-2.5">
                         <button
                           onClick={() => setSelected(o)}
-                          className="text-[12px] text-indigo-300 transition hover:text-indigo-200"
+                          className="vs-link text-[12px]"
                         >
                           处理该订单
                         </button>
@@ -255,16 +266,35 @@ export default function AdminRechargePage() {
             <>
               <div className="h-8" />
               <SurfaceCard tone="raised">
-                <p className="text-sm font-medium text-zinc-200">
+                <p className="text-[14px] font-medium text-[var(--vs-ink)]">
                   处理订单 {selected.orderNo}
                 </p>
-                <p className="mt-1.5 text-[13px] text-zinc-500">
-                  用户申请 {selected.requestedAmount} 元 · 当前状态{' '}
-                  {ORDER_STATUS_TEXT[selected.status as OrderStatus]}
-                </p>
+
+                {/* 需求 §7：核账需要的字段一次给全——
+                    「获得积分」是**按申报金额预计**的值，真正入账以你填的实际到账金额为准 */}
+                <div className="mt-4 space-y-2 text-[13px]">
+                  <Row label="用户" value={emails[selected.userId] ?? `用户 ${selected.userId.slice(0, 8)}`} />
+                  <Row label="订单号" value={selected.orderNo} />
+                  <Row label="申报金额" value={`${selected.requestedAmount} 元`} />
+                  <Row
+                    label="获得积分"
+                    value={
+                      selected.points !== null
+                        ? `${selected.points} 积分（已入账）`
+                        : `约 ${estimatePoints(selected.requestedAmount, pointsPerYuan)} 积分（按实际到账计算）`
+                    }
+                  />
+                  <Row label="创建时间" value={formatTime(selected.createdAt)} />
+                  <Row
+                    label="提交已付款时间"
+                    value={selected.paidAt ? formatTime(selected.paidAt) : '尚未提交'}
+                  />
+                  <Row label="当前状态" value={ORDER_STATUS_TEXT[selected.status as OrderStatus]} />
+                  {selected.userNote && <Row label="用户备注" value={selected.userNote} />}
+                </div>
 
                 <div className="mt-5 flex items-center gap-3">
-                  <label className="text-[13px] text-zinc-400" htmlFor="confirmed-amount">
+                  <label className="text-[13px] text-[var(--vs-ink-3)]" htmlFor="confirmed-amount">
                     实际到账金额
                   </label>
                   <input
@@ -274,9 +304,9 @@ export default function AdminRechargePage() {
                     type="number"
                     min={0}
                     step={0.01}
-                    className="w-36 rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2 text-sm text-zinc-100 outline-none focus:border-indigo-500/40"
+                    className="vs-input vs-input-field w-36"
                   />
-                  <span className="text-sm text-zinc-500">元</span>
+                  <span className="vs-note">元</span>
                 </div>
 
                 <input
@@ -285,13 +315,13 @@ export default function AdminRechargePage() {
                   maxLength={200}
                   placeholder="备注（可选，例如：微信转账已核对 / 未收到该笔款项）"
                   aria-label="管理员备注"
-                  className="mt-3 w-full rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-indigo-500/40"
+                  className="mt-3 vs-input vs-input-field w-full placeholder:text-[var(--vs-ink-5)]"
                 />
 
                 {feedback && (
                   <p
                     className={`mt-3 text-[13px] ${
-                      feedback.ok ? 'text-emerald-300' : 'text-red-300'
+                      feedback.ok ? 'text-[var(--vs-ink)]' : 'vs-error-text'
                     }`}
                   >
                     {feedback.message}
@@ -302,7 +332,7 @@ export default function AdminRechargePage() {
                   <button
                     onClick={confirm}
                     disabled={busy}
-                    className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+                    className="vs-btn vs-btn-primary disabled:opacity-50"
                   >
                     {busy && <Loader2 size={14} className="animate-spin" />}
                     <CheckCircle2 size={15} />
@@ -311,14 +341,14 @@ export default function AdminRechargePage() {
                   <button
                     onClick={reject}
                     disabled={busy}
-                    className="inline-flex items-center gap-2 rounded-xl border border-red-500/30 px-4 py-2.5 text-sm font-medium text-red-200 transition hover:border-red-500/50 hover:bg-red-500/10 disabled:opacity-50"
+                    className="vs-btn vs-btn-danger disabled:opacity-50"
                   >
                     <XCircle size={15} />
                     拒绝（未收到款）
                   </button>
                   <button
                     onClick={() => setSelected(null)}
-                    className="inline-flex items-center gap-2 rounded-xl border border-white/[0.1] px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:border-white/20 hover:text-white"
+                    className="vs-btn vs-btn-ghost"
                   >
                     收起
                   </button>
@@ -334,8 +364,8 @@ export default function AdminRechargePage() {
             <p
               className={`rounded-xl border px-4 py-3 text-[13px] ${
                 feedback.ok
-                  ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
-                  : 'border-red-500/25 bg-red-500/10 text-red-200'
+                  ? 'border-[var(--vs-line)] bg-[var(--vs-void-1)] text-[var(--vs-ink)]'
+                  : 'vs-verdict vs-note-warn'
               }`}
             >
               {feedback.message}
@@ -344,5 +374,25 @@ export default function AdminRechargePage() {
         </>
       )}
     </PageShell>
+  )
+}
+
+function formatTime(iso: string): string {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleString('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+/** 键值行：订单详情里反复用到 */
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <span className="shrink-0 text-[var(--vs-ink-4)]">{label}</span>
+      <span className="text-right text-[var(--vs-ink)]">{value}</span>
+    </div>
   )
 }

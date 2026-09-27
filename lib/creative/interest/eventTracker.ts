@@ -27,6 +27,30 @@ import {
 import type { InterpretStatus, TrackEventInput, TrackEventResult } from './types'
 
 /**
+ * 把写库失败翻译成"能照着修"的日志。
+ *
+ * 存在理由：事件丢失此前是**静默**的。典型场景是新增事件类型（如 work_publish）
+ * 但未执行迁移，数据库 CHECK 约束会拒绝插入，而 trackEvent 的铁律是"永不抛异常"，
+ * 于是事件无声消失 —— 要等画像长期不准才被发现。这里把两类最需要运维介入的
+ * 失败单独点名，让"静默丢失"变成"日志里一眼可见"。
+ */
+function describeWriteError(error: { message?: string; code?: string }): string {
+  const msg = error?.message ?? ''
+  // 23514 = CHECK 约束违反：几乎总是"新事件类型未执行迁移"
+  // 42P01 = 表不存在；42501 = 权限不足（service key 缺 GRANT 的老问题）
+  if (error?.code === '23514' || /violates check constraint/i.test(msg)) {
+    return `${msg} —— 极可能是该事件类型未执行迁移（如 0016）导致 CHECK 拒绝，请执行 supabase/migrations 后再验证`
+  }
+  if (error?.code === '42P01') {
+    return `${msg} —— creator_events 表不存在，请先执行 supabase/setup.sql`
+  }
+  if (error?.code === '42501') {
+    return `${msg} —— 权限不足：service_role 对该表缺 GRANT，后台写入会静默失败`
+  }
+  return msg
+}
+
+/**
  * 追加一条创作者行为事件。
  * @returns 永不抛错；ok=false 仅表示落库失败（调用方可忽略）
  */
@@ -97,7 +121,7 @@ export async function trackEvent(
       .from('creator_events')
       .upsert(row, { onConflict: 'user_id,idempotency_key', ignoreDuplicates: true })
 
-    if (error) return fail(error.message)
+    if (error) return fail(describeWriteError(error))
     return { ok: true, idempotencyKey }
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e))

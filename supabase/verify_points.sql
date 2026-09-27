@@ -97,8 +97,15 @@ where status in ('PENDING', 'PAID', 'CANCELLED', 'REJECTED') and points is not n
 -- ============================================================
 
 -- ── ⑨ 建第一个管理员 ──────────────────────────────────────────
--- insert into public.admin_users (user_id) values ('<管理员的 auth.users.id>');
--- select * from public.admin_users;
+-- user_id 是 uuid 且外键指向 auth.users(id)，**不能填邮箱、也不能留占位符**。
+-- 按邮箱反查，一步到位（把 you@example.com 换成真实登录邮箱）：
+--
+--   insert into public.admin_users (user_id)
+--     select id from auth.users
+--     where lower(trim(email)) = lower('you@example.com')
+--     on conflict (user_id) do nothing;
+--   select a.user_id, u.email from public.admin_users a
+--     left join auth.users u on u.id = a.user_id;
 
 
 -- ── ⑩ 重复确认不会重复充值 ────────────────────────────────────

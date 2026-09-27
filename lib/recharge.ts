@@ -21,6 +21,11 @@ import {
   pointsForAmount,
   type PointConfig,
 } from '@/lib/points'
+import {
+  ManualPaymentProvider,
+  getPaymentProvider,
+  type PaymentProviderId,
+} from '@/lib/paymentProvider'
 
 /** 订单状态（与 SQL check 约束一一对应） */
 export const ORDER_STATUSES = ['PENDING', 'PAID', 'CONFIRMED', 'CANCELLED', 'REJECTED'] as const
@@ -46,6 +51,8 @@ export interface RechargeOrder {
   /** 实际入账积分；未确认为 null */
   points: number | null
   status: OrderStatus
+  /** 支付通道：MVP 恒为 MANUAL（人工收款）；未来接正式支付时按通道区分处理 */
+  provider: PaymentProviderId
   userNote: string | null
   adminNote: string | null
   createdAt: string
@@ -60,14 +67,26 @@ export interface PaymentSettings {
   instruction: string | null
 }
 
-/** 充值页所需的全部配置：收款码 + 价格口径 */
+/** 充值页所需的全部配置：收款码 + 价格口径 + 支付通道 + 快捷档位 */
 export interface RechargeConfig {
   payment: PaymentSettings
   pointsPerYuan: number
   minAmount: number
   maxAmount: number
   registerBonusPoints: number
+  /** 当前生效的支付通道（MVP 恒为人工收款） */
+  provider: {
+    id: PaymentProviderId
+    label: string
+    /** false ⇒ 必须管理员确认才加积分 */
+    autoConfirm: boolean
+  }
+  /** 快捷充值档位（元）：来自数据库，前端不得硬编码 */
+  quickAmounts: number[]
 }
+
+/** 收款码没配时的兜底档位（与迁移里的默认值一致） */
+export const FALLBACK_QUICK_AMOUNTS: number[] = [5, 10, 20, 50, 100]
 
 /** 兜底收款配置（数据库没配时也不至于白屏；管理员需在后台补上二维码） */
 const FALLBACK_PAYMENT: PaymentSettings = {
@@ -110,6 +129,8 @@ export function normalizeOrder(row: Record<string, unknown>): RechargeOrder | nu
     confirmedAmount: toNumber(row.confirmed_amount),
     points: toNumber(row.points),
     status,
+    // 未知通道值回落到 MANUAL（保守方向：走人工确认，绝不自动加积分）
+    provider: getPaymentProvider(typeof row.provider === 'string' ? row.provider : null).id,
     userNote: typeof row.user_note === 'string' ? row.user_note : null,
     adminNote: typeof row.admin_note === 'string' ? row.admin_note : null,
     createdAt: typeof row.created_at === 'string' ? row.created_at : '',
@@ -127,8 +148,12 @@ export function normalizeOrder(row: Record<string, unknown>): RechargeOrder | nu
 export async function fetchRechargeConfig(supabase: SupabaseClient): Promise<RechargeConfig> {
   const cfg: PointConfig = await getPointConfig(supabase)
   let payment = FALLBACK_PAYMENT
+  let quickAmounts = FALLBACK_QUICK_AMOUNTS
 
   try {
+    // 迁移 0020 之前没有 quick_amounts 列：列不存在会整条查询报错，
+    // 那样连收款码都读不到。所以分两步查——先只查收款码（永远可用），
+    // 再单独试档位，失败就回落默认档位。
     const { data, error } = await supabase
       .from('payment_settings')
       .select('method, qr_image_url, account_name, instruction')
@@ -150,13 +175,55 @@ export async function fetchRechargeConfig(supabase: SupabaseClient): Promise<Rec
     console.error('[recharge] 读取收款配置异常:', e)
   }
 
+  try {
+    const { data, error } = await supabase
+      .from('payment_settings')
+      .select('quick_amounts')
+      .eq('id', 1)
+      .maybeSingle()
+    if (!error && data) {
+      const parsed = parseQuickAmounts((data as Record<string, unknown>).quick_amounts)
+      if (parsed.length > 0) quickAmounts = parsed
+    }
+  } catch {
+    // 列还没建 / 读不到：用默认档位，不影响充值本身可用
+  }
+
   return {
     payment,
     pointsPerYuan: cfg.pointsPerYuan,
     minAmount: cfg.minRechargeAmount,
     maxAmount: cfg.maxRechargeAmount,
     registerBonusPoints: cfg.registerBonusPoints,
+    provider: {
+      id: ManualPaymentProvider.id,
+      label: ManualPaymentProvider.label,
+      autoConfirm: ManualPaymentProvider.autoConfirm,
+    },
+    quickAmounts,
   }
+}
+
+/**
+ * 解析数据库里的快捷档位。
+ *
+ * 容忍三种形态：PostgREST 把 numeric[] 直接给成数组，也可能给成
+ * `{5,10,20,50,100}` 这样的字符串。脏数据（负数/0/非数字）直接丢掉——
+ * 宁可少一个档位，也不能渲染出一个点下去必然报错的按钮。
+ */
+export function parseQuickAmounts(v: unknown): number[] {
+  let raw: unknown[] = []
+  if (Array.isArray(v)) {
+    raw = v
+  } else if (typeof v === 'string') {
+    raw = v.replace(/^\{|\}$/g, '').split(',').map((s) => s.trim())
+  }
+  const out: number[] = []
+  for (const item of raw) {
+    const n = toNumber(item)
+    if (n !== null && n > 0 && !out.includes(n)) out.push(n)
+  }
+  return out.sort((a, b) => a - b)
 }
 
 /**
@@ -211,6 +278,13 @@ export async function createRechargeOrder(
   if (r.ok === true) {
     const order = normalizeOrder((r.order ?? {}) as Record<string, unknown>)
     if (order) return { ok: true, order, duplicated: false }
+    // 走到这里说明**订单已经在库里建成功了**，只是返回的行解析不出来
+    // （典型原因：RPC 返回的字段名/形状与 normalizeOrder 的 snake_case 约定不一致）。
+    // 必须把原始载荷打出来——否则只会看到一句「创建订单失败」，无从下手。
+    console.error(
+      '[recharge] 订单已创建但返回行无法解析，检查 create_recharge_order 的返回形状:',
+      JSON.stringify(r.order)
+    )
     return { ok: false, code: 'error', message: '创建订单失败，请稍后重试' }
   }
 

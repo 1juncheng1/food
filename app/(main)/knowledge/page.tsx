@@ -374,7 +374,7 @@ export default function KnowledgePage() {
     <PageShell>
       <Link
         href="/dashboard"
-        className="mb-5 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
+        className="mb-5 inline-flex items-center gap-1.5 text-[13px] text-[var(--vs-ink-4)] transition hover:text-[var(--vs-ink)]"
       >
         ← 返回创作机会
       </Link>
@@ -387,7 +387,7 @@ export default function KnowledgePage() {
           <button
             onClick={handleBuild}
             disabled={building || needMigration}
-            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+            className="vs-btn vs-btn-primary disabled:opacity-50"
           >
             <RefreshCw size={14} className={building ? 'animate-spin' : ''} />
             {building ? '归纳中…' : '重新归纳'}
@@ -414,11 +414,11 @@ export default function KnowledgePage() {
       {/* ── 构建结果摘要 ── */}
       {buildSummary && (
         <SurfaceCard className="mb-6">
-          <p className="text-[14px] font-medium text-zinc-100">
+          <p className="text-[14px] font-medium text-[var(--vs-ink)]">
             本次归纳：新增 {buildSummary.inserted} 条候选，更新{' '}
             {buildSummary.updated} 条，跳过 {buildSummary.skipped} 条已确认
           </p>
-          <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-500">
+          <p className="mt-1.5 vs-note leading-relaxed">
             {buildSummary.degraded
               ? 'AI 归纳调用失败，请稍后重试。已确认的单元不受影响。'
               : buildSummary.groupCount === 0
@@ -446,12 +446,12 @@ export default function KnowledgePage() {
         description="每条知识都带着它的来源与适用领域。你确认得越准，AI 之后的创作就越像你。"
         actions={
           <div className="flex items-center gap-3">
-            <span className="text-[12px] text-zinc-500">{units.length} 条</span>
+            <span className="vs-note">{units.length} 条</span>
             {linksAvailable && (
               <button
                 onClick={handleBackfill}
                 disabled={backfilling || needMigration || units.length === 0}
-                className="text-[12px] text-zinc-400 transition hover:text-indigo-300 disabled:opacity-40"
+                className="text-[12px] text-[var(--vs-ink-3)] transition hover:text-[var(--vs-ink)] disabled:opacity-40"
                 title="把历史生成版本里用到的知识，回填成显式的知识↔作品关联"
               >
                 {backfilling ? '回填中…' : '回填历史引用'}
@@ -465,8 +465,8 @@ export default function KnowledgePage() {
           <p
             className={`mb-4 rounded-xl border px-3.5 py-2.5 text-[13px] ${
               linkError
-                ? 'border-red-500/25 bg-red-500/10 text-red-300'
-                : 'border-indigo-500/25 bg-indigo-500/10 text-indigo-300'
+                ? 'vs-verdict vs-note-warn'
+                : 'vs-verdict'
             }`}
           >
             {linkError ?? backfillNote}
@@ -481,8 +481,8 @@ export default function KnowledgePage() {
               onClick={() => setFilter(s)}
               className={`rounded-full border px-2.5 py-1 text-xs font-medium transition ${
                 filter === s
-                  ? 'border-indigo-500/40 bg-indigo-500/15 text-indigo-300'
-                  : 'border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:border-white/20 hover:text-zinc-200'
+                  ? 'border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]'
+                  : 'border-white/[0.08] bg-[var(--vs-void-1)] text-[var(--vs-ink-3)] hover:border-white/20 hover:text-[var(--vs-ink)]'
               }`}
             >
               {s === 'all' ? '全部' : s}
@@ -525,7 +525,7 @@ export default function KnowledgePage() {
                     )}
                   </div>
 
-                  <h3 className="mt-2.5 text-[15px] font-semibold leading-snug text-white">
+                  <h3 className="mt-2.5 text-[15px] font-semibold leading-snug text-[var(--vs-ink)]">
                     {u.concept}
                   </h3>
 
@@ -536,27 +536,27 @@ export default function KnowledgePage() {
                         onChange={(e) => setEditClaim(e.target.value)}
                         rows={3}
                         maxLength={400}
-                        className="w-full rounded-xl border border-white/[0.12] bg-white/[0.04] px-3.5 py-2.5 text-sm text-white outline-none focus:border-indigo-500/50"
+                        className="vs-input vs-input-field w-full"
                       />
                       <div className="mt-2 flex items-center gap-3 text-xs">
                         <button
                           onClick={() => patchUnit(u.id, { claim: editClaim.trim() })}
                           disabled={busyId === u.id || !editClaim.trim()}
-                          className="text-indigo-300 transition hover:text-indigo-200 disabled:opacity-50"
+                          className="vs-link disabled:opacity-50"
                         >
                           保存修正
                         </button>
                         <button
                           onClick={() => setEditingId(null)}
-                          className="text-zinc-500 transition hover:text-zinc-300"
+                          className="text-[var(--vs-ink-4)] transition hover:text-[var(--vs-ink-2)]"
                         >
                           取消
                         </button>
-                        <span className="text-zinc-600">{editClaim.length}/400</span>
+                        <span className="text-[var(--vs-ink-4)]">{editClaim.length}/400</span>
                       </div>
                     </div>
                   ) : (
-                    <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-300">
+                    <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--vs-ink-2)]">
                       {u.claim}
                     </p>
                   )}
@@ -566,7 +566,7 @@ export default function KnowledgePage() {
                     <>
                       <div className="vs-divider my-3" />
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-[12px] text-zinc-500">来源</span>
+                        <span className="vs-note">来源</span>
                         <TagChip size="sm" tone="muted">
                           {u.sourceCount} 条素材
                         </TagChip>
@@ -582,7 +582,7 @@ export default function KnowledgePage() {
                           置信度 {Math.round(u.confidence * 100)}%
                         </span>
                         {u.confirmedAt && (
-                          <span className="text-[11px] text-zinc-600">
+                          <span className="vs-note">
                             确认于 {new Date(u.confirmedAt).toLocaleDateString('zh-CN')}
                           </span>
                         )}
@@ -594,9 +594,9 @@ export default function KnowledgePage() {
                   {!editing && linksAvailable && (
                     <div className="mt-3">
                       <div className="flex flex-wrap items-center gap-1.5 text-[12px]">
-                        <span className="text-zinc-500">被用在这些作品</span>
+                        <span className="text-[var(--vs-ink-4)]">被用在这些作品</span>
                         {linked.length === 0 ? (
-                          <span className="text-zinc-600">还没有关联作品</span>
+                          <span className="text-[var(--vs-ink-4)]">还没有关联作品</span>
                         ) : (
                           linked.map((w) => {
                             const target = workOptionById.get(w.projectId)
@@ -606,11 +606,11 @@ export default function KnowledgePage() {
                             return (
                               <span
                                 key={w.projectId}
-                                className="inline-flex items-center gap-1 rounded-full border border-indigo-500/25 bg-indigo-500/10 px-2.5 py-1 text-indigo-300"
+                                className="vs-verdict"
                               >
                                 <Link
                                   href={href}
-                                  className="max-w-[180px] truncate transition hover:text-indigo-200"
+                                  className="vs-link max-w-[180px] truncate"
                                   title={w.title}
                                 >
                                   《{w.title}》
@@ -619,7 +619,7 @@ export default function KnowledgePage() {
                                   type="button"
                                   onClick={() => void unlinkWork(u.id, w.projectId)}
                                   disabled={linkBusy === `${u.id}:${w.projectId}`}
-                                  className="text-[11px] text-indigo-400/70 transition hover:text-red-300 disabled:opacity-40"
+                                  className="vs-link-danger text-[11px] disabled:opacity-40"
                                   title="取消关联"
                                 >
                                   ×
@@ -631,16 +631,16 @@ export default function KnowledgePage() {
                         <button
                           type="button"
                           onClick={() => setPickerId(pickerOpen ? null : u.id)}
-                          className="rounded-full border border-white/[0.1] px-2.5 py-1 text-zinc-400 transition hover:border-white/20 hover:text-zinc-100"
+                          className="rounded-full border border-[var(--vs-line)] px-2.5 py-1 text-[var(--vs-ink-3)] transition hover:border-white/20 hover:text-[var(--vs-ink)]"
                         >
                           {pickerOpen ? '收起' : '关联作品'}
                         </button>
                       </div>
 
                       {pickerOpen && (
-                        <div className="mt-2 rounded-xl border border-white/[0.08] bg-white/[0.03] p-2">
+                        <div className="mt-2 rounded-xl border border-white/[0.08] bg-[var(--vs-void-1)] p-2">
                           {workOptions.length === 0 ? (
-                            <p className="px-2 py-2 text-[12px] text-zinc-500">
+                            <p className="px-2 py-2 vs-note">
                               还没有可关联的作品 —— 先去创作一版内容。
                             </p>
                           ) : (
@@ -657,12 +657,12 @@ export default function KnowledgePage() {
                                       onClick={() => void linkWork(u.id, opt.id)}
                                       className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[13px] transition ${
                                         already
-                                          ? 'text-zinc-600'
-                                          : 'text-zinc-300 hover:bg-white/[0.06] hover:text-white'
+                                          ? 'text-[var(--vs-ink-4)]'
+                                          : 'text-[var(--vs-ink-2)] hover:bg-white/[0.06] hover:text-[var(--vs-ink)]'
                                       } disabled:opacity-60`}
                                     >
                                       <span className="truncate">{opt.title}</span>
-                                      <span className="shrink-0 text-[11px] text-zinc-600">
+                                      <span className="shrink-0 vs-note">
                                         {already
                                           ? '已关联'
                                           : opt.updatedAt
@@ -687,7 +687,7 @@ export default function KnowledgePage() {
                         <button
                           onClick={() => patchUnit(u.id, { status: '已确认' })}
                           disabled={busyId === u.id}
-                          className="text-emerald-400 transition hover:text-emerald-300 disabled:opacity-50"
+                          className="vs-link disabled:opacity-50"
                         >
                           确认
                         </button>
@@ -695,7 +695,7 @@ export default function KnowledgePage() {
                         <button
                           onClick={() => patchUnit(u.id, { status: '候选' })}
                           disabled={busyId === u.id}
-                          className="text-zinc-500 transition hover:text-zinc-300 disabled:opacity-50"
+                          className="text-[var(--vs-ink-4)] transition hover:text-[var(--vs-ink-2)] disabled:opacity-50"
                         >
                           撤回为候选
                         </button>
@@ -705,7 +705,7 @@ export default function KnowledgePage() {
                         <button
                           onClick={() => patchUnit(u.id, { status: '已拒绝' })}
                           disabled={busyId === u.id}
-                          className="text-zinc-500 transition hover:text-red-400 disabled:opacity-50"
+                          className="vs-link-danger disabled:opacity-50"
                         >
                           拒绝
                         </button>
@@ -713,7 +713,7 @@ export default function KnowledgePage() {
                         <button
                           onClick={() => patchUnit(u.id, { status: '候选' })}
                           disabled={busyId === u.id}
-                          className="text-zinc-500 transition hover:text-zinc-300 disabled:opacity-50"
+                          className="text-[var(--vs-ink-4)] transition hover:text-[var(--vs-ink-2)] disabled:opacity-50"
                         >
                           恢复为候选
                         </button>
@@ -722,7 +722,7 @@ export default function KnowledgePage() {
                       <button
                         onClick={() => startEdit(u)}
                         disabled={busyId === u.id}
-                        className="text-zinc-500 transition hover:text-indigo-300 disabled:opacity-50"
+                        className="text-[var(--vs-ink-4)] transition hover:text-[var(--vs-ink)] disabled:opacity-50"
                       >
                         修正表述
                       </button>

@@ -48,10 +48,10 @@ export default function SettingsPage() {
   // 注销账号
   const router = useRouter()
   const [deleteOpen, setDeleteOpen] = useState(false)
-  const [deleteConfirm, setDeleteConfirm] = useState('')
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
-  // 密码二次确认：服务端会用它重新校验身份后才允许注销
+  // 密码是唯一的确认凭证：服务端会用它重新校验身份后才允许注销。
+  // 刻意不预填、不允许浏览器自动填充——注销必须是用户亲手输入密码的动作。
   const [deletePassword, setDeletePassword] = useState('')
 
   // 昵称（auth.users.user_metadata.display_name，个人主页展示用）
@@ -167,6 +167,11 @@ export default function SettingsPage() {
   /** 永久注销账号 */
   async function handleDeleteAccount() {
     if (deleting) return
+    // 密码是唯一的确认凭证，空密码不发车
+    if (!deletePassword) {
+      setDeleteError('请输入密码')
+      return
+    }
     setDeleteError('')
     setDeleting(true)
     try {
@@ -195,11 +200,11 @@ export default function SettingsPage() {
 
   if (loading) {
     return (
-      <div className="inner-page gen-stage" data-mode="inspiration">
+      <div className="inner-page " data-mode="inspiration">
         <div className="inner-container">
           <div className="animate-pulse space-y-6">
-            <div className="h-8 bg-zinc-900 rounded-lg w-48" />
-            <div className="h-64 bg-zinc-900 rounded-xl" />
+            <div className="h-8 bg-[var(--vs-void-1)] rounded-lg w-48" />
+            <div className="h-64 bg-[var(--vs-void-1)] rounded-xl" />
           </div>
         </div>
       </div>
@@ -216,11 +221,11 @@ export default function SettingsPage() {
       />
 
         {/* ── 账号信息（昵称） ── */}
-        <section className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
-          <h2 className="text-sm font-medium text-zinc-200 mb-6">账号信息</h2>
+        <section className="mb-6 rounded-2xl border border-white/[0.08] bg-[var(--vs-void-1)] px-6 py-6">
+          <h2 className="vs-h3 mb-6">账号信息</h2>
 
           <div className="mb-6">
-            <label className="block text-xs text-zinc-500 mb-3">
+            <label className="block text-xs text-[var(--vs-ink-4)] mb-3">
               昵称（显示在你的个人主页，留空则使用邮箱前缀）
             </label>
             <input
@@ -229,7 +234,7 @@ export default function SettingsPage() {
               maxLength={20}
               onChange={(e) => setNickname(e.target.value)}
               placeholder="给自己起一个创作者名字"
-              className="w-full max-w-xs bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-4 py-2.5 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50"
+              className="vs-input vs-input-field w-full max-w-xs"
             />
           </div>
 
@@ -237,12 +242,12 @@ export default function SettingsPage() {
             <button
               onClick={handleSaveNickname}
               disabled={nicknameSaving}
-              className="px-5 py-2.5 rounded-lg text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-500 transition disabled:opacity-40 disabled:cursor-not-allowed"
+              className="vs-btn vs-btn-primary disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {nicknameSaving ? '保存中…' : '保存昵称'}
             </button>
             {nicknameMsg && (
-              <span className={`text-xs ${nicknameMsg.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+              <span className={`text-xs ${nicknameMsg.type === 'success' ? 'text-[var(--vs-ink)]' : 'vs-error-text'}`}>
                 {nicknameMsg.text}
               </span>
             )}
@@ -250,17 +255,17 @@ export default function SettingsPage() {
         </section>
 
         {/* ── 创作者访谈（Creator Understanding Engine）── */}
-        <section className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
+        <section className="mb-6 rounded-2xl border border-white/[0.08] bg-[var(--vs-void-1)] px-6 py-6">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-medium text-zinc-200">创作者访谈</h2>
+            <h2 className="text-[14px] font-medium text-[var(--vs-ink)]">创作者访谈</h2>
             {!declLoading && !isDeclarationEmpty(declaration) && (
-              <span className={`text-xs ${isDeclarationComplete(declaration) ? 'text-emerald-400' : 'text-amber-400'}`}>
+              <span className={`text-xs ${isDeclarationComplete(declaration) ? 'text-[var(--vs-ink)]' : 'vs-note-warn'}`}>
                 {isDeclarationComplete(declaration) ? '已完成' : '未完成'}
               </span>
             )}
           </div>
 
-          <p className="text-xs text-zinc-500 leading-relaxed mb-4">
+          <p className="text-xs text-[var(--vs-ink-4)] leading-relaxed mb-4">
             回答 10 个问题，让 AI 理解你的创作偏好。访谈结果会影响生成质量，优先级高于 AI 自动推断的风格画像。
           </p>
 
@@ -272,8 +277,8 @@ export default function SettingsPage() {
                   key={idx}
                   className={`text-[11px] px-2 py-0.5 rounded-full border ${
                     t.hard
-                      ? 'border-red-500/30 bg-red-500/10 text-red-300'
-                      : 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300'
+                      ? 'vs-verdict vs-note-warn'
+                      : 'vs-verdict'
                   }`}
                 >
                   {t.dimension}：{t.label}
@@ -284,7 +289,7 @@ export default function SettingsPage() {
 
           {/* 未访谈提示 */}
           {!declLoading && isDeclarationEmpty(declaration) && (
-            <div className="mb-4 text-xs text-amber-400/80 bg-amber-500/5 border border-amber-500/20 rounded-lg px-3 py-2">
+            <div className="vs-note vs-note-warn vs-warn mb-4">
               你还没有完成访谈。完成访谈让 AI 更懂你的创作偏好。
             </div>
           )}
@@ -292,7 +297,7 @@ export default function SettingsPage() {
           <button
             type="button"
             onClick={() => setInterviewOpen(true)}
-            className="text-xs bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/40 text-indigo-300 px-4 py-2 rounded-lg transition"
+            className="vs-btn vs-btn-ghost vs-btn-sm"
           >
             {isDeclarationEmpty(declaration) ? '开始访谈' : '重新访谈 / 修改'}
           </button>
@@ -316,20 +321,20 @@ export default function SettingsPage() {
         </section>
 
         {/* ── 隐私设置 ── */}
-        <section className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
-          <h2 className="text-sm font-medium text-zinc-200 mb-6">隐私设置</h2>
+        <section className="mb-6 rounded-2xl border border-white/[0.08] bg-[var(--vs-void-1)] px-6 py-6">
+          <h2 className="vs-h3 mb-6">隐私设置</h2>
 
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-zinc-300">发布灵感时默认公开</p>
-              <p className="text-xs text-zinc-500 mt-1">
+              <p className="text-[14px] text-[var(--vs-ink-2)]">发布灵感时默认公开</p>
+              <p className="vs-note mt-1">
                 关闭后，新发布的灵感默认仅自己可见
               </p>
             </div>
             <button
               onClick={handleTogglePublic}
               className={`relative w-12 h-6 rounded-full transition shrink-0 ${
-                defaultPublic ? 'bg-indigo-600' : 'bg-zinc-700'
+                defaultPublic ? 'bg-[var(--vs-beam)]' : 'bg-[var(--vs-line-2)]'
               }`}
             >
               <span
@@ -342,40 +347,40 @@ export default function SettingsPage() {
         </section>
 
         {/* ── 数据导出 ── */}
-        <section className="rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-6">
-          <h2 className="text-sm font-medium text-zinc-200 mb-6">数据导出</h2>
+        <section className="rounded-2xl border border-white/[0.08] bg-[var(--vs-void-1)] px-6 py-6">
+          <h2 className="vs-h3 mb-6">数据导出</h2>
 
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-zinc-300">导出我的全部数据</p>
-              <p className="text-xs text-zinc-500 mt-1">
+              <p className="text-[14px] text-[var(--vs-ink-2)]">导出我的全部数据</p>
+              <p className="vs-note mt-1">
                 包含发布的灵感、素材库、生成历史、风格卡、关注关系
               </p>
             </div>
             <button
               onClick={handleExport}
               disabled={exporting}
-              className="px-5 py-2.5 rounded-lg text-sm font-medium bg-zinc-800 text-zinc-200 hover:bg-zinc-700 transition disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+              className="vs-btn vs-btn-ghost shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {exporting ? '导出中…' : '导出 JSON'}
             </button>
           </div>
 
           {exportMsg && (
-            <p className={`text-xs mt-4 ${exportMsg.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+            <p className={`text-xs mt-4 ${exportMsg.type === 'success' ? 'text-[var(--vs-ink)]' : 'vs-error-text'}`}>
               {exportMsg.text}
             </p>
           )}
         </section>
 
         {/* ── 危险区域：注销账号 ── */}
-        <section className="border border-red-500/20 rounded-xl px-6 py-6 mt-8 bg-red-500/5">
-          <h2 className="text-sm font-medium text-red-300 mb-6">危险区域</h2>
+        <section className="vs-danger-zone px-6 py-6 mt-8">
+          <h2 className="vs-h3 vs-error-text mb-6">危险区域</h2>
 
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-zinc-300">注销账号</p>
-              <p className="text-xs text-zinc-500 mt-1">
+              <p className="text-[14px] text-[var(--vs-ink-2)]">注销账号</p>
+              <p className="vs-note mt-1">
                 永久删除你的账号和所有数据，包括灵感、素材库、生成历史、关注关系。此操作不可撤销。
               </p>
             </div>
@@ -383,53 +388,55 @@ export default function SettingsPage() {
               variant="outline"
               onClick={() => {
                 setDeleteOpen(true)
-                setDeleteConfirm('')
+                // 每次打开都是空框：绝不带着上一次的输入进对话框
                 setDeletePassword('')
                 setDeleteError('')
               }}
-              className="border-red-500/40 text-red-400 hover:bg-red-500/10 hover:text-red-300 shrink-0"
+              className="vs-btn vs-btn-ghost vs-error-text shrink-0"
             >
               注销账号
             </Button>
           </div>
 
-          <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+          <Dialog
+            open={deleteOpen}
+            onOpenChange={(next) => {
+              setDeleteOpen(next)
+              // 关闭时立刻清空：不把密码留在组件状态里
+              if (!next) {
+                setDeletePassword('')
+                setDeleteError('')
+              }
+            }}
+          >
             <DialogContent showCloseButton={!deleting}>
               <DialogHeader>
-                <DialogTitle className="text-red-300">确认注销账号</DialogTitle>
+                <DialogTitle className="vs-error-text">确认注销账号</DialogTitle>
                 <DialogDescription>
                   此操作将永久删除你的账号和所有数据，包括灵感、素材库、生成历史、风格卡、关注关系。操作不可撤销，数据无法恢复。
                 </DialogDescription>
               </DialogHeader>
 
               <div className="py-2">
-                <p className="text-xs text-zinc-400 mb-2">
-                  请输入 <span className="text-red-400 font-mono">删除</span> 以确认：
+                <p className="text-xs text-[var(--vs-ink-3)] mb-2">
+                  请输入当前账号密码以确认（服务端会二次校验后才允许注销）：
                 </p>
-                <input
-                  type="text"
-                  value={deleteConfirm}
-                  onChange={(e) => setDeleteConfirm(e.target.value)}
-                  disabled={deleting}
-                  placeholder="删除"
-                  className="w-full bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-4 py-2 text-sm text-zinc-200 focus:outline-none focus:border-red-500/50"
-                />
-                <p className="text-xs text-zinc-400 mb-2 mt-4">
-                  请输入当前账号密码（服务端会二次校验后才允许注销）：
-                </p>
+                {/* autoComplete="new-password"：阻止浏览器自动填充已保存的密码。
+                    自动填充等于"不用真的知道密码就能注销"，与二次校验的本意相悖。 */}
                 <input
                   type="password"
                   value={deletePassword}
                   onChange={(e) => setDeletePassword(e.target.value)}
                   disabled={deleting}
                   placeholder="登录密码"
-                  autoComplete="current-password"
-                  className="w-full bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-4 py-2 text-sm text-zinc-200 focus:outline-none focus:border-red-500/50"
+                  autoComplete="new-password"
+                  name="delete-account-confirm-password"
+                  className="vs-input vs-input-field w-full"
                 />
               </div>
 
               {deleteError && (
-                <p className="text-xs text-red-400">{deleteError}</p>
+                <p className="vs-error">{deleteError}</p>
               )}
 
               <DialogFooter>
@@ -442,10 +449,8 @@ export default function SettingsPage() {
                 </Button>
                 <Button
                   onClick={handleDeleteAccount}
-                  disabled={
-                    deleting || deleteConfirm.trim() !== '删除' || deletePassword.length === 0
-                  }
-                  className="bg-red-600 text-white hover:bg-red-500 disabled:opacity-40"
+                  disabled={deleting || deletePassword.length === 0}
+                  className="vs-btn vs-btn-danger disabled:opacity-40"
                 >
                   {deleting ? '注销中…' : '永久注销'}
                 </Button>

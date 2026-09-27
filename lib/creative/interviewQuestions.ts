@@ -52,6 +52,57 @@ export interface InterviewQuestion {
 // ── 8 类问题（共 10 问，每类 1-2 问）────────────────────────
 
 export const INTERVIEW_QUESTIONS: InterviewQuestion[] = [
+  // ── 类别 0：我是谁（3 问，2026-09-24 新增，排在写法维度之前）──
+  //
+  // 存在理由：原有 8 维全部是「怎么写」，没有一个维度回答「这个人是谁」。
+  // 没有经历 / 价值判断 / 长期目标，AI 只能模仿语气，无法判断用户为什么在意
+  // 某个话题。这三问是 Creator Memory 里最缺、也最难从行为反推的一块
+  // ——行为能推断"喜欢什么写法"，推不出"凭什么谈、相信什么、要去哪"。
+  //
+  // 这三问对已访谈老用户走「增量补问」（见 interviewTrigger），不会要求重答 13 问。
+  {
+    id: 'background_main',
+    dimension: 'background',
+    category: '经历背景',
+    question: '你在这个领域，凭什么谈这些话题？',
+    hint: '这决定 AI 可以调用哪些亲身论据，以及内容的可信度基线',
+    allowCustom: true,
+    options: [
+      { value: '一线从业者', label: '一线从业者', description: '正在做，有实操经验' },
+      { value: '长期研究者', label: '长期研究者', description: '系统研究过，有方法论' },
+      { value: '亲身经历者', label: '亲身经历者', description: '经历过，有第一手感受' },
+      { value: '跨界观察者', label: '跨界观察者', description: '从别的领域看过来，视角独特' },
+    ],
+  },
+  {
+    id: 'value_main',
+    dimension: 'value_statement',
+    category: '价值判断',
+    question: '你最坚持的一条判断是什么？',
+    hint: '遇到价值冲突时，AI 会以此为立场，不做骑墙表述',
+    allowCustom: true,
+    options: [
+      { value: '真实胜过完美', label: '真实胜过完美', description: '宁可粗糙，不要精致的假' },
+      { value: '有用胜过好看', label: '有用胜过好看', description: '能解决问题比文采重要' },
+      { value: '独立判断胜过共识', label: '独立判断胜过共识', description: '不人云亦云，敢说反面' },
+      { value: '长期胜过短期', label: '长期胜过短期', description: '宁要慢的复利，不要快的流量' },
+    ],
+  },
+  {
+    id: 'longterm_main',
+    dimension: 'long_term_goal',
+    category: '长期目标',
+    question: '一年后，你希望这些创作给你带来什么？',
+    hint: '这决定内容的时间取向：追单篇爆款，还是沉淀长期资产',
+    allowCustom: true,
+    options: [
+      { value: '个人影响力', label: '个人影响力', description: '被特定人群记住和信任' },
+      { value: '稳定收入', label: '稳定收入', description: '内容本身带来持续收益' },
+      { value: '知识体系', label: '知识体系', description: '把自己的认知整理成体系' },
+      { value: '同行认可', label: '同行认可', description: '在专业圈层建立声誉' },
+    ],
+  },
+
   // ── 类别 1：创作目的（1 问）──
   {
     id: 'goal_main',
@@ -380,6 +431,9 @@ export const CURRENT_INTERVIEW_VERSION = 1
 
 /** 6 类问题分类标签（UI 分组展示用） */
 export const INTERVIEW_CATEGORIES = [
+  '经历背景',
+  '价值判断',
+  '长期目标',
   '创作目的',
   '表达方式',
   '审美偏好',

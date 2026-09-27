@@ -23,7 +23,7 @@ export default function MeRedirectPage() {
   }, [router])
 
   return (
-    <div className="inner-page gen-stage" data-mode="inspiration">
+    <div className="inner-page " data-mode="inspiration">
       <div className="inner-container">
         <div className="inner-empty">
           <p>正在跳转…</p>

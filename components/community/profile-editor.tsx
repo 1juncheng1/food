@@ -145,30 +145,30 @@ export default function ProfileEditor({
   const shownAvatar = preview ?? (removeAvatar ? null : initialAvatar)
 
   return (
-    <div className="mt-5 pt-5 border-t border-zinc-800">
+    <div className="mt-5 pt-5 border-t border-[var(--vs-line)]">
       <div className="flex items-start gap-4 flex-wrap">
         <AuthorAvatar name={trimmed || '创作者'} avatarUrl={shownAvatar} size="lg" />
 
         <div className="min-w-0 flex-1 space-y-3">
           <div>
-            <label className="block text-xs text-zinc-500 mb-1.5">昵称</label>
+            <label className="block vs-mark mb-1.5">昵称</label>
             <input
               type="text"
               value={name}
               maxLength={NICKNAME_MAX}
               onChange={(e) => setName(e.target.value)}
               placeholder="给自己起个好记的名字"
-              className="w-full max-w-sm bg-zinc-800/60 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-indigo-500 transition"
+              className="vs-input vs-input-field w-full max-w-sm"
             />
             {nameInvalid && (
-              <p className="text-xs text-amber-400 mt-1">
+              <p className="vs-note vs-note-warn mt-1">
                 昵称长度需在 1-{NICKNAME_MAX} 个字符之间
               </p>
             )}
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-            <label className="cursor-pointer text-xs px-3 py-1.5 rounded-lg bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition">
+            <label className="vs-btn vs-btn-ghost vs-btn-sm cursor-pointer">
               选择图片
               <input
                 type="file"
@@ -184,7 +184,7 @@ export default function ProfileEditor({
                   setFile(null)
                   setPreview(null)
                 }}
-                className="text-xs text-zinc-500 hover:text-zinc-300 transition"
+                className="vs-link"
               >
                 取消选择
               </button>
@@ -197,19 +197,19 @@ export default function ProfileEditor({
                   setPreview(null)
                   setRemoveAvatar(true)
                 }}
-                className="text-xs text-zinc-500 hover:text-red-400 transition"
+                className="vs-link-danger text-xs"
               >
                 移除头像
               </button>
             )}
-            <span className="text-[11px] text-zinc-600">
+            <span className="vs-note">
               支持 jpg/png/webp/gif，≤10MB（自动压缩到 512px）
             </span>
           </div>
         </div>
       </div>
 
-      {error && <p className="text-xs text-red-400 mt-3">{error}</p>}
+      {error && <p className="vs-error mt-3">{error}</p>}
 
       <div className="flex items-center gap-2 mt-4">
         <button
@@ -219,7 +219,7 @@ export default function ProfileEditor({
             void handleSave()
           }}
           disabled={saving || nameInvalid}
-          className="px-4 py-2 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition"
+          className="vs-btn vs-btn-primary vs-btn-sm disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {saving ? '保存中…' : '保存'}
         </button>
@@ -227,7 +227,7 @@ export default function ProfileEditor({
           type="button"
           onClick={onCancel}
           disabled={saving}
-          className="px-4 py-2 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-40 transition"
+          className="px-4 py-2 rounded-lg text-xs text-[var(--vs-ink-3)] hover:text-[var(--vs-ink)] disabled:opacity-40 transition"
         >
           取消
         </button>

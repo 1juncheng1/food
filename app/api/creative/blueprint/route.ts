@@ -1,19 +1,18 @@
 import { NextResponse } from 'next/server'
 import { aiFailureResponse, authFailureResponse } from '@/lib/apiAuth'
+import { guardRateLimit } from '@/lib/rateLimit'
 import { hasEnoughFor } from '@/lib/aiCost'
 import { INSUFFICIENT_POINTS_MESSAGE } from '@/lib/points'
 import { createServerClient } from '@/lib/supabaseServer'
 import { IDENTITY_TEMPLATES } from '@/lib/identityTemplates'
 import { generateBlueprint, type BlueprintInput } from '@/lib/creative/blueprint'
-import { formatStyleDimensions } from '@/lib/creative/styleLearning'
-import { formatCreatorModel } from '@/lib/creative/creatorModel'
+import { buildCreatorContextBlocks } from '@/lib/creative/creatorContext'
 import {
   resolveMode,
   planPersonalization,
   buildCreatorIdentity,
 } from '@/lib/creative/personalization'
 import { fetchCreatorStyleProfile } from '@/lib/creative/styleProfileRepo'
-import { buildInterestBlock } from '@/lib/creative/interest/promptBlock'
 import {
   buildKnowledgeInjection,
   summarizeInjectedUnits,
@@ -72,6 +71,11 @@ export async function POST(req: Request) {
       return authFailureResponse(authErr)
     }
 
+    // 限流（跨实例）：蓝图走 LLM，额度必须全局共享，
+    // 否则多实例扩容会把限流值放大 N 倍。
+    const limited = await guardRateLimit(user.id, 'creative-blueprint', 5, 60_000)
+    if (limited) return limited
+
     const body = (await req.json()) as RequestBody
 
     // ── 参数校验（与 prompt-optimizer 同口径） ──
@@ -117,36 +121,21 @@ export async function POST(req: Request) {
     let styleProfileText = creatorIdentity
       ? `${creatorIdentity.forWriter}\n\n本次任务是为这位创作者构思创作蓝图：选题切入、Hook、核心冲突与情绪曲线都要像 ta 本人的作品会自然生长出来的样子，而不是平台通用模板。`
       : ''
-    // Creator Interest Profile 原始 jsonb。由下方风格卡查询顺带读出（不额外查库），
-    // 仅在我的模式注入；未建模用户为 {}，转成空串后整块剔除。
-    let interestProfileRaw: unknown = null
+    // 个人数据注入统一走装配器（Creator Context）：与方案 / 正文同口径。
+    // 声明与修改偏好此前只进正文 —— 蓝图决定「写什么、从哪个角度写」，
+    // 这一步却看不到用户排斥什么、反复拒绝什么，是"方向由主题定"的成因之一。
+    let interestText = ''
     if (plan.useStyleProfile) {
       const profile = await fetchCreatorStyleProfile(supabase, user.id)
 
       if (profile) {
-        interestProfileRaw = profile.interest_profile
-      const p = profile as {
-        tone_tags?: string[]
-        pace_preference?: string
-        common_opening?: string
-        avg_length?: number
-        style_dimensions?: unknown
-        creator_personality?: unknown
-        topic_preferences?: unknown
-        favorite_elements?: unknown
-        avoid_elements?: unknown
-        ai_creator_summary?: unknown
-        creator_report?: unknown
-      }
-      const toneTags = p.tone_tags?.length ? p.tone_tags.join('、') : '暂无'
-      // 阶段 5：从反馈/定稿/选方向行为学习出的五维画像（样本不足时为空串）
-      const learnedDims = formatStyleDimensions(p.style_dimensions)
-      styleProfileText = `【用户的创作风格特征】\n语气：${toneTags}\n节奏：${p.pace_preference ?? '未知'}\n常用开头：${p.common_opening ?? '未知'}\n平均长度：${p.avg_length ?? 0} 字/篇\n请在蓝图中体现这些风格特征。${learnedDims ? `\n${learnedDims}` : ''}`
-      // 我的模式：创作者人格影响创作方向（题材偏好/Hook/冲突的选取）
-      const block = formatCreatorModel(p)
-      if (block.text) {
-        styleProfileText += `\n\n${block.text}\n请在蓝图的主题定位、Hook 与核心冲突选取上体现该创作者的母题偏好与人格气质；排斥元素不得出现在蓝图任何环节。`
-      }
+        const blocks = buildCreatorContextBlocks(profile, {
+          stage: 'blueprint',
+          interest: { maxTopics: 5, maxLength: 420 },
+        })
+        styleProfileText = blocks.styleText
+        if (blocks.creatorText) styleProfileText += `\n\n${blocks.creatorText}`
+        interestText = blocks.interestText
       }
     }
 
@@ -174,12 +163,8 @@ export async function POST(req: Request) {
       // 蓝图决定「写什么、从哪个角度写」，这一步不看人，产出的就是通用范文。
       // 措辞刻意比知识软：兴趣是行为统计的观察，不是用户确认过的结论，
       // 所以只要求「优先落在交叉处」，并明确允许主题无关时忽略。
-      const interestBlock = buildInterestBlock(interestProfileRaw, {
-        maxTopics: 5,
-        maxLength: 420,
-      }).text
-      if (interestBlock) {
-        styleProfileText += `\n\n${interestBlock}\n请在蓝图的选题切入与 Hook 设计上优先落在该创作者长期关注领域与本次主题的交叉处；这是参考倾向而非硬性命题，若本次主题与上述领域无关则忽略，不要为贴合而改写主题。`
+      if (interestText) {
+        styleProfileText += `\n\n${interestText}\n请在蓝图的选题切入与 Hook 设计上优先落在该创作者长期关注领域与本次主题的交叉处；这是参考倾向而非硬性命题，若本次主题与上述领域无关则忽略，不要为贴合而改写主题。`
       }
     }
 

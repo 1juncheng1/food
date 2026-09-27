@@ -235,8 +235,20 @@ comment on function public.reject_recharge(uuid, uuid, text) is
 grant execute on function public.reject_recharge(uuid, uuid, text) to service_role;
 
 -- ─── 5. 验证查询 ────────────────────────────────────────────
---   -- 把某个用户设为管理员（**第一个管理员只能这样手动建**）
---   insert into public.admin_users (user_id) values ('<管理员的 auth.users.id>');
+--   -- 把某个用户设为管理员（**第一个管理员只能这样手动建**）。
+--   -- user_id 是 uuid 且外键指向 auth.users(id)，所以**不能直接写字面量邮箱**，
+--   -- 必须先换成真实 UUID（形如 3f2a...-...-...）。按邮箱一次到位：
+--   insert into public.admin_users (user_id)
+--     select id from auth.users
+--     where lower(trim(email)) = lower('you@example.com')
+--     on conflict (user_id) do nothing;
+--
+--   -- 只有 UUID 时用这条（把下面的值换成上一步查到的真实 UUID）：
+--   -- insert into public.admin_users (user_id)
+--   --   values ('3f2a0000-0000-0000-0000-000000000000')
+--   --   on conflict (user_id) do nothing;
+--
+--   -- 查自己的 UUID：select id, email from auth.users order by created_at desc limit 20;
 --
 --   select public.confirm_recharge('<order_id>', 10, '<admin_user_id>', '已核对');
 --   select public.confirm_recharge('<order_id>', 10, '<admin_user_id>', '再点一次');  -- duplicated:true

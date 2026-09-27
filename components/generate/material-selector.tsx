@@ -11,7 +11,7 @@
 //   3. 不使用：大提示 + 确认，不传 selectedMaterialIds
 //
 // 鉴权：前端调 fetch 需 accessToken（Bearer），父组件传入
-// 样式：复用 inner-page/glass/anim-rise class，保持 data-mode="creator" 风格一致
+// 样式：复用 inner-page/vs-rise class，保持 data-mode="creator" 风格一致
 // ============================================================
 
 import { useEffect, useRef, useState } from 'react'
@@ -334,33 +334,29 @@ export function MaterialSelector({
           : `使用选中的 ${selectedIds.size} 条素材，开始生成`
 
   return (
-    <div className="glass anim-rise">
+    <div className="anim-rise">
       {/* 顶部栏：标题 + 返回 */}
-      <div className="flex items-center justify-between mb-5">
+      <div className="flex items-start justify-between gap-4 mb-5">
         <div>
-          <h2 className="text-base font-medium text-white">选择素材</h2>
-          <p className="text-xs text-zinc-500 mt-1">
+          <h2 className="vs-h3">选择素材</h2>
+          <p className="vs-note mt-1.5 leading-relaxed">
             AI 会在生成你的文案时参考这些素材，让内容更贴合你。选中后可把 1 条素材设为「创作根基」并补充使用标签（仅本次生效）
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onBack}
-          className="text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-800 hover:border-zinc-700 px-3 py-1.5 rounded-lg transition"
-        >
+        <button type="button" onClick={onBack} className="vs-btn vs-btn-ghost vs-btn-sm shrink-0">
           ← 返回方案
         </button>
       </div>
 
       {/* Tab 切换 */}
-      <div className="flex gap-2 mb-5">
+      <div className="flex flex-wrap gap-2 mb-5">
         {(
           [
-            ['recommended', 'AI 推荐', '✨'],
-            ['manual', '手动挑选', '📚'],
-            ['none', '不使用素材', '🚫'],
+            ['recommended', 'AI 推荐'],
+            ['manual', '手动挑选'],
+            ['none', '不使用素材'],
           ] as const
-        ).map(([m, label, icon]) => {
+        ).map(([m, label]) => {
           const active = mode === m
           return (
             <button
@@ -376,13 +372,9 @@ export function MaterialSelector({
                   setSelectedIds(new Set())
                 }
               }}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition border ${
-                active
-                  ? 'bg-indigo-500/20 border-indigo-500/40 text-indigo-200'
-                  : 'border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
-              }`}
+              data-on={active}
+              className="vs-chip"
             >
-              <span className="mr-1">{icon}</span>
               {label}
             </button>
           )
@@ -394,15 +386,17 @@ export function MaterialSelector({
         <div>
           {recommendLoading && (
             <div className="flex flex-col items-center py-16">
-              <div className="w-10 h-10 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" />
-              <p className="text-xs text-zinc-500 mt-4">AI 正在为你推荐相关素材…</p>
+              <span className="vs-ai-dots" aria-hidden="true">
+                <i className="vs-ai-dot" />
+                <i className="vs-ai-dot" />
+                <i className="vs-ai-dot" />
+              </span>
+              <p className="vs-note mt-4">正在为你推荐相关素材</p>
             </div>
           )}
           {!recommendLoading && recommendError && (
             <div className="flex flex-col items-center py-10">
-              <p className="text-xs text-red-400 mb-3">
-                推荐获取失败：{recommendError}
-              </p>
+              <p className="vs-error mb-3">推荐获取失败：{recommendError}</p>
               <button
                 type="button"
                 onClick={() => {
@@ -411,7 +405,7 @@ export function MaterialSelector({
                   setMode('manual')
                   setTimeout(() => setMode('recommended'), 0)
                 }}
-                className="text-xs text-indigo-300 hover:text-indigo-200 transition"
+                className="vs-link"
               >
                 切到手动挑选
               </button>
@@ -419,10 +413,8 @@ export function MaterialSelector({
           )}
           {!recommendLoading && !recommendError && recommended.length === 0 && (
             <div className="text-center py-10">
-              <p className="text-xs text-zinc-500">
-                AI 没找到与你主题相关的素材
-              </p>
-              <p className="text-xs text-zinc-600 mt-2">
+              <p className="vs-note">AI 没找到与你主题相关的素材</p>
+              <p className="vs-note mt-2">
                 可以切到「手动挑选」从你的素材库中选择，或者「不使用素材」让 AI 自由发挥
               </p>
             </div>
@@ -430,18 +422,11 @@ export function MaterialSelector({
           {!recommendLoading && !recommendError && recommended.length > 0 && (
             <>
               <div className="flex items-center justify-between mb-3">
-                <p className="text-xs text-zinc-500">
-                  共 {recommended.length} 条推荐，已选{' '}
-                  <span className="text-indigo-300 font-medium">
-                    {selectedIds.size}
-                  </span>{' '}
-                  条
+                <p className="vs-note">
+                  共 <span className="vs-num">{recommended.length}</span> 条推荐，已选{' '}
+                  <span className="vs-num">{selectedIds.size}</span> 条
                 </p>
-                <button
-                  type="button"
-                  onClick={toggleSelectAll}
-                  className="text-xs text-indigo-300 hover:text-indigo-200 transition"
-                >
+                <button type="button" onClick={toggleSelectAll} className="vs-link">
                   {selectedIds.size === recommended.length ? '全取消' : '全选'}
                 </button>
               </div>
@@ -468,12 +453,12 @@ export function MaterialSelector({
       {mode === 'manual' && (
         <div>
           {/* 过滤器行 */}
-          <div className="flex flex-wrap gap-2 mb-4">
+          <div className="flex flex-wrap items-end gap-4 mb-5">
             {/* 分组侧栏（小型下拉选择） */}
             <select
               value={manualGroupId}
               onChange={(e) => setManualGroupId(e.target.value)}
-              className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-zinc-600"
+              className="vs-select"
             >
               <option value="all">全部素材</option>
               <option value="uncategorized">未分组</option>
@@ -492,7 +477,7 @@ export function MaterialSelector({
                   e.target.value === '' ? '' : (e.target.value as MaterialType)
                 )
               }
-              className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-zinc-600"
+              className="vs-select"
             >
               <option value="">全部类型</option>
               {MATERIAL_TYPES.map((t) => (
@@ -508,41 +493,34 @@ export function MaterialSelector({
               value={manualQuery}
               onChange={(e) => setManualQuery(e.target.value)}
               placeholder="搜索关键词…"
-              className="flex-1 min-w-[140px] text-xs bg-zinc-900 border border-zinc-800 text-zinc-300 placeholder-zinc-600 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-zinc-600"
+              className="vs-input vs-input-field flex-1 min-w-[140px]"
             />
           </div>
 
           {manualLoading && (
             <div className="flex flex-col items-center py-12">
-              <div className="w-10 h-10 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" />
-              <p className="text-xs text-zinc-500 mt-4">正在加载素材…</p>
+              <span className="vs-ai-dots" aria-hidden="true">
+                <i className="vs-ai-dot" />
+                <i className="vs-ai-dot" />
+                <i className="vs-ai-dot" />
+              </span>
+              <p className="vs-note mt-4">正在加载素材</p>
             </div>
           )}
           {!manualLoading && manualError && (
-            <p className="text-xs text-red-400 py-6 text-center">
-              素材列表加载失败：{manualError}
-            </p>
+            <p className="vs-error py-6 text-center">素材列表加载失败：{manualError}</p>
           )}
           {!manualLoading && !manualError && manualMaterials.length === 0 && (
-            <p className="text-xs text-zinc-500 py-10 text-center">
-              当前筛选条件下没有素材
-            </p>
+            <p className="vs-note py-10 text-center">当前筛选条件下没有素材</p>
           )}
           {!manualLoading && !manualError && manualMaterials.length > 0 && (
             <>
               <div className="flex items-center justify-between mb-3">
-                <p className="text-xs text-zinc-500">
-                  共 {manualMaterials.length} 条素材，已选{' '}
-                  <span className="text-indigo-300 font-medium">
-                    {selectedIds.size}
-                  </span>{' '}
-                  条
+                <p className="vs-note">
+                  共 <span className="vs-num">{manualMaterials.length}</span> 条素材，已选{' '}
+                  <span className="vs-num">{selectedIds.size}</span> 条
                 </p>
-                <button
-                  type="button"
-                  onClick={toggleSelectAll}
-                  className="text-xs text-indigo-300 hover:text-indigo-200 transition"
-                >
+                <button type="button" onClick={toggleSelectAll} className="vs-link">
                   {selectedIds.size === manualMaterials.length ? '全取消' : '全选'}
                 </button>
               </div>
@@ -567,10 +545,9 @@ export function MaterialSelector({
 
       {/* ── 不使用模式 ── */}
       {mode === 'none' && (
-        <div className="flex flex-col items-center py-14 text-center">
-          <div className="text-4xl mb-5">🎯</div>
-          <h3 className="text-sm font-medium text-white">本次创作不手动挑选素材</h3>
-          <p className="text-xs text-zinc-500 mt-3 max-w-xs leading-relaxed">
+        <div className="py-14 text-center">
+          <h3 className="vs-h3">本次创作不手动挑选素材</h3>
+          <p className="vs-note mt-3 mx-auto max-w-xs leading-relaxed">
             系统仍会自动召回与你主题相关的素材作为兜底，保证内容质量不会下降。
             你也可以随时回到素材库中整理和补充。
           </p>
@@ -578,19 +555,15 @@ export function MaterialSelector({
       )}
 
       {/* 底部按钮 */}
-      <div className="mt-6 pt-4 border-t border-zinc-800 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onBack}
-          className="px-4 py-2 text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 hover:border-zinc-700 rounded-lg transition"
-        >
+      <div className="mt-6 pt-4 border-t border-[var(--vs-line)] flex flex-wrap justify-end gap-3">
+        <button type="button" onClick={onBack} className="vs-btn vs-btn-ghost">
           返回调整方案
         </button>
         <button
           type="button"
           onClick={handleConfirm}
           disabled={!canConfirm || (mode !== 'none' && hasError)}
-          className="px-5 py-2 text-xs font-medium text-white bg-indigo-500 hover:bg-indigo-400 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+          className="vs-btn vs-btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {confirmLabel}
         </button>
@@ -608,25 +581,28 @@ interface AnnotationActionProps {
   onNoteChange: (note: string) => void
 }
 
-/** 卡片外框 class：根基用琥珀色高亮，其次是选中靛蓝，再次默认 */
+/**
+ * 卡片外框：根基 > 选中 > 默认，是同一个强调色的三级明度，不是三套颜色。
+ * 不用外发光——一排卡片各有各的光晕时会互相打架，看不出哪个才是重点。
+ */
 function cardFrameClass(selected: boolean, isFoundation: boolean): string {
   if (isFoundation) {
-    return 'border-amber-500/60 bg-amber-500/5 shadow-[0_0_0_2px_rgba(245,158,11,0.18)]'
+    return 'border-[var(--vs-beam)] bg-[var(--vs-beam-wash)]'
   }
   if (selected) {
-    return 'border-indigo-500/60 bg-indigo-500/5 shadow-[0_0_0_2px_rgba(99,102,241,0.2)]'
+    return 'border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)]'
   }
-  return 'border-zinc-800 bg-zinc-900/30 hover:border-zinc-700'
+  return 'border-[var(--vs-line)] bg-transparent hover:border-[var(--vs-line-2)]'
 }
 
 /** 勾选框（点击整张卡片头部区域切换选中） */
 function CheckboxMark({ selected }: { selected: boolean }) {
   return (
     <div
-      className={`absolute top-3 right-3 w-5 h-5 rounded-md border flex items-center justify-center text-[11px] transition ${
+      className={`absolute top-3 right-3 w-5 h-5 rounded-[var(--vs-r-sm)] border flex items-center justify-center text-[11px] transition ${
         selected
-          ? 'bg-indigo-500 border-indigo-500 text-white'
-          : 'border-zinc-700 text-transparent'
+          ? 'border-[var(--vs-beam)] bg-[var(--vs-beam)] text-[#0a0c10]'
+          : 'border-[var(--vs-line-2)] text-transparent'
       }`}
     >
       ✓
@@ -645,17 +621,14 @@ function AnnotationPanel({
   const isFoundation = a.role === 'foundation'
 
   return (
-    <div className="mt-3 pt-3 border-t border-zinc-800/60 space-y-2.5">
+    <div className="mt-3 pt-3 border-t border-[var(--vs-line)] space-y-3">
       <button
         type="button"
         onClick={onToggleFoundation}
-        className={`text-[11px] px-2.5 py-1 rounded-lg border transition ${
-          isFoundation
-            ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/25'
-            : 'bg-zinc-800/50 text-zinc-400 border-zinc-700/60 hover:border-amber-500/40 hover:text-amber-300'
-        }`}
+        data-on={isFoundation}
+        className="vs-chip"
       >
-        {isFoundation ? '⭐ 已设为创作根基（点击取消）' : '☆ 设为创作根基'}
+        {isFoundation ? '已设为创作根基（点击取消）' : '设为创作根基'}
       </button>
 
       <div className="flex flex-wrap gap-1.5">
@@ -666,11 +639,8 @@ function AnnotationPanel({
               key={tag}
               type="button"
               onClick={() => onToggleTag(tag)}
-              className={`text-[10px] px-2 py-0.5 rounded-full border transition ${
-                active
-                  ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
-                  : 'bg-zinc-800/40 text-zinc-500 border-zinc-700/50 hover:border-zinc-600 hover:text-zinc-300'
-              }`}
+              data-on={active}
+              className="vs-chip"
             >
               {tag}
             </button>
@@ -684,7 +654,7 @@ function AnnotationPanel({
         rows={2}
         maxLength={200}
         placeholder="给 AI 的使用说明（仅本次生效），如：这是我本人的产品，定位是灵感直通车"
-        className="w-full bg-zinc-900/70 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-[11px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-indigo-500/50 resize-none leading-relaxed"
+        className="vs-input vs-input-field resize-none leading-relaxed"
       />
     </div>
   )
@@ -713,7 +683,7 @@ function RecommendedCard({
 
   return (
     <div
-      className={`text-left relative rounded-xl border p-3.5 transition ${cardFrameClass(
+      className={`text-left relative rounded-[var(--vs-r)] border p-3.5 transition ${cardFrameClass(
         selected,
         isFoundation
       )}`}
@@ -724,26 +694,20 @@ function RecommendedCard({
         className="cursor-pointer outline-none">
         <CheckboxMark selected={selected} />
 
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 font-medium">
-            {typeLabel}
-          </span>
-          {isFoundation && (
-            <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-medium">
-              ⭐ 创作根基
-            </span>
-          )}
-          {rule && <span className="text-[10px] text-zinc-600">{rule.usageRule}</span>}
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          <span className="vs-verdict">{typeLabel}</span>
+          {isFoundation && <span className="vs-verdict">创作根基</span>}
+          {rule && <span className="vs-note">{rule.usageRule}</span>}
         </div>
 
-        <p className="text-[11px] text-zinc-400 leading-relaxed line-clamp-3 pr-6">
+        <p className="text-[13px] leading-relaxed text-[var(--vs-ink-3)] line-clamp-3 pr-6">
           {material.content.trim().slice(0, 200)}
           {material.content.trim().length > 200 ? '…' : ''}
         </p>
 
-        <div className="mt-2 pt-2 border-t border-zinc-800/60">
-          <p className="text-[11px] text-indigo-300/80 leading-relaxed">
-            💡 {material.relevanceReason}
+        <div className="mt-2.5 pt-2.5 border-t border-[var(--vs-line)]">
+          <p className="text-[13px] leading-relaxed text-[var(--vs-beam-text)]">
+            {material.relevanceReason}
           </p>
         </div>
       </div>
@@ -783,7 +747,7 @@ function ManualCard({
 
   return (
     <div
-      className={`text-left relative rounded-xl border p-3.5 transition ${cardFrameClass(
+      className={`text-left relative rounded-[var(--vs-r)] border p-3.5 transition ${cardFrameClass(
         selected,
         isFoundation
       )}`}
@@ -793,19 +757,13 @@ function ManualCard({
         className="cursor-pointer outline-none">
         <CheckboxMark selected={selected} />
 
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 font-medium">
-            {typeLabel}
-          </span>
-          {isFoundation && (
-            <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-medium">
-              ⭐ 创作根基
-            </span>
-          )}
-          {rule && <span className="text-[10px] text-zinc-600">{rule.usageRule}</span>}
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          <span className="vs-verdict">{typeLabel}</span>
+          {isFoundation && <span className="vs-verdict">创作根基</span>}
+          {rule && <span className="vs-note">{rule.usageRule}</span>}
         </div>
 
-        <p className="text-[11px] text-zinc-400 leading-relaxed line-clamp-3 pr-6">
+        <p className="text-[13px] leading-relaxed text-[var(--vs-ink-3)] line-clamp-3 pr-6">
           {material.content.trim().slice(0, 200)}
           {material.content.trim().length > 200 ? '…' : ''}
         </p>

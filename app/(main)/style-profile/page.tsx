@@ -3,18 +3,17 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Clock, Compass, Library, MessageSquare, Sparkles } from 'lucide-react'
+import { Sparkles } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
 import type { CreatorReport, DnaItem } from '@/lib/creative/creatorReport'
+import { buildTasteView, TASTE_SOURCE_LABEL } from '@/lib/creative/tasteView'
 import {
   AiStatus,
-  CardLabel,
   EmptyState,
   ErrorState,
   PageHeader,
   PageShell,
   SkeletonList,
-  SurfaceCard,
   TagChip,
 } from '@/components/vision'
 
@@ -58,6 +57,12 @@ interface StyleProfile {
     samples?: number
     updatedAt?: string
   } | null
+  /** 用户主动声明（Creator Memory，含「我是谁」三问） */
+  creator_declaration?: unknown
+  /** Creator Understanding Engine 兴趣画像（CIP） */
+  interest_profile?: unknown
+  /** 五维行为画像（like/dislike/定稿/选方向学习所得） */
+  style_dimensions?: unknown
 }
 
 /** /api/style-profile/summarize 的分型错误（code 与后端 ErrCode 对齐） */
@@ -436,6 +441,15 @@ export default function StyleProfilePage() {
       ...(report?.motifDna.map((d) => d.label) ?? []),
     ])
   ).slice(0, 6)
+  /** Creator Taste：四路信号合成的品味视图（纯函数，客户端即可算，无需新接口） */
+  const taste = buildTasteView({
+    declaration: profile?.creator_declaration,
+    report: profile?.creator_report,
+    editingProfile: profile?.editing_profile,
+    interestProfile: profile?.interest_profile,
+    styleDimensions: profile?.style_dimensions,
+  })
+
   /** 创作习惯：叙事结构特征 + 你在修改中表达过的偏好（like 类） */
   const habitItems = [
     ...(report?.narrativeDna.map((d) => `常用结构：${d.label}`) ?? []),
@@ -447,43 +461,36 @@ export default function StyleProfilePage() {
 
   /** 语言事实四卡（确定性统计）：有 DNA 报告时收入折叠区，主视图聚焦人格与 DNA */
   const languageFactsCards = profile ? (
-    <div className="grid grid-cols-1 gap-4">
-      {/* 语气标签 */}
-      <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-5">
-        <div className="text-xs text-zinc-500 mb-3">语气标签</div>
+    <div className="vs-archive">
+      <div>
+        <p className="vs-mark">语气标签</p>
         {profile.tone_tags.length > 0 ? (
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-1.5 mt-2.5">
             {profile.tone_tags.map((tag) => (
-              <span
-                key={tag}
-                className="px-3 py-1.5 rounded-lg text-sm bg-indigo-500/10 text-indigo-300 border border-indigo-500/20"
-              >
+              <TagChip key={tag} tone="neutral" size="sm">
                 {tag}
-              </span>
+              </TagChip>
             ))}
           </div>
         ) : (
-          <p className="text-sm text-zinc-600">暂未检测到明显的语气特征</p>
+          <p className="vs-note mt-2">暂未检测到明显的语气特征</p>
         )}
       </div>
 
-      {/* 节奏偏好 */}
-      <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-5">
-        <div className="text-xs text-zinc-500 mb-3">节奏偏好</div>
-        <p className="text-sm text-zinc-200">{profile.pace_preference}</p>
+      <div>
+        <p className="vs-mark">节奏偏好</p>
+        <p className="mt-2 text-[14px] text-[var(--vs-ink-2)]">{profile.pace_preference}</p>
       </div>
 
-      {/* 常用开头 */}
-      <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-5">
-        <div className="text-xs text-zinc-500 mb-3">常用开头方式</div>
-        <p className="text-sm text-zinc-200">{profile.common_opening}</p>
+      <div>
+        <p className="vs-mark">常用开头方式</p>
+        <p className="mt-2 text-[14px] text-[var(--vs-ink-2)]">{profile.common_opening}</p>
       </div>
 
-      {/* 平均长度 */}
-      <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-6 py-5">
-        <div className="text-xs text-zinc-500 mb-3">平均内容长度</div>
-        <p className="text-sm text-zinc-200">
-          {profile.avg_length} <span className="text-zinc-500 text-xs">字/篇</span>
+      <div>
+        <p className="vs-mark">平均内容长度</p>
+        <p className="mt-2 text-[14px] text-[var(--vs-ink-2)]">
+          {profile.avg_length} <span className="vs-note">字/篇</span>
         </p>
       </div>
     </div>
@@ -491,10 +498,7 @@ export default function StyleProfilePage() {
 
   return (
     <PageShell>
-      <Link
-        href="/dashboard"
-        className="mb-5 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
-      >
+      <Link href="/dashboard" className="vs-link mb-5">
         ← 返回创作机会
       </Link>
 
@@ -544,130 +548,122 @@ export default function StyleProfilePage() {
         {!loading && profile && !editing && (
           <>
             {/* 来源标识 */}
-            <div className="flex items-center gap-2 mb-6">
-              <span className={`text-xs px-3 py-1 rounded-full ${
-                profile.source === 'manual'
-                  ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                  : 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'
-              }`}>
+            <div className="flex flex-wrap items-center gap-3 mb-6">
+              <TagChip tone="neutral" size="sm">
                 {profile.source === 'manual' ? '手动编辑' : '自动统计'}
-              </span>
+              </TagChip>
               {profile.updated_at && (
-                <span className="text-xs text-zinc-600">
+                <span className="vs-note">
                   更新于 {new Date(profile.updated_at).toLocaleDateString('zh-CN')}
                 </span>
               )}
             </div>
 
             {/* ── AI 理解报告四段式：表达特点 / 关注领域 / 知识优势 / 创作习惯 ── */}
-            <div className="mb-8 grid gap-3 sm:grid-cols-2">
-              <SurfaceCard className="flex flex-col gap-2.5">
-                <CardLabel icon={<MessageSquare size={13} />}>
-                  我的表达特点
-                </CardLabel>
+            <div className="vs-archive mb-8">
+              <div>
+                <p className="vs-mark">我的表达特点</p>
                 {expressionTags.length > 0 ? (
                   <>
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className="flex flex-wrap gap-1.5 mt-2">
                       {expressionTags.map((t) => (
                         <TagChip key={t} tone="brand" size="sm">
                           {t}
                         </TagChip>
                       ))}
                     </div>
-                    <p className="text-[12px] leading-relaxed text-zinc-500">
-                      {expressionSummary}
-                    </p>
+                    <p className="vs-note mt-2.5">{expressionSummary}</p>
                   </>
                 ) : (
-                  <p className="text-[13px] leading-relaxed text-zinc-500">
+                  <p className="vs-note mt-2 leading-relaxed">
                     样本还不够，AI 暂时没有形成稳定的表达判断。
                   </p>
                 )}
-              </SurfaceCard>
+              </div>
 
-              <SurfaceCard className="flex flex-col gap-2.5">
-                <CardLabel icon={<Compass size={13} />}>我的关注领域</CardLabel>
+              <div>
+                <p className="vs-mark">我的关注领域</p>
                 {domainTags.length > 0 ? (
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="flex flex-wrap gap-1.5 mt-2">
                     {domainTags.map((t) => (
-                      <TagChip key={t} size="sm">
+                      <TagChip key={t} tone="neutral" size="sm">
                         {t}
                       </TagChip>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-[13px] leading-relaxed text-zinc-500">
+                  <p className="vs-note mt-2 leading-relaxed">
                     还没有稳定的主题倾向，继续创作，AI 会自己看出来。
                   </p>
                 )}
-              </SurfaceCard>
+              </div>
 
-              <SurfaceCard className="flex flex-col gap-2.5">
-                <CardLabel icon={<Library size={13} />}>我的知识优势</CardLabel>
+              <div>
+                <p className="vs-mark">我的知识优势</p>
                 {knowledge && knowledge.count > 0 ? (
                   <>
-                    <p className="text-[15px] font-medium text-zinc-100">
+                    <p className="mt-2 text-[15px] font-medium text-[var(--vs-ink)]">
                       {knowledge.count} 条已确认知识
                     </p>
                     {knowledge.domains.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
+                      <div className="flex flex-wrap gap-1.5 mt-2">
                         {knowledge.domains.map((d) => (
-                          <TagChip key={d} tone="accent" size="sm">
+                          <TagChip key={d} tone="neutral" size="sm">
                             {d}
                           </TagChip>
                         ))}
                       </div>
                     )}
-                    <p className="text-[12px] leading-relaxed text-zinc-500">
+                    <p className="vs-note mt-2.5 leading-relaxed">
                       这些是你亲自确认过的判断，AI 会在创作时优先参考。
                     </p>
                   </>
                 ) : (
-                  <p className="text-[13px] leading-relaxed text-zinc-500">
+                  <p className="vs-note mt-2 leading-relaxed">
                     去知识库确认几条知识，AI 才知道你真正擅长什么。
                   </p>
                 )}
-              </SurfaceCard>
+              </div>
 
-              <SurfaceCard className="flex flex-col gap-2.5">
-                <CardLabel icon={<Clock size={13} />}>我的创作习惯</CardLabel>
+              <div>
+                <p className="vs-mark">我的创作习惯</p>
                 {habitItems.length > 0 ? (
-                  <ul className="space-y-1.5">
+                  <ul className="mt-2 space-y-1.5">
                     {habitItems.map((h) => (
                       <li
                         key={h}
-                        className="flex gap-2 text-[13px] leading-relaxed text-zinc-300"
+                        className="flex gap-2 text-[13px] leading-relaxed text-[var(--vs-ink-3)]"
                       >
-                        <span className="shrink-0 text-indigo-300/70">·</span>
+                        <span className="shrink-0 text-[var(--vs-ink-5)]">·</span>
                         <span>{h}</span>
                       </li>
                     ))}
                   </ul>
                 ) : (
-                  <p className="text-[13px] leading-relaxed text-zinc-500">
+                  <p className="vs-note mt-2 leading-relaxed">
                     AI 还在观察你的结构与修改习惯。
                   </p>
                 )}
-              </SurfaceCard>
+              </div>
             </div>
 
             {/* ── 创作者人格 Creator Model ── */}
-            <div className="mb-4 rounded-2xl border border-indigo-500/25 bg-gradient-to-b from-indigo-950/30 to-zinc-900/50 px-6 py-6">
-              <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="border-t border-[var(--vs-line)] pt-6">
+              <div className="flex items-start justify-between gap-6 flex-wrap">
                 <div>
-                  <div className="text-xs text-indigo-300/80 mb-1">
+                  <p className="vs-mark">
                     你的创作者人格{profile.creator_personality ? '（你自己命名）' : ''}
-                  </div>
-                  <h2 className="text-xl font-bold text-zinc-100">
+                  </p>
+                  <h2 className="vs-h2 mt-2">
                     {displayPersonality || (
-                      <span className="text-zinc-500 font-normal text-base">
+                      <span className="font-normal text-[var(--vs-ink-4)]">
                         还没有人格定位——让 AI 认识你，或自己命名
                       </span>
                     )}
                     {displayPersonality &&
                       report?.personality.sub &&
                       !profile.creator_personality && (
-                        <span className="ml-2 text-sm font-normal text-zinc-400">
+                        <span className="ml-2 text-sm font-normal text-[var(--vs-ink-4)]">
                           × {report.personality.sub}
                         </span>
                       )}
@@ -676,16 +672,20 @@ export default function StyleProfilePage() {
                 <button
                   onClick={handleSummarize}
                   disabled={summarizing}
-                  className="shrink-0 inline-flex items-center gap-2 text-xs px-4 py-2 rounded-lg bg-indigo-600/90 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition"
+                  className="vs-btn vs-btn-primary vs-btn-sm shrink-0"
                 >
                   {summarizing && (
-                    <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                    <span className="vs-ai-dots" aria-hidden="true">
+                      <i className="vs-ai-dot" />
+                      <i className="vs-ai-dot" />
+                      <i className="vs-ai-dot" />
+                    </span>
                   )}
                   {summarizing
-                    ? 'AI 正在重新理解你…'
+                    ? '重新理解中'
                     : profile.ai_creator_summary
-                      ? '🔄 让 AI 重新理解我'
-                      : '✨ 让 AI 认识我'}
+                      ? '让 AI 重新理解我'
+                      : '让 AI 认识我'}
                 </button>
               </div>
 
@@ -694,21 +694,17 @@ export default function StyleProfilePage() {
                 <>
                   <div className="mt-4 flex items-center gap-2.5 flex-wrap">
                     <ConfidenceBadge value={report.confidence} />
-                    <span className="text-[11px] text-zinc-600">
+                    <span className="vs-note">
                       第 {report.version} 版理解 · 随创作持续成长
                     </span>
                   </div>
-                  <p className="mt-3 text-sm text-zinc-300 leading-loose">
-                    {report.personality.description}
-                  </p>
+                  <p className="vs-body mt-3">{report.personality.description}</p>
                   <DnaSection report={report} />
                 </>
               ) : profile.ai_creator_summary ? (
-                <p className="mt-4 text-sm text-zinc-300 leading-loose">
-                  {profile.ai_creator_summary}
-                </p>
+                <p className="vs-body mt-4">{profile.ai_creator_summary}</p>
               ) : (
-                <p className="mt-4 text-xs text-zinc-500 leading-relaxed">
+                <p className="vs-note mt-4 leading-relaxed">
                   AI 会综合你的风格统计、创作反馈、近期作品和素材库，总结你持续关注的母题与语言特征。
                   总结仅作生成参考，你可以随时编辑或刷新。
                 </p>
@@ -716,19 +712,16 @@ export default function StyleProfilePage() {
 
               {/* AI 理解失败的分型引导：样本不足去创作 / 限流等倒计时 / 其余可重试 */}
               {summarizeError && (
-                <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5">
-                  <p className="text-xs text-amber-200/90 leading-relaxed">
+                <div className="vs-warn mt-3">
+                  <p className="vs-note vs-note-warn leading-relaxed">
                     {summarizeError.message}
                     {summarizeError.code === 'rate_limited' && summarizeError.retryAfter
                       ? `（约 ${summarizeError.retryAfter} 秒后可再试）`
                       : ''}
                   </p>
-                  <div className="mt-2 flex items-center gap-3">
+                  <div className="mt-2 flex items-center gap-4">
                     {summarizeError.code === 'insufficient_samples' && (
-                      <Link
-                        href="/generate"
-                        className="text-xs text-amber-300 hover:text-amber-200 underline underline-offset-2"
-                      >
+                      <Link href="/generate" className="vs-link text-[13px]">
                         去创作一篇 →
                       </Link>
                     )}
@@ -737,7 +730,7 @@ export default function StyleProfilePage() {
                         <button
                           onClick={handleSummarize}
                           disabled={summarizing}
-                          className="text-xs text-amber-300 hover:text-amber-200 underline underline-offset-2 disabled:opacity-50"
+                          className="vs-link text-[13px] disabled:opacity-50"
                         >
                           重试
                         </button>
@@ -748,21 +741,19 @@ export default function StyleProfilePage() {
 
               {/* AI 建议人格名（不自动覆盖，一键采纳） */}
               {suggestedPersonality && suggestedPersonality !== profile.creator_personality && (
-                <div className="mt-3 flex items-center gap-2 flex-wrap text-xs bg-indigo-500/10 border border-indigo-500/25 rounded-lg px-3 py-2">
-                  <span className="text-zinc-400">
-                    AI 建议人格名：<span className="text-indigo-300">{suggestedPersonality}</span>
+                <div className="mt-4 flex items-center gap-4 flex-wrap border-t border-[var(--vs-line)] pt-3">
+                  <span className="vs-note">
+                    AI 建议人格名：
+                    <span className="text-[var(--vs-ink)]">{suggestedPersonality}</span>
                   </span>
                   <button
                     onClick={() => handleAdoptPersonality(suggestedPersonality)}
                     disabled={saving}
-                    className="px-2.5 py-1 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white transition"
+                    className="vs-link text-[13px] disabled:opacity-50"
                   >
                     采用
                   </button>
-                  <button
-                    onClick={() => setSuggestedPersonality(null)}
-                    className="px-2 py-1 text-zinc-500 hover:text-zinc-300 transition"
-                  >
+                  <button onClick={() => setSuggestedPersonality(null)} className="vs-link text-[13px]">
                     忽略
                   </button>
                 </div>
@@ -770,14 +761,14 @@ export default function StyleProfilePage() {
 
               {/* 依据透明化：报告口径来自报告自身；旧版总结读 model_meta */}
               {report ? (
-                <p className="mt-3 text-[11px] text-zinc-600">
+                <p className="vs-note mt-3">
                   基于近 {report.sources.works} 篇作品、{report.sources.materials} 条素材、
                   {report.sources.signals} 条真实创作行为分析 · 更新于{' '}
                   {new Date(report.updatedAt).toLocaleDateString('zh-CN')}
                 </p>
               ) : (
                 profile.model_meta?.summaryUpdatedAt && (
-                  <p className="mt-3 text-[11px] text-zinc-600">
+                  <p className="vs-note mt-3">
                     基于近 {profile.model_meta.workSampleCount ?? 0} 篇作品、
                     {profile.model_meta.materialSampleCount ?? 0} 条素材分析 · 更新于{' '}
                     {new Date(profile.model_meta.summaryUpdatedAt).toLocaleDateString('zh-CN')}
@@ -786,37 +777,37 @@ export default function StyleProfilePage() {
               )}
 
               {/* 声明类偏好：题材 / 喜欢 / 排斥 */}
-              <div className="mt-5 grid sm:grid-cols-3 gap-3">
-                <CreatorTagGroup label="🎯 偏好题材" tags={profile.topic_preferences} tone="indigo" />
-                <CreatorTagGroup label="💚 喜欢元素" tags={profile.favorite_elements} tone="emerald" />
-                <CreatorTagGroup label="🚫 排斥元素" tags={profile.avoid_elements} tone="red" />
+              <div className="mt-6 grid sm:grid-cols-3 gap-3">
+                <CreatorTagGroup label="偏好题材" tags={profile.topic_preferences} />
+                <CreatorTagGroup label="喜欢元素" tags={profile.favorite_elements} />
+                <CreatorTagGroup label="排斥元素" tags={profile.avoid_elements} tone="avoid" />
               </div>
 
               {/* AI 协作修改（P5）：修改偏好记忆（从你的修改行为学习，可单条移除） */}
               {(profile.editing_profile?.preferences?.length ?? 0) > 0 && (
-                <div className="mt-5 rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-4">
-                  <div className="flex items-center justify-between gap-3 mb-3">
-                    <div>
-                      <p className="text-sm font-medium text-zinc-200">✍️ 修改偏好记忆</p>
-                      <p className="text-xs text-zinc-500 mt-0.5">
-                        来自你的 {profile.editing_profile?.samples ?? 0} 次真实修改行为，AI 生成时会自动参考
-                      </p>
-                    </div>
-                  </div>
-                  <div className="space-y-2">
+                <div className="mt-6 border-t border-[var(--vs-line)] pt-4">
+                  <p className="vs-mark">修改偏好记忆</p>
+                  <p className="vs-note mt-1.5">
+                    来自你的 {profile.editing_profile?.samples ?? 0} 次真实修改行为，AI
+                    生成时会自动参考
+                  </p>
+                  <div className="mt-2">
                     {profile.editing_profile!.preferences!.map((p, i) => (
-                      <div
-                        key={`${p.type}-${i}`}
-                        className="flex items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900/60 px-3.5 py-2.5"
-                      >
+                      <div key={`${p.type}-${i}`} className="vs-record-row">
                         <div className="min-w-0">
-                          <p className="text-xs text-zinc-200 truncate">
-                            <span className={p.type === 'like' ? 'text-emerald-400 mr-1.5' : 'text-red-400 mr-1.5'}>
+                          <p className="text-[13px] leading-relaxed text-[var(--vs-ink-2)]">
+                            <span
+                              className={`mr-2 ${
+                                p.type === 'like'
+                                  ? 'text-[var(--vs-ink-4)]'
+                                  : 'text-[#fca5a5]'
+                              }`}
+                            >
                               {p.type === 'like' ? '喜欢' : '避免'}
                             </span>
                             {p.statement}
                           </p>
-                          <p className="text-[11px] text-zinc-600 mt-0.5">
+                          <p className="vs-note mt-1">
                             {Math.round(p.confidence * 100)}% 置信 · {p.sourceCount} 次确认
                             {p.examples?.[0] ? ` · 例如："${p.examples[0].slice(0, 30)}"` : ''}
                           </p>
@@ -825,10 +816,49 @@ export default function StyleProfilePage() {
                           onClick={() => handleRemovePreference(p.type, p.statement)}
                           disabled={removingPreference}
                           title="AI 推断不准确？移除后不再参考这条偏好"
-                          className="shrink-0 text-xs text-zinc-600 hover:text-red-400 transition disabled:opacity-40"
+                          className="vs-link text-[13px] shrink-0 disabled:opacity-40"
                         >
                           移除
                         </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Creator Taste：四路信号合成的「你喜欢什么 / 不要什么」。
+                  与上方「修改偏好记忆」的区别：那一块只有修改行为一路，
+                  这一块是声明 + DNA 报告 + 修改行为 + 兴趣统计的合并视图，
+                  每条都标注来源与置信度，让用户看得见、也知道凭什么这么说。 */}
+              {taste.hasAny && (
+                <div className="mt-6 border-t border-[var(--vs-line)] pt-4">
+                  <p className="vs-mark">品味画像</p>
+                  <p className="vs-note mt-1.5">
+                    {taste.depth
+                      ? `你满意的成品整体${taste.depth.label}（基于 ${taste.depth.samples} 次行为样本）· `
+                      : ''}
+                    合并了你主动声明、AI 归纳、修改行为与兴趣统计四路信号
+                  </p>
+                  <div className="mt-2">
+                    {[...taste.likes, ...taste.avoids].map((s) => (
+                      <div key={`${s.polarity}-${s.statement}`} className="vs-record-row">
+                        <p className="text-[13px] leading-relaxed text-[var(--vs-ink-2)]">
+                          <span
+                            className={`mr-2 ${
+                              s.polarity === 'like'
+                                ? 'text-[var(--vs-ink-4)]'
+                                : 'text-[#fca5a5]'
+                            }`}
+                          >
+                            {s.polarity === 'like' ? '喜欢' : '避免'}
+                          </span>
+                          {s.statement}
+                        </p>
+                        <p className="vs-note mt-1">
+                          {Math.round(s.confidence * 100)}% 置信 ·{' '}
+                          {s.sources.map((src) => TASTE_SOURCE_LABEL[src]).join(' + ')} ·{' '}
+                          {s.evidence}
+                        </p>
                       </div>
                     ))}
                   </div>
@@ -839,8 +869,8 @@ export default function StyleProfilePage() {
             {/* 语言事实：有 DNA 报告时收入折叠区，主视图聚焦人格与 DNA */}
             {report ? (
               <details className="group mt-6">
-                <summary className="cursor-pointer select-none text-xs text-zinc-500 hover:text-zinc-300 transition list-none">
-                  <span className="inline-block group-open:rotate-90 transition-transform mr-1">
+                <summary className="vs-mark cursor-pointer select-none list-none transition-colors hover:text-[var(--vs-ink-3)]">
+                  <span className="inline-block group-open:rotate-90 transition-transform mr-1.5">
                     ▸
                   </span>
                   语言事实（关键词统计 · 节奏 · 开头 · 篇幅）
@@ -853,26 +883,27 @@ export default function StyleProfilePage() {
 
             {/* 操作按钮 */}
             <div className="flex flex-wrap gap-3 mt-8">
-              <button
-                onClick={startEdit}
-                className="px-6 py-3 rounded-xl text-sm font-medium bg-indigo-600 hover:bg-indigo-500 transition"
-              >
+              <button onClick={startEdit} className="vs-btn vs-btn-ghost">
                 编辑风格卡
               </button>
               <button
                 onClick={handleRecompute}
                 disabled={recomputing}
-                className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-medium bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed text-zinc-300 transition"
+                className="vs-btn vs-btn-ghost"
                 title="基于素材库与全部作品重新统计语气/节奏/开头/篇幅（不调用 AI，不影响你的人格声明）"
               >
                 {recomputing && (
-                  <span className="w-3.5 h-3.5 border-2 border-zinc-500 border-t-zinc-200 rounded-full animate-spin" />
+                  <span className="vs-ai-dots" aria-hidden="true">
+                    <i className="vs-ai-dot" />
+                    <i className="vs-ai-dot" />
+                    <i className="vs-ai-dot" />
+                  </span>
                 )}
-                {recomputing ? '统计中…' : '重新统计语言特征'}
+                {recomputing ? '统计中' : '重新统计语言特征'}
               </button>
             </div>
 
-            <p className="text-xs text-zinc-600 mt-6">
+            <p className="vs-note mt-6">
               你的创作者人格、风格统计与素材偏好会在每次 AI 生成时自动参考；创作越多，AI 对你的理解越准
             </p>
           </>
@@ -884,13 +915,9 @@ export default function StyleProfilePage() {
             <div className="space-y-8 pt-2">
               {/* 语气标签编辑 */}
               <div>
-                <label className="block text-sm font-medium text-zinc-200 mb-4">
-                  语气标签
-                </label>
-                <p className="text-xs text-zinc-500 mb-3">
-                  从下方标签中选择，或取消已选标签
-                </p>
-                <div className="flex flex-wrap gap-2">
+                <p className="vs-mark">语气标签</p>
+                <p className="vs-note mt-1.5">从下方标签中选择，或取消已选标签</p>
+                <div className="flex flex-wrap gap-2 mt-3">
                   {ALL_TONE_TAGS.map((tag) => {
                     const selected = editToneTags.includes(tag)
                     return (
@@ -898,13 +925,11 @@ export default function StyleProfilePage() {
                         key={tag}
                         type="button"
                         onClick={() => toggleTag(tag)}
-                        className={`px-4 py-2 rounded-lg text-sm transition border ${
-                          selected
-                            ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/40'
-                            : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300'
-                        }`}
+                        data-on={selected}
+                        className="vs-chip"
                       >
-                        {selected ? '✓ ' : ''}{tag}
+                        {selected ? '✓ ' : ''}
+                        {tag}
                       </button>
                     )
                   })}
@@ -913,10 +938,8 @@ export default function StyleProfilePage() {
 
               {/* 节奏偏好编辑 */}
               <div>
-                <label className="block text-sm font-medium text-zinc-200 mb-4">
-                  节奏偏好
-                </label>
-                <div className="flex flex-wrap gap-2">
+                <p className="vs-mark">节奏偏好</p>
+                <div className="flex flex-wrap gap-2 mt-3">
                   {PACE_OPTIONS.map((opt) => {
                     const selected = editPace === opt
                     return (
@@ -924,13 +947,11 @@ export default function StyleProfilePage() {
                         key={opt}
                         type="button"
                         onClick={() => setEditPace(opt)}
-                        className={`px-4 py-2 rounded-lg text-sm transition border ${
-                          selected
-                            ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/40'
-                            : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300'
-                        }`}
+                        data-on={selected}
+                        className="vs-chip"
                       >
-                        {selected ? '✓ ' : ''}{opt}
+                        {selected ? '✓ ' : ''}
+                        {opt}
                       </button>
                     )
                   })}
@@ -939,10 +960,8 @@ export default function StyleProfilePage() {
 
               {/* 常用开头编辑 */}
               <div>
-                <label className="block text-sm font-medium text-zinc-200 mb-4">
-                  常用开头方式
-                </label>
-                <div className="flex flex-wrap gap-2">
+                <p className="vs-mark">常用开头方式</p>
+                <div className="flex flex-wrap gap-2 mt-3">
                   {OPENING_OPTIONS.map((opt) => {
                     const selected = editOpening === opt
                     return (
@@ -950,13 +969,11 @@ export default function StyleProfilePage() {
                         key={opt}
                         type="button"
                         onClick={() => setEditOpening(opt)}
-                        className={`px-4 py-2 rounded-lg text-sm transition border ${
-                          selected
-                            ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/40'
-                            : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300'
-                        }`}
+                        data-on={selected}
+                        className="vs-chip"
                       >
-                        {selected ? '✓ ' : ''}{opt}
+                        {selected ? '✓ ' : ''}
+                        {opt}
                       </button>
                     )
                   })}
@@ -965,55 +982,49 @@ export default function StyleProfilePage() {
 
               {/* 平均长度（只读展示） */}
               <div>
-                <label className="block text-sm font-medium text-zinc-200 mb-3">
-                  平均内容长度
-                </label>
-                <p className="text-sm text-zinc-400">
+                <p className="vs-mark">平均内容长度</p>
+                <p className="mt-2 text-[14px] text-[var(--vs-ink-2)]">
                   {profile.avg_length} 字/篇
-                  <span className="text-zinc-600 text-xs ml-2">（自动统计，不可手动修改）</span>
+                  <span className="vs-note ml-2">（自动统计，不可手动修改）</span>
                 </p>
               </div>
 
               {/* ── Creator Model：创作者人格 ── */}
-              <div className="pt-2 border-t border-zinc-800">
-                <h3 className="text-sm font-semibold text-indigo-200/90 mb-1">
-                  创作者人格
-                </h3>
-                <p className="text-xs text-zinc-500 mb-5">
+              <div className="pt-2 border-t border-[var(--vs-line)]">
+                <h3 className="vs-h3">创作者人格</h3>
+                <p className="vs-note mt-1.5">
                   这些是你对自己的声明，AI 生成时会优先遵循；AI 总结不会覆盖它们
                 </p>
 
                 {/* 人格名 */}
-                <div className="mb-6">
-                  <label className="block text-sm font-medium text-zinc-200 mb-2">
-                    我的创作者人格
-                  </label>
+                <div className="mt-6">
+                  <label className="vs-mark block mb-2">我的创作者人格</label>
                   <input
                     type="text"
                     value={editPersonality}
                     onChange={(e) => setEditPersonality(e.target.value.slice(0, 30))}
                     placeholder="例如：冷峻的都市观察者 / 用故事讲道理的人"
-                    className="w-full rounded-lg bg-zinc-900 border border-zinc-700 focus:border-indigo-500/60 px-3 py-2.5 text-sm text-zinc-200 placeholder:text-zinc-600 outline-none"
+                    className="vs-input vs-input-field"
                   />
                 </div>
 
-                <div className="space-y-6">
+                <div className="space-y-6 mt-6">
                   <TagEditor
-                    label="🎯 偏好题材"
+                    label="偏好题材"
                     hint="AI 会优先围绕这些母题给你创作方向"
                     tags={editTopics}
                     onChange={setEditTopics}
                     placeholder="输入题材后回车，如：人物成长、创业故事"
                   />
                   <TagEditor
-                    label="💚 喜欢的元素"
+                    label="喜欢的元素"
                     hint="生成时会被有意识地加入"
                     tags={editFav}
                     onChange={setEditFav}
                     placeholder="如：真实细节、反转结尾、金句"
                   />
                   <TagEditor
-                    label="🚫 排斥的元素"
+                    label="排斥的元素"
                     hint="生成时作为硬禁忌避开"
                     tags={editAvoid}
                     onChange={setEditAvoid}
@@ -1024,18 +1035,15 @@ export default function StyleProfilePage() {
             </div>
 
             {/* 保存/取消 */}
-            <div className="flex gap-3 mt-10">
+            <div className="flex flex-wrap gap-3 mt-8">
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="px-6 py-3 rounded-xl text-sm font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 transition"
+                className="vs-btn vs-btn-primary disabled:opacity-40"
               >
-                {saving ? '保存中…' : '保存修改'}
+                {saving ? '保存中' : '保存修改'}
               </button>
-              <button
-                onClick={() => setEditing(false)}
-                className="px-6 py-3 rounded-xl text-sm font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition"
-              >
+              <button onClick={() => setEditing(false)} className="vs-btn vs-btn-ghost">
                 取消
               </button>
             </div>
@@ -1051,35 +1059,27 @@ export default function StyleProfilePage() {
 function CreatorTagGroup({
   label,
   tags,
-  tone,
+  tone = 'neutral',
 }: {
   label: string
   tags?: string[] | null
-  tone: 'indigo' | 'emerald' | 'red'
+  /** avoid = 硬禁忌，用语义红；其余一律中性，靠标题区分 */
+  tone?: 'neutral' | 'avoid'
 }) {
-  const toneCls =
-    tone === 'emerald'
-      ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
-      : tone === 'red'
-        ? 'bg-red-500/10 text-red-300 border-red-500/20'
-        : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20'
   const list = tags ?? []
   return (
-    <div className="rounded-xl bg-zinc-950/30 border border-zinc-800/70 px-3.5 py-3">
-      <div className="text-[11px] text-zinc-500 mb-2">{label}</div>
+    <div className="border-t border-[var(--vs-line)] pt-3">
+      <p className="vs-mark">{label}</p>
       {list.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5 mt-2.5">
           {list.map((t) => (
-            <span
-              key={t}
-              className={`text-[11px] px-2 py-0.5 rounded-md border ${toneCls}`}
-            >
+            <TagChip key={t} tone={tone === 'avoid' ? 'avoid' : 'neutral'} size="sm">
               {t}
-            </span>
+            </TagChip>
           ))}
         </div>
       ) : (
-        <p className="text-[11px] text-zinc-600">未设置</p>
+        <p className="vs-note mt-2">未设置</p>
       )}
     </div>
   )
@@ -1113,19 +1113,16 @@ function TagEditor({
 
   return (
     <div>
-      <label className="block text-sm font-medium text-zinc-200 mb-1">{label}</label>
-      <p className="text-xs text-zinc-600 mb-2">{hint}</p>
-      <div className="rounded-lg bg-zinc-900 border border-zinc-700 focus-within:border-indigo-500/60 p-2 flex flex-wrap gap-1.5">
+      <label className="vs-mark block mb-1.5">{label}</label>
+      <p className="vs-note mb-3">{hint}</p>
+      <div className="vs-tagedit">
         {tags.map((t) => (
-          <span
-            key={t}
-            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-zinc-800 text-zinc-300 border border-zinc-700"
-          >
+          <span key={t} className="vs-chip-xs">
             {t}
             <button
               type="button"
               onClick={() => onChange(tags.filter((x) => x !== t))}
-              className="text-zinc-500 hover:text-red-400 leading-none"
+              className="text-[var(--vs-ink-5)] leading-none transition-colors hover:text-[var(--vs-ink)]"
               aria-label={`移除 ${t}`}
             >
               ×
@@ -1161,7 +1158,6 @@ function TagEditor({
           onBlur={commit}
           placeholder={tags.length >= 15 ? '最多 15 个' : placeholder}
           disabled={tags.length >= 15}
-          className="flex-1 min-w-[140px] bg-transparent outline-none text-sm text-zinc-200 placeholder:text-zinc-600 px-1 py-1"
         />
       </div>
     </div>
@@ -1174,15 +1170,17 @@ function TagEditor({
 
 /** 置信度胶囊：值由样本量代码计算（<0.4 形成中 / <0.65 初步成型 / 否则相对稳定） */
 function ConfidenceBadge({ value }: { value: number }) {
+  // 三档只差文字层级，不引入第二套颜色：低置信不是"警告"，只是样本还不够
   const level =
     value < 0.4
-      ? { text: '理解形成中', cls: 'bg-zinc-500/10 text-zinc-400 border-zinc-500/25' }
+      ? { text: '理解形成中', key: 'low' }
       : value < 0.65
-        ? { text: '初步成型', cls: 'bg-amber-500/10 text-amber-300 border-amber-500/25' }
-        : { text: '相对稳定', cls: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25' }
+        ? { text: '初步成型', key: 'mid' }
+        : { text: '相对稳定', key: 'high' }
   return (
     <span
-      className={`text-[11px] px-2.5 py-1 rounded-full border ${level.cls}`}
+      className="vs-verdict"
+      data-level={level.key}
       title="置信度由样本数量与真实创作行为数决定，不是 AI 的主观评分"
     >
       ◈ {level.text} · {Math.round(value * 100)}%
@@ -1196,22 +1194,16 @@ function DnaBar({ item, total }: { item: DnaItem; total: number }) {
   return (
     <div>
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-xs text-zinc-200">{item.label}</span>
-        <span className="text-[11px] text-zinc-500 shrink-0">
+        <span className="text-[13px] text-[var(--vs-ink-2)]">{item.label}</span>
+        <span className="vs-note shrink-0">
           {pct}% · 关联 {item.count}/{total} 篇
         </span>
       </div>
-      <div className="mt-1 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
-        <div
-          className="h-full rounded-full bg-gradient-to-r from-indigo-500/70 to-indigo-400"
-          style={{ width: `${Math.max(pct, 6)}%` }}
-        />
+      <div className="vs-dna-track mt-2">
+        <span className="vs-dna-fill" style={{ width: `${Math.max(pct, 6)}%` }} />
       </div>
       {item.evidence.length > 0 && (
-        <p
-          className="mt-1 text-[10px] text-zinc-600 truncate"
-          title={`依据：${item.evidence.join('、')}`}
-        >
+        <p className="vs-note mt-1.5 truncate" title={`依据：${item.evidence.join('、')}`}>
           依据：{item.evidence.slice(0, 2).join('、')}
           {item.evidence.length > 2 ? ` 等 ${item.evidence.length} 篇` : ''}
         </p>
@@ -1233,8 +1225,8 @@ function DnaCard({
   empty: string
 }) {
   return (
-    <div className="rounded-xl bg-zinc-950/30 border border-zinc-800/70 px-4 py-3.5">
-      <div className="text-[11px] text-zinc-500 mb-2.5">{title}</div>
+    <div className="border-t border-[var(--vs-line)] pt-3">
+      <p className="vs-mark">{title}</p>
       {items.length > 0 ? (
         <div className="space-y-3">
           {items.map((d) => (
@@ -1242,7 +1234,7 @@ function DnaCard({
           ))}
         </div>
       ) : (
-        <p className="text-[11px] text-zinc-600 leading-relaxed">{empty}</p>
+        <p className="vs-note leading-relaxed">{empty}</p>
       )}
     </div>
   )
@@ -1252,48 +1244,43 @@ function DnaCard({
 function DnaSection({ report }: { report: CreatorReport }) {
   const lang = report.languageDna
   return (
-    <div className="mt-5 space-y-3">
-      <div className="grid sm:grid-cols-2 gap-3">
+    <div className="mt-5">
+      <div className="grid sm:grid-cols-2 gap-x-8 gap-y-5">
         <DnaCard
-          title="🎯 主题 DNA（你在讲什么）"
+          title="主题 DNA（你在讲什么）"
           items={report.motifDna}
           total={report.sampleCount}
           empty="样本中还没有归纳出稳定母题——多创作几篇不同作品后再重新理解"
         />
         <DnaCard
-          title="🎬 叙事 DNA（你怎么讲）"
+          title="叙事 DNA（你怎么讲）"
           items={report.narrativeDna}
           total={report.sampleCount}
           empty="叙事特征仍在形成中——继续创作，AI 会观察你的开头与展开方式"
         />
       </div>
-      <div className="rounded-xl bg-zinc-950/30 border border-zinc-800/70 px-4 py-3.5">
-        <div className="text-[11px] text-zinc-500 mb-2">🗣 语言 DNA</div>
-        <div className="flex flex-wrap gap-1.5">
+      <div className="border-t border-[var(--vs-line)] pt-3 mt-5">
+        <p className="vs-mark">语言 DNA</p>
+        <div className="flex flex-wrap gap-1.5 mt-2.5">
           {lang.aiLabels.map((w) => (
-            <span
-              key={w}
-              className="text-[11px] px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-300 border border-indigo-500/20"
-            >
+            <TagChip key={w} tone="brand" size="sm">
               {w}
-            </span>
+            </TagChip>
           ))}
           {lang.measured.map((m) => (
-            <span
-              key={m.label}
-              title={`确定性语气词命中 ${m.count} 篇`}
-              className="text-[11px] px-2 py-0.5 rounded-md bg-zinc-800/80 text-zinc-400 border border-zinc-700/70"
-            >
-              {m.label}×{m.count}
-            </span>
+            <TagChip key={m.label} tone="neutral" size="sm">
+              <span title={`确定性语气词命中 ${m.count} 篇`}>
+                {m.label}×{m.count}
+              </span>
+            </TagChip>
           ))}
           {lang.aiLabels.length === 0 && lang.measured.length === 0 && (
-            <span className="text-[11px] text-zinc-600">暂无稳定语言特征</span>
+            <span className="vs-note">暂无稳定语言特征</span>
           )}
         </div>
-        <p className="mt-2 text-[10px] text-zinc-600">
+        <p className="vs-note mt-2.5">
           {lang.pace !== '未知' ? `${lang.pace}` : '节奏未知'} · 平均 {lang.avgLength} 字/篇
-          <span className="ml-2">（灰签为关键词确定性命中，彩色为 AI 归纳）</span>
+          <span className="ml-2">（浅色签为关键词确定性命中，冷蓝签为 AI 归纳）</span>
         </p>
       </div>
     </div>

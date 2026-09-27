@@ -25,9 +25,9 @@ interface PerformanceData {
 }
 
 const GRADE_META: Record<Grade, { label: string; emoji: string; activeClass: string }> = {
-  good: { label: '表现不错', emoji: '😀', activeClass: 'bg-emerald-600 border-emerald-500 text-white' },
-  okay: { label: '表现一般', emoji: '😐', activeClass: 'bg-amber-600 border-amber-500 text-white' },
-  flop: { label: '扑了', emoji: '😔', activeClass: 'bg-zinc-600 border-zinc-400 text-white' },
+  good: { label: '表现不错', emoji: '😀', activeClass: 'bg-[var(--vs-beam)] border-[var(--vs-beam-line)] text-[var(--vs-beam-text)]' },
+  okay: { label: '表现一般', emoji: '😐', activeClass: 'bg-[var(--vs-beam)] border-[var(--vs-beam-line)] text-[var(--vs-beam-text)]' },
+  flop: { label: '扑了', emoji: '😔', activeClass: 'bg-[var(--vs-beam)] border-[var(--vs-beam-line)] text-[var(--vs-beam-text)]' },
 }
 
 const PLATFORM_OPTIONS: Array<{ value: Platform; label: string }> = [
@@ -40,9 +40,9 @@ const PLATFORM_OPTIONS: Array<{ value: Platform; label: string }> = [
 ]
 
 const GRADE_BADGE_CLASS: Record<Grade, string> = {
-  good: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30',
-  okay: 'text-amber-300 bg-amber-500/10 border-amber-500/30',
-  flop: 'text-zinc-300 bg-zinc-500/10 border-zinc-500/30',
+  good: 'vs-verdict',
+  okay: 'vs-verdict',
+  flop: 'vs-verdict',
 }
 
 interface PerformanceCardProps {
@@ -152,35 +152,35 @@ export function PerformanceCard({ generationId }: PerformanceCardProps) {
       ? PLATFORM_OPTIONS.find((p) => p.value === performance.platform)?.label
       : null
     return (
-      <div className="mt-8 rounded-xl border border-emerald-500/25 bg-gradient-to-br from-emerald-500/10 to-teal-500/5 px-6 py-5">
+      <div className="vs-frame mt-8 px-6 py-5">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-              <span>📊</span> 发布表现
+            <h2 className="vs-h3 flex items-center gap-2">
+              发布表现
             </h2>
             <div className="mt-2.5 flex items-center gap-2 flex-wrap">
               <span className={`px-2.5 py-1 rounded-full text-xs border ${GRADE_BADGE_CLASS[performance.grade]}`}>
                 {meta.emoji} {meta.label}
               </span>
               {platformLabel && (
-                <span className="px-2.5 py-1 rounded-full text-xs text-zinc-300 bg-zinc-500/10 border border-zinc-500/30">
+                <span className="vs-verdict">
                   {platformLabel}
                 </span>
               )}
-              <span className="text-[11px] text-zinc-500">
+              <span className="text-[11px] text-[var(--vs-ink-4)]">
                 记录于 {new Date(performance.recorded_at).toLocaleDateString('zh-CN')}
               </span>
             </div>
             {performance.note && (
-              <p className="mt-2 text-xs text-zinc-400 leading-relaxed">{performance.note}</p>
+              <p className="mt-2 text-xs text-[var(--vs-ink-3)] leading-relaxed">{performance.note}</p>
             )}
-            <p className="mt-2 text-[11px] text-zinc-500">
+            <p className="mt-2 text-[11px] text-[var(--vs-ink-4)]">
               表现数据会与你的创作战略关联分析，帮助系统学会哪种选题方式更适合你。
             </p>
           </div>
           <button
             onClick={startEdit}
-            className="shrink-0 px-3.5 py-2 rounded-lg text-xs text-zinc-300 border border-zinc-600 hover:border-zinc-400 hover:text-white transition"
+            className="vs-btn vs-btn-ghost vs-btn-sm shrink-0"
           >
             更新表现
           </button>
@@ -191,20 +191,20 @@ export function PerformanceCard({ generationId }: PerformanceCardProps) {
 
   // ── 未记录态 / 编辑态 ──
   return (
-    <div className="mt-8 rounded-xl border border-zinc-700/60 bg-zinc-800/30 px-6 py-5">
+    <div className="vs-frame mt-8 px-6 py-5">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-            <span>📊</span> 发布表现如何？
+          <h2 className="vs-h3 flex items-center gap-2">
+            发布表现如何？
           </h2>
-          <p className="mt-1.5 text-xs text-zinc-400 leading-relaxed">
+          <p className="mt-1.5 text-xs text-[var(--vs-ink-3)] leading-relaxed">
             这篇发布到平台后真实表现怎样？记录下来，系统能学会哪种选题和战略最适合你——这是灵感分析越用越准的关键一环。
           </p>
         </div>
         {performance && editing && (
           <button
             onClick={() => setEditing(false)}
-            className="shrink-0 text-xs text-zinc-500 hover:text-zinc-300 transition"
+            className="shrink-0 vs-link"
           >
             取消
           </button>
@@ -223,7 +223,7 @@ export function PerformanceCard({ generationId }: PerformanceCardProps) {
               className={`px-4 py-2 rounded-xl text-sm border transition ${
                 active
                   ? meta.activeClass
-                  : 'bg-zinc-800/50 border-zinc-700 text-zinc-300 hover:border-zinc-500'
+                  : 'border-[var(--vs-line)] bg-transparent text-[var(--vs-ink-3)] hover:border-[var(--vs-line-2)]'
               }`}
             >
               <span className="mr-1.5">{meta.emoji}</span>
@@ -237,7 +237,7 @@ export function PerformanceCard({ generationId }: PerformanceCardProps) {
         <select
           value={platform}
           onChange={(e) => setPlatform(e.target.value as Platform | '')}
-          className="px-3 py-2 rounded-lg text-xs bg-zinc-800/60 border border-zinc-700 text-zinc-300 focus:outline-none focus:border-zinc-500"
+          className="vs-input vs-select"
         >
           <option value="">发布平台（可选）</option>
           {PLATFORM_OPTIONS.map((p) => (
@@ -254,20 +254,20 @@ export function PerformanceCard({ generationId }: PerformanceCardProps) {
         maxLength={200}
         rows={2}
         placeholder="补充说明（可选）：比如完播率比平时高、评论区在讨论某个点…"
-        className="mt-3 w-full px-3.5 py-2.5 rounded-lg text-xs bg-zinc-800/60 border border-zinc-700 text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 resize-none"
+        className="vs-input vs-input-area mt-3 w-full resize-none"
       />
 
-      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+      {error && <p className="mt-2 vs-error">{error}</p>}
 
       <div className="mt-3 flex items-center gap-3">
         <button
           onClick={submit}
           disabled={!grade || saving}
-          className="px-5 py-2.5 rounded-xl text-sm font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition"
+          className="vs-btn vs-btn-primary disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {saving ? '记录中…' : performance ? '更新记录' : '记录表现'}
         </button>
-        <span className="text-[11px] text-zinc-600">仅自己可见，用于个性化分析</span>
+        <span className="vs-note">仅自己可见，用于个性化分析</span>
       </div>
     </div>
   )

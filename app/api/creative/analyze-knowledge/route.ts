@@ -15,7 +15,7 @@
 //   （复用 bge-m3 embedding 生成 + updateUserStyleVector）
 // ============================================================
 
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 import { authFailureResponse } from '@/lib/apiAuth'
 import { toCategory } from '@/lib/constants'
@@ -332,7 +332,7 @@ export async function POST(req: Request) {
 // Phase 2 扩展：materialType/groupId/source 三字段写入
 
 async function saveScript(
-  supabase: any,
+  supabase: SupabaseClient,
   userId: string,
   content: string,
   category: string | null,

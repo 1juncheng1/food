@@ -67,7 +67,6 @@ export async function POST(req: Request) {
     if (hint) lines.push(`【用户本人补充的一句话（同样可信）】${hint}`)
     lines.push('【基础事实】仅知道：这是一个使用本产品创作解说/故事类内容的用户。其余一概不知。')
 
-    let raw: string
     const llmRes = await callDeepSeekChat({
       temperature: 0.6,
       max_tokens: 400,
@@ -108,7 +107,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: '草稿生成失败，请稍后重试' }, { status: 500 })
     }
 
-    raw = llmRes.content
+    const raw = llmRes.content
     let background = ''
     let personality = ''
     try {

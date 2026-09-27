@@ -348,8 +348,9 @@ export async function generateEditPatches(
         jsonMode: true,
         language: target,
         // 第二次尝试是兜底重来，不再叠加语言自纠偏，避免把总耗时拖到网关超时
+        // 60 = /api/creative/patch 与 /api/creative/work-agent/chat 的 maxDuration
         languageRetry: attempt === 0,
-        timeoutMs: attempt === 0 ? 45_000 : llmTimeoutMs(3000),
+        timeoutMs: attempt === 0 ? 45_000 : llmTimeoutMs(3000, 60),
         // 计费：两次尝试各用各的 refId（理由同 intentClarifier）
         ...(billing
           ? {

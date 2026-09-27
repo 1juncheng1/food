@@ -124,7 +124,7 @@ export async function proposeRevisions(
       temperature: 0.6,
       max_tokens: maxTokens,
       jsonMode: true,
-      timeoutMs: llmTimeoutMs(maxTokens),
+      timeoutMs: llmTimeoutMs(maxTokens, 60),
       language: target,
       languageRetry: attempt === 0,
       // 计费：两次尝试各用各的 refId（理由同 intentClarifier）

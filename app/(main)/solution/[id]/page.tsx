@@ -387,11 +387,11 @@ export default function SolutionPage() {
   const progressSteps = mode === 'strengthen' ? STRENGTHEN_STEPS : SOLVING_STEPS
 
   return (
-    <div className="inner-page gen-stage" data-mode="inspiration">
+    <div className="inner-page " data-mode="inspiration">
       <PageShell width="narrow">
         <Link
           href="/generate"
-          className="mb-5 inline-flex items-center gap-1.5 text-[13px] text-zinc-500 transition hover:text-zinc-200"
+          className="mb-5 vs-link"
         >
           ← 返回创作工作台
         </Link>
@@ -417,16 +417,16 @@ export default function SolutionPage() {
 
         {/* 加载中：读取既有结果或等待跳转 */}
         {phase === 'loading' && (
-          <div className="gen-status glass anim-rise">
-            <div className="mx-auto w-12 h-12 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" />
+          <div className="gen-status vs-frame vs-rise">
+            <div className="vs-spinner mx-auto" />
           </div>
         )}
 
         {/* 生成中：分阶段进度（首解/补强共用，按 mode 切换文案） */}
         {phase === 'generating' && (
-          <div className="gen-status glass anim-rise">
-            <div className="mx-auto w-12 h-12 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" />
-            <h2 className="text-base font-medium text-white mt-6">
+          <div className="gen-status vs-frame vs-rise">
+            <div className="vs-spinner mx-auto" />
+            <h2 className="vs-h3 mt-6">
               {mode === 'strengthen' ? '正在补强你的解决方案' : '正在生成你的专属解决方案'}
             </h2>
             <ul className="mt-7 space-y-3 text-left max-w-sm mx-auto">
@@ -437,23 +437,23 @@ export default function SolutionPage() {
                     <span
                       className={`shrink-0 w-5 h-5 rounded-full text-[10px] flex items-center justify-center transition-colors duration-300 ${
                         state === 'done'
-                          ? 'bg-emerald-500/20 text-emerald-300'
+                          ? 'border border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]'
                           : state === 'active'
-                            ? 'bg-indigo-500/20 text-indigo-300'
-                            : 'bg-zinc-800 text-zinc-600'
+                            ? 'border border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]'
+                            : 'border border-[var(--vs-line)] bg-transparent text-[var(--vs-ink-4)]'
                       }`}
                     >
                       {state === 'done' ? '✓' : i + 1}
                     </span>
-                    <span className={`transition-colors duration-300 ${state === 'pending' ? 'text-zinc-600' : 'text-zinc-300'}`}>
+                    <span className={`transition-colors duration-300 ${state === 'pending' ? 'text-[var(--vs-ink-4)]' : 'text-[var(--vs-ink-2)]'}`}>
                       {label}
-                      {state === 'active' && <span className="animate-pulse">…</span>}
+                      {state === 'active' && <span className="vs-note">…</span>}
                     </span>
                   </li>
                 )
               })}
             </ul>
-            <p className="text-[11px] text-zinc-600 mt-8">
+            <p className="vs-note mt-8">
               {mode === 'strengthen'
                 ? '补强需要重新审视并撰写方案，通常需要 40-90 秒'
                 : '完整方案需要撰写多个章节，通常需要 30-60 秒'}
@@ -463,20 +463,19 @@ export default function SolutionPage() {
 
         {/* 空态 / 错误 */}
         {phase === 'missing' && (
-          <div className="gen-status glass anim-rise text-center">
-            <span className="text-3xl">🧭</span>
-            <p className="text-sm text-zinc-300 mt-4">
+          <div className="gen-status vs-frame vs-rise text-center">
+            <p className="text-[14px] mt-4 text-[var(--vs-ink-2)]">
               {error || '没有找到这个问题对应的分析数据'}
             </p>
             {error && solveAttempted && (
               <button
                 type="button"
                 onClick={() => void solve(solvePayloadRef.current!)}
-                className="mt-5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg transition"
+                className="vs-btn vs-btn-primary vs-btn-sm mt-5"
               >重试</button>
             )}
             <div className="mt-5">
-              <Link href="/generate" className="text-xs text-zinc-400 hover:text-zinc-200 border border-zinc-800 hover:border-zinc-600 px-4 py-2 rounded-lg transition">
+              <Link href="/generate" className="vs-btn vs-btn-ghost vs-btn-sm">
                 去灵感场重新提出问题
               </Link>
             </div>
@@ -489,7 +488,7 @@ export default function SolutionPage() {
             {/* 版本切换（存在迭代历史时出现） */}
             {versions.length > 1 && (
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[11px] text-zinc-500">版本</span>
+                <span className="vs-mark">版本</span>
                 {versions.map((_, i) => (
                   <button
                     key={i}
@@ -497,8 +496,8 @@ export default function SolutionPage() {
                     onClick={() => setActiveIdx(i)}
                     className={`text-xs px-3 py-1.5 rounded-lg border transition ${
                       i === activeIdx
-                        ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-200'
-                        : 'border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600'
+                        ? 'border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]'
+                        : 'border-[var(--vs-line)] text-[var(--vs-ink-3)] hover:text-[var(--vs-ink)] hover:border-[var(--vs-line-2)]'
                     }`}
                   >
                     V{i + 1}{i === versions.length - 1 ? ' · 最新' : ''}
@@ -509,38 +508,37 @@ export default function SolutionPage() {
 
             {/* 历史版本只读提示 */}
             {!isLatest && (
-              <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3">
-                <p className="text-xs text-amber-200/90">正在查看历史版本 V{activeIdx + 1}（只读）</p>
+              <div className="vs-frame vs-warn flex items-center justify-between gap-3 px-4 py-3">
+                <p className="vs-note vs-note-warn">正在查看历史版本 V{activeIdx + 1}（只读）</p>
                 <button
                   type="button"
                   onClick={() => setActiveIdx(versions.length - 1)}
-                  className="shrink-0 text-xs text-amber-200 hover:text-white transition"
+                  className="vs-link shrink-0"
                 >回到最新版 →</button>
               </div>
             )}
 
             {/* 摘要 */}
             {solution.summary && (
-              <div className="flex gap-3 rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-5 py-4">
-                <span className="text-base shrink-0">🎯</span>
-                <p className="text-sm text-indigo-100/90 leading-relaxed">{solution.summary}</p>
+              <div className="vs-frame flex gap-3 px-5 py-4">
+                <p className="text-[14px] leading-relaxed text-[var(--vs-ink)]">{solution.summary}</p>
               </div>
             )}
 
             {/* 补强说明（属于当前查看的版本，V1 无） */}
             {versions[activeIdx]?.note && (
-              <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-5">
-                <p className="text-[11px] font-medium text-emerald-300/80 tracking-wide uppercase">
+              <div className="vs-frame p-5">
+                <p className="vs-mark">
                   补强说明 · V{activeIdx + 1}
                 </p>
-                <p className="mt-2 text-sm text-emerald-100/90 leading-relaxed">{versions[activeIdx].note}</p>
+                <p className="text-[14px] mt-2 leading-relaxed text-[var(--vs-ink-2)]">{versions[activeIdx].note}</p>
                 {versions[activeIdx]?.gaps && versions[activeIdx].gaps!.length > 0 && (
                   <>
-                    <p className="mt-3 text-[11px] text-zinc-500">上一版的不足</p>
+                    <p className="vs-mark mt-3">上一版的不足</p>
                     <ul className="mt-1.5 space-y-1">
                       {versions[activeIdx].gaps!.map((g, i) => (
-                        <li key={i} className="flex gap-2 text-sm text-zinc-300 leading-relaxed">
-                          <span className="text-amber-400/80 shrink-0">·</span>
+                        <li key={i} className="flex gap-2 text-[14px] leading-relaxed text-[var(--vs-ink-2)]">
+                          <span className="shrink-0 text-[var(--vs-ink-4)]">·</span>
                           <span>{g}</span>
                         </li>
                       ))}
@@ -552,12 +550,12 @@ export default function SolutionPage() {
 
             {/* 问题理解回显（折叠） */}
             {problem && (
-              <details className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-4">
-                <summary className="cursor-pointer text-[11px] font-medium text-zinc-500 tracking-wide uppercase select-none">
+              <details className="vs-frame px-5 py-4">
+                <summary className="vs-mark cursor-pointer select-none">
                   问题理解
-                  <span className="ml-2 normal-case tracking-normal text-zinc-600">本次方案依据</span>
+                  <span className="vs-note ml-2">本次方案依据</span>
                 </summary>
-                <pre className="mt-3 whitespace-pre-wrap break-words text-xs text-zinc-400 leading-relaxed font-sans">
+                <pre className="vs-note mt-3 whitespace-pre-wrap break-words leading-relaxed font-sans">
                   {formatProblemForPrompt(problem)}
                 </pre>
               </details>
@@ -565,16 +563,16 @@ export default function SolutionPage() {
 
             {/* 方案章节 */}
             {solution.sections.map((sec, i) => (
-              <div key={i} className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+              <div key={i} className="vs-frame p-5">
                 <div className="flex items-center gap-2.5">
-                  <span className="shrink-0 w-6 h-6 rounded-full bg-indigo-500/15 text-indigo-300 text-xs flex items-center justify-center">
+                  <span className="vs-num shrink-0 flex items-center justify-center w-6 h-6 rounded-full border border-[var(--vs-line)] text-xs">
                     {i + 1}
                   </span>
-                  <h2 className="text-sm font-semibold text-white leading-snug">{sec.heading}</h2>
+                  <h2 className="vs-h3 leading-snug">{sec.heading}</h2>
                 </div>
                 <div className="mt-3 space-y-2.5">
                   {sec.content.split('\n').filter((p) => p.trim()).map((p, j) => (
-                    <p key={j} className="text-sm text-zinc-300 leading-relaxed">{p}</p>
+                    <p key={j} className="text-[14px] leading-relaxed text-[var(--vs-ink-2)]">{p}</p>
                   ))}
                 </div>
               </div>
@@ -582,12 +580,12 @@ export default function SolutionPage() {
 
             {/* 下一步行动 */}
             {solution.next_steps.length > 0 && (
-              <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-5">
-                <p className="text-[11px] font-medium text-emerald-300/80 tracking-wide uppercase">下一步行动</p>
+              <div className="vs-frame p-5">
+                <p className="vs-mark">下一步行动</p>
                 <ol className="mt-3 space-y-2">
                   {solution.next_steps.map((s, i) => (
-                    <li key={i} className="flex gap-2.5 text-sm text-zinc-300 leading-relaxed">
-                      <span className="shrink-0 w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-300 text-xs flex items-center justify-center mt-0.5">
+                    <li key={i} className="flex gap-2.5 text-[14px] leading-relaxed text-[var(--vs-ink-2)]">
+                      <span className="vs-num shrink-0 flex items-center justify-center w-5 h-5 mt-0.5 rounded-full border border-[var(--vs-line)] text-xs">
                         {i + 1}
                       </span>
                       <span>{s}</span>
@@ -599,9 +597,9 @@ export default function SolutionPage() {
 
             {/* 成功自检 */}
             {solution.success_check && (
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
-                <p className="text-[11px] font-medium text-zinc-500 tracking-wide uppercase">成功自检</p>
-                <p className="mt-2 text-sm text-zinc-300 leading-relaxed">{solution.success_check}</p>
+              <div className="vs-frame p-5">
+                <p className="vs-mark">成功自检</p>
+                <p className="mt-2 text-[14px] leading-relaxed text-[var(--vs-ink-2)]">{solution.success_check}</p>
               </div>
             )}
 
@@ -610,7 +608,7 @@ export default function SolutionPage() {
               <button
                 type="button"
                 onClick={copyFull}
-                className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 py-3.5 rounded-xl font-semibold text-base text-white transition shadow-lg shadow-indigo-900/30"
+                className="vs-btn vs-btn-primary flex-1"
               >
                 {copied ? '✓ 已复制全文' : '复制全文'}
               </button>
@@ -622,25 +620,25 @@ export default function SolutionPage() {
                   <button
                     type="button"
                     onClick={() => void strengthen()}
-                    className="flex-1 text-sm font-medium text-indigo-300 border border-indigo-500/40 hover:bg-indigo-500/10 px-4 py-3 rounded-xl transition"
+                    className="vs-btn vs-btn-ghost flex-1"
                   >⚡ 生成补强版（V{versions.length + 1}）</button>
                 )}
                 {(topic && problem) && (
                   <button
                     type="button"
                     onClick={() => void solve({ topic, problem: problem! })}
-                    className="text-sm text-zinc-300 border border-zinc-800 hover:border-zinc-600 px-4 py-3 rounded-xl transition"
-                  >🔄 重新生成</button>
+                    className="vs-btn vs-btn-ghost"
+                  > 重新生成</button>
                 )}
                 <Link
                   href="/generate"
-                  className="text-sm text-zinc-500 hover:text-zinc-300 transition text-center"
+                  className="vs-link text-center"
                 >提出新问题</Link>
               </div>
             )}
 
             {strengthenError && (
-              <p className="text-xs text-red-400/90 text-center">
+              <p className="vs-error text-center">
                 {strengthenError}（你的当前版本未受影响）
               </p>
             )}

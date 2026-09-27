@@ -113,32 +113,21 @@ export function ClarifyPanel({
   return (
     <section className="mx-auto mt-6 max-w-3xl">
       {/* 头部：主题回显 + AI 已理解信息 */}
-      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-6">
-        <div className="flex items-center justify-between gap-4">
-          <p className="text-[11px] font-medium text-zinc-500 tracking-wide uppercase">
-            主题
-          </p>
-          <button
-            type="button"
-            onClick={onBack}
-            className="shrink-0 text-[11px] text-zinc-500 hover:text-indigo-300 transition"
-          >
+      <div>
+        <div className="flex items-start justify-between gap-4">
+          <p className="vs-mark">主题</p>
+          <button type="button" onClick={onBack} className="vs-link shrink-0">
             返回改主题
           </button>
         </div>
-        <p className="mt-2 text-base text-zinc-200">{topic}</p>
+        <p className="mt-2 text-[17px] leading-snug">{topic}</p>
 
         {inferredEntries.length > 0 && (
-          <div className="mt-4 border-t border-zinc-800 pt-4">
-            <p className="text-[11px] font-medium text-zinc-500 tracking-wide uppercase mb-2">
-              我已从主题中理解
-            </p>
-            <div className="flex flex-wrap gap-2">
+          <div className="vs-sec mt-4">
+            <p className="vs-mark">我已从主题中理解</p>
+            <div className="mt-2 flex flex-wrap gap-2">
               {inferredEntries.map(([dim, val]) => (
-                <span
-                  key={dim}
-                  className="rounded-full border border-zinc-700 bg-zinc-800/60 px-3 py-1 text-xs text-zinc-300"
-                >
+                <span key={dim} className="vs-verdict">
                   {DIMENSION_LABEL[dim as ClarificationDimension] ?? dim}：{val}
                 </span>
               ))}
@@ -146,30 +135,21 @@ export function ClarifyPanel({
           </div>
         )}
 
-        {reason && (
-          <p className="mt-4 text-sm text-zinc-400 leading-relaxed">{reason}</p>
-        )}
+        {reason && <p className="vs-note mt-4 leading-relaxed">{reason}</p>}
       </div>
 
       {/* 问题列表 */}
-      <div className="mt-4 space-y-4">
+      <div className="mt-2 space-y-6">
         {questions.map((q, idx) => {
           const current = answers[q.dimension]
           return (
-            <div
-              key={q.dimension}
-              className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5"
-            >
+            <div key={q.dimension} className="vs-sec">
               <div className="flex items-start gap-3">
-                <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-indigo-600/20 text-xs font-medium text-indigo-300">
-                  {idx + 1}
-                </span>
-                <div className="flex-1">
-                  <p className="text-sm text-zinc-200">{q.question}</p>
-                </div>
+                <span className="vs-num shrink-0 text-[var(--vs-ink-4)]">{idx + 1}</span>
+                <p className="text-[15px] leading-snug text-[var(--vs-ink)]">{q.question}</p>
               </div>
 
-              <div className="mt-3 grid grid-cols-2 gap-2 pl-9">
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {q.options.map((opt) => {
                   const selected = !current?.isCustom && current?.value === opt
                   return (
@@ -178,13 +158,11 @@ export function ClarifyPanel({
                       type="button"
                       disabled={loading}
                       onClick={() => selectOption(q.dimension, opt)}
-                      className={[
-                        'rounded-xl border px-4 py-2.5 text-left text-sm transition',
+                      className={`rounded-[var(--vs-r)] border px-4 py-2.5 text-left text-[14px] transition ${
                         selected
-                          ? 'border-indigo-500 bg-indigo-600/20 text-indigo-200'
-                          : 'border-zinc-800 bg-zinc-900/40 text-zinc-300 hover:border-zinc-600 hover:text-zinc-100',
-                        loading ? 'opacity-60 cursor-not-allowed' : '',
-                      ].join(' ')}
+                          ? 'border-[var(--vs-beam-line)] bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]'
+                          : 'border-[var(--vs-line)] bg-transparent text-[var(--vs-ink-3)] hover:border-[var(--vs-line-2)] hover:text-[var(--vs-ink)]'
+                      } ${loading ? 'opacity-60 cursor-not-allowed' : ''}`}
                     >
                       {opt}
                     </button>
@@ -199,7 +177,7 @@ export function ClarifyPanel({
                         type="button"
                         disabled={loading}
                         onClick={() => startCustom(q.dimension)}
-                        className="text-xs text-zinc-500 hover:text-indigo-300 transition"
+                        className="vs-link"
                       >
                         其他（自定义输入）
                       </button>
@@ -209,8 +187,8 @@ export function ClarifyPanel({
                         value={customTexts[q.dimension] ?? current?.value ?? ''}
                         onChange={(e) => setCustomValue(q.dimension, e.target.value)}
                         disabled={loading}
-                        placeholder="输入你的回答..."
-                        className="w-full rounded-lg border border-indigo-500 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-indigo-400"
+                        placeholder="输入你的回答"
+                        className="vs-input vs-input-field"
                       />
                     )}
                   </div>
@@ -222,12 +200,12 @@ export function ClarifyPanel({
       </div>
 
       {/* 操作区 */}
-      <div className="mt-6 flex items-center justify-between gap-4">
+      <div className="mt-6 pt-4 border-t border-[var(--vs-line)] flex flex-wrap items-center justify-between gap-3">
         <button
           type="button"
           onClick={onSkip}
           disabled={loading}
-          className="text-sm text-zinc-500 hover:text-zinc-300 transition disabled:opacity-50"
+          className="vs-link disabled:opacity-50"
         >
           跳过澄清，用 AI 推断直接生成
         </button>
@@ -235,14 +213,9 @@ export function ClarifyPanel({
           type="button"
           onClick={handleSubmit}
           disabled={!allAnswered || loading}
-          className={[
-            'rounded-xl px-5 py-2.5 text-sm font-medium transition',
-            allAnswered && !loading
-              ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
-              : 'bg-zinc-800 text-zinc-500 cursor-not-allowed',
-          ].join(' ')}
+          className="vs-btn vs-btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {loading ? '生成方案中...' : '使用回答，生成方案'}
+          {loading ? '生成方案中…' : '使用回答，生成方案'}
         </button>
       </div>
     </section>

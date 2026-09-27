@@ -10,16 +10,18 @@
 //   复用 S4 exploration LLM 产 1 个相邻方向（prompt 本身要求不重复种子方向），
 //   落 1 张 slot=exploration / cluster_code=no_cluster 的引导卡。
 //   不建 interest_clusters 行（孤立行为不构成"兴趣方向"，不污染画像分层）；
-//   下次 build 正常成簇时本卡随 supersedeOldBuild 自然退场。
+//   下次 build 正常成簇时本卡随 supersedeExceptBuild 自然退场（按 build_id 排除）。
 // ============================================================
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ScoredCluster } from './scoring'
 import type { EngineEvent } from './types'
 import type { Candidate } from './candidates'
-import { hardFilter } from './candidates'
+import { hardFilter, embedCandidates } from './candidates'
 import { getExplorationCandidates } from './suggestionSynthesizer'
+import { generateEmbedding } from '@/lib/storage'
 import { scoreCandidate } from './ranking'
+import { buildRankingFeatures } from './rescore'
 import { generateAiReasons } from './reasonAi'
 import { insertSuggestions, type SuggestionInsertInput } from './suggestionRepo'
 import { cosineSimilarity } from './vectorMath'
@@ -80,6 +82,14 @@ export function buildSeedSuggestionInput(
     formHint: cand.formHint,
     score: scored.score,
     scoreBreakdown: scored.breakdown,
+    // RULE v5：与 builder/refill 同口径落特征。这里 knowledge 固定 null——
+    // 引导卡出现在用户第一篇刚写完时，彼时尚无可用知识单元。
+    embedding: cand.embedding,
+    rankingFeatures: buildRankingFeatures({
+      quality: cand.contentValue,
+      tagOverlap: 1,
+      knowledge: null,
+    }),
     evidence: {
       first_work_seed: true,
       seed_topic: seedLabel,
@@ -114,6 +124,11 @@ export async function buildFirstWorkSeedCard(
     console.warn('[interest] 首篇引导卡：探索候选生成失败:', e instanceof Error ? e.message : e)
     return 0
   }
+
+  // RULE v5：探索候选同样不带向量（S4 硬编码 null）。不补上，下面两处
+  // 依赖向量的逻辑都是死的：hardFilter 会放行"LLM 复述刚写主题"的卡，
+  // 而"取与种子最接近的一张"会退化成取首张（全部 -1，排序无效）。
+  await embedCandidates(candidates, (t) => generateEmbedding(t))
 
   // 用种子成员自身向量过滤"LLM 复述了刚写主题"的候选（阈值同 hardFilter 已写过 0.85）
   const seedEmbeddings = seed.members

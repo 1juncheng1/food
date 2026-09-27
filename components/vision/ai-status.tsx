@@ -23,7 +23,7 @@ function AiDots({ className }: { className?: string }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-[3px] text-indigo-300',
+        'inline-flex items-center gap-[3px] text-[var(--vs-ink)]',
         className
       )}
       aria-hidden
@@ -81,14 +81,14 @@ export function AiStatus({
       <div
         className={cn(
           'flex items-center gap-2 text-[13px]',
-          active ? 'text-indigo-200' : 'text-zinc-500',
+          active ? 'text-[var(--vs-ink)]' : 'text-[var(--vs-ink-4)]',
           className
         )}
       >
         {active ? (
           <AiDots />
         ) : (
-          <Sparkles size={13} className="text-zinc-500" />
+          <Sparkles size={13} className="text-[var(--vs-ink-4)]" />
         )}
         <span className="truncate">{text}</span>
       </div>
@@ -99,7 +99,7 @@ export function AiStatus({
     return (
       <div
         className={cn(
-          'relative overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3',
+          'relative overflow-hidden rounded-2xl border border-white/[0.08] bg-[var(--vs-void-1)] px-4 py-3',
           active && 'vs-ai-frame',
           className
         )}
@@ -110,13 +110,13 @@ export function AiStatus({
           ) : (
             <Sparkles
               size={14}
-              className={active ? 'text-indigo-300' : 'text-zinc-500'}
+              className={active ? 'text-[var(--vs-ink)]' : 'text-[var(--vs-ink-4)]'}
             />
           )}
           <span
             className={cn(
               'text-[13px] font-medium',
-              active ? 'text-indigo-100' : 'text-zinc-500'
+              active ? 'text-[var(--vs-ink)]' : 'text-[var(--vs-ink-4)]'
             )}
           >
             {text}
@@ -135,7 +135,7 @@ export function AiStatus({
   return (
     <div
       className={cn(
-        'relative rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3.5',
+        'relative rounded-2xl border border-white/[0.08] bg-[var(--vs-void-1)] px-4 py-3.5',
         active && 'vs-ai-frame',
         className
       )}
@@ -149,9 +149,9 @@ export function AiStatus({
               <span
                 className={cn(
                   'flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-medium',
-                  done && 'bg-emerald-500/20 text-emerald-300',
-                  isActive && 'bg-indigo-500/20 text-indigo-300',
-                  !done && !isActive && 'bg-white/[0.06] text-zinc-600'
+                  done && 'bg-[var(--vs-void-1)] text-[var(--vs-ink)]',
+                  isActive && 'bg-[var(--vs-beam-wash)] text-[var(--vs-ink)]',
+                  !done && !isActive && 'bg-white/[0.06] text-[var(--vs-ink-4)]'
                 )}
               >
                 {done ? '✓' : i + 1}
@@ -159,9 +159,9 @@ export function AiStatus({
               <span
                 className={cn(
                   'text-[13px]',
-                  done && 'text-zinc-400',
-                  isActive && 'text-indigo-100',
-                  !done && !isActive && 'text-zinc-600'
+                  done && 'text-[var(--vs-ink-3)]',
+                  isActive && 'text-[var(--vs-ink)]',
+                  !done && !isActive && 'text-[var(--vs-ink-4)]'
                 )}
               >
                 {label}
@@ -189,7 +189,7 @@ export function AiPulse({
     <span
       className={cn(
         'inline-flex items-center gap-2 text-[12px]',
-        active ? 'text-indigo-200' : 'text-zinc-500',
+        active ? 'text-[var(--vs-ink)]' : 'text-[var(--vs-ink-4)]',
         className
       )}
     >

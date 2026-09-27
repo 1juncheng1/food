@@ -22,6 +22,8 @@ import {
   EXPLORE_QUOTA_PER_10,
 } from './feedRepo'
 import type { SuggestionRow } from './suggestionRepo'
+import { RANKING_VERSION } from './config'
+import { buildRescoreContext } from './rescore'
 
 // ── mock 数据 ──
 
@@ -189,6 +191,48 @@ describe('getFeedPage', () => {
     const supabase = makeMockSupabase()
     const result = await getFeedPage(supabase as never, 'user-1', { limit: 10, cursor: 'invalid' })
     expect(result.cards).toHaveLength(1)
+  })
+
+  // ── RULE v5：在线重排改变了每行的 score，翻页却必须纹丝不动 ──
+  it('重排改了 score，游标定位仍然不漂（否则第二页会退回第一页）', async () => {
+    // 25 张卡全部可被重排（带当前版本 features）
+    for (let i = 0; i < 25; i++) {
+      mockRows.push({
+        id: `r-${i}`,
+        score: 1 - i * 0.01,
+        title: `R${i}`,
+        cluster_code: 'no_cluster',
+        slot: 'exploration',
+        source: 'exploration',
+        ranking_features: {
+          ranking_version: RANKING_VERSION,
+          quality: 0.9,
+          tagOverlap: 1,
+          knowledge: null,
+        },
+      } as unknown as SuggestionRow)
+    }
+    const supabase = makeMockSupabase()
+    const rescore = buildRescoreContext({ clusters: [], now: new Date() })
+
+    // 前置校验：重排确实动了分。若这条不成立，下面的断言就是空转。
+    const probe = await getFeedPage(supabase as never, 'user-1', { limit: 1, rescore })
+    expect(probe.cards[0].score).not.toBe(1)
+
+    const allIds: string[] = []
+    let cursor: string | undefined
+    for (let page = 0; page < 5; page++) {
+      const r = await getFeedPage(supabase as never, 'user-1', {
+        limit: 10,
+        cursor,
+        rescore,
+      })
+      allIds.push(...r.cards.map((c) => c.id))
+      if (!r.next_cursor) break
+      cursor = r.next_cursor
+    }
+    expect(allIds).toHaveLength(25)
+    expect(new Set(allIds).size).toBe(25)
   })
 })
 

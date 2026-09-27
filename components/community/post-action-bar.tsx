@@ -81,7 +81,7 @@ export default function PostActionBar({
         aria-pressed={liked}
         aria-label={liked ? '取消点赞' : '点赞'}
         className={`flex items-center gap-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed ${
-          liked ? 'text-red-400' : 'text-zinc-500 hover:text-red-400'
+          liked ? 'text-[var(--vs-ink)]' : 'text-[var(--vs-ink-4)] hover:text-[var(--vs-ink-2)]'
         }`}
       >
         <svg
@@ -110,7 +110,7 @@ export default function PostActionBar({
           }}
           aria-label="评论"
           className={`flex items-center gap-1.5 transition ${
-            commentsOpen ? 'text-indigo-400' : 'text-zinc-500 hover:text-indigo-400'
+            commentsOpen ? 'text-[var(--vs-ink)]' : 'text-[var(--vs-ink-4)] hover:text-[var(--vs-ink)]'
           }`}
         >
           <svg
@@ -141,7 +141,7 @@ export default function PostActionBar({
         aria-pressed={saved}
         aria-label={saved ? '取消收藏' : '收藏'}
         className={`flex items-center gap-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed ${
-          saved ? 'text-amber-400' : 'text-zinc-500 hover:text-amber-400'
+          saved ? 'text-[var(--vs-ink)]' : 'text-[var(--vs-ink-4)] hover:text-[var(--vs-ink-2)]'
         }`}
       >
         <svg
@@ -170,7 +170,7 @@ export default function PostActionBar({
           }}
           aria-label="复制链接"
           className={`flex items-center gap-1.5 transition ${
-            copied ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-300'
+            copied ? 'text-[var(--vs-ink)]' : 'text-[var(--vs-ink-4)] hover:text-[var(--vs-ink-2)]'
           }`}
         >
           <svg

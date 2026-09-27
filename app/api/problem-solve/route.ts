@@ -13,6 +13,7 @@
 // ============================================================
 
 import { NextResponse } from 'next/server'
+import { withAiDeadline } from '@/lib/aiDeadline'
 import { rateLimit } from '@/lib/rateLimit'
 import { authenticateWithToken } from '@/lib/storage'
 import { aiFailureResponse } from '@/lib/apiAuth'
@@ -46,7 +47,11 @@ function str(v: unknown, maxLen: number): string {
   return typeof v === 'string' ? v.trim().slice(0, maxLen) : ''
 }
 
-export async function POST(req: Request) {
+// 下面的 60 必须等于本文件的 maxDuration。
+// 整条请求共享这一份 AI 总预算：generateSolution 内部有 3 次重试，
+// 若每次都拿满 55s，总和 165s 远超 60s —— 进程会被平台硬杀，
+// 而退款代码跑在调用之后，根本没机会执行，用户白扣钱。见 lib/aiDeadline.ts
+async function handlePost(req: Request) {
   try {
     // ── 强制鉴权 ──
     // 传了 token 就必须验证出结果：网络故障（503）与凭证过期（401）如实返回，
@@ -180,3 +185,5 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '服务器内部错误' }, { status: 500 })
   }
 }
+
+export const POST = withAiDeadline(60, handlePost)

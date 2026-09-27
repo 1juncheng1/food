@@ -21,10 +21,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FeedbackAnalysis } from '@/lib/creative/workAgent'
 import type { AlignmentReport } from '@/lib/creative/feedbackAlignment'
 import {
+  normalizeAdvisory,
   normalizeIntentClarification,
   normalizePatchPreview,
   normalizeRevisionPlan,
   normalizeRevisionProposal,
+  type AgentAdvisory,
   type IntentClarification,
   type RevisionPlan,
   type RevisionProposal,
@@ -441,23 +443,20 @@ export function WorkAgentChat({
   const preview = lastAssistant?.kind === 'patch_preview'
     ? normalizePatchPreview((lastAssistant.payload as { preview?: unknown } | null)?.preview)
     : null
+  // 守门提示：AI 认为这个改法会伤害作品时的提醒（只提示不阻拦，用户仍可继续）
+  const advisory = lastAssistant
+    ? normalizeAdvisory((lastAssistant.payload as { advisory?: unknown } | null)?.advisory)
+    : null
 
   const busy = stage !== null || !!improvingDirection
   // 验收结果：组件内部（补丁链路）优先，其次用父组件回传的（全文重写链路）
   const shownAlignment = alignment ?? externalAlignment
 
   return (
-    <div className="mt-10 pt-8 border-t border-zinc-800/80">
-      <div className="flex items-start justify-between gap-4 mb-4">
-        <div>
-          <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-            <span>🤝</span> AI 共创
-          </p>
-          <p className="text-xs text-zinc-500 mt-0.5">
-            先说想法，AI 会列出可选方向；每一步都由你点选，AI 不会直接改写全文
-          </p>
-        </div>
-        {messages.length > 0 && !busy && (
+    <div className="vs-cocreate">
+      {/* 标题由宿主页面给（「和 AI 一起改这一版」），这里不重复贴标签 */}
+      {messages.length > 0 && !busy && (
+        <div className="vs-cocreate-head vs-cocreate-head-end">
           <button
             onClick={() => {
               setMessages([])
@@ -467,30 +466,33 @@ export function WorkAgentChat({
               setError('')
               setDegradedReason('')
             }}
-            className="text-xs text-zinc-500 hover:text-zinc-300 transition shrink-0"
+            className="vs-link text-[13px]"
           >
             新开一轮
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* ── 对话区 ── */}
+      {/* ── 决策记录：一轮一轮写下来，不是对话气泡 ── */}
       {messages.length > 0 && (
-        <div
-          ref={scrollRef}
-          className="max-h-[420px] overflow-y-auto dark-scroll space-y-3 mb-3 pr-1"
-        >
-          {messages.map((m) => (
-            <MessageBubble key={m.id} message={m} />
+        <div ref={scrollRef} className="vs-cocreate-log dark-scroll">
+          {messages.map((m, i) => (
+            <LogRow key={m.id} index={i} message={m} />
           ))}
           {stage && (
-            <div className="flex items-center gap-2 text-xs text-zinc-500 pl-1">
-              <span className="inline-block h-3 w-3 rounded-full border-2 border-zinc-500 border-t-transparent animate-spin" />
-              {stage === 'clarify'
-                ? 'AI 正在理解你的反馈…'
-                : stage === 'propose'
-                  ? 'AI 正在生成修改方案…'
-                  : 'AI 正在生成修改建议…'}
+            <div className="vs-cocreate-run">
+              <span className="vs-ai-dots" aria-hidden="true">
+                <i className="vs-ai-dot" />
+                <i className="vs-ai-dot" />
+                <i className="vs-ai-dot" />
+              </span>
+              <span>
+                {stage === 'clarify'
+                  ? '理解你的反馈'
+                  : stage === 'propose'
+                    ? '生成修改方案'
+                    : '生成改动预览'}
+              </span>
             </div>
           )}
         </div>
@@ -498,129 +500,143 @@ export function WorkAgentChat({
 
       {/* ── 方向验收：这次改动有没有落到用户说的方向上 ── */}
       {(aligning || externalAligning || shownAlignment) && (
-        <div className="rounded-xl border border-zinc-700 bg-zinc-900/60 px-4 py-3 mb-3">
+        <div className="vs-cocreate-block">
+          <p className="vs-mark">方向验收</p>
           {aligning || externalAligning ? (
-            <p className="text-xs text-zinc-500 flex items-center gap-2">
-              <span className="inline-block h-3 w-3 rounded-full border-2 border-zinc-500 border-t-transparent animate-spin" />
-              正在核对这次改动是否符合你的反馈方向…
-            </p>
+            <div className="vs-cocreate-run">
+              <span className="vs-ai-dots" aria-hidden="true">
+                <i className="vs-ai-dot" />
+                <i className="vs-ai-dot" />
+                <i className="vs-ai-dot" />
+              </span>
+              <span>核对这次改动是否落在你说的方向上</span>
+            </div>
           ) : shownAlignment ? (
             <AlignmentCard report={shownAlignment} />
           ) : null}
         </div>
       )}
 
-      {/* ── 阶段 1：意图候选 ── */}
+      {/* ── 修改守门提示 ──
+          不是拦路：结论交给用户，他看完坚持要改，AI 照改。
+          这里必须连替代方案一起显示——只说"不好"等于把问题丢回给用户。 */}
+      {advisory && <AdvisoryCard advisory={advisory} />}
+
+      {/* ── 01 确认方向 ── */}
       {clarification && !busy && (
-        <div className="grid gap-2 sm:grid-cols-2 mb-3">
-          {clarification.options.map((opt, i) => (
-            <button
-              key={opt.id}
-              onClick={() => handleSelect('select_intent', i)}
-              className="text-left rounded-lg border border-zinc-700 bg-zinc-900/60 hover:border-indigo-500/50 hover:bg-indigo-500/5 px-3 py-2.5 transition"
-            >
-              <span className="text-xs font-medium text-zinc-200">
-                {String.fromCharCode(65 + i)}. {opt.label}
-              </span>
-              <span className="block text-[11px] text-zinc-500 mt-0.5 leading-relaxed">
-                {opt.description}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* ── 阶段 2：修改方案 ── */}
-      {proposal && !busy && (
-        <div className="space-y-2 mb-3">
-          {proposal.plans.map((plan, i) => (
-            <button
-              key={plan.id}
-              onClick={() => handleSelect('select_plan', i)}
-              className="w-full text-left rounded-xl border border-zinc-700 bg-zinc-900/60 hover:border-emerald-500/50 hover:bg-emerald-500/5 px-4 py-3 transition"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm font-medium text-zinc-100">
-                  {String.fromCharCode(65 + i)}. {plan.title}
-                </span>
-                <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded ${
-                    plan.strategy === 'rewrite'
-                      ? 'text-amber-400 bg-amber-500/10'
-                      : 'text-emerald-400 bg-emerald-500/10'
-                  }`}
-                >
-                  {plan.strategy === 'rewrite' ? '全文重写' : '局部修改'}
-                </span>
-              </div>
-              <p className="text-xs text-zinc-400 mt-1 leading-relaxed">{plan.description}</p>
-              <p className="text-[11px] text-zinc-500 mt-1">
-                <span className="text-zinc-600">影响：</span>
-                {plan.expectedImpact}
-                {plan.modificationArea.length > 0 && (
-                  <>
-                    <span className="text-zinc-600"> ｜ 范围：</span>
-                    {plan.modificationArea.join('、')}
-                  </>
-                )}
-              </p>
-              <p className="text-[11px] text-zinc-500 mt-0.5">
-                <span className="text-zinc-600">保持：</span>
-                {plan.preserveItems.join('、')}
-              </p>
-              {plan.risk && (
-                <p className="text-[11px] text-amber-500/80 mt-1">注意：{plan.risk}</p>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* ── 阶段 3：补丁预览 ── */}
-      {patchPayload && patchPayload.patches.length > 0 && !busy && (
-        <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-4 py-3 mb-3">
-          <p className="text-[10px] font-medium text-emerald-400 tracking-wide uppercase mb-2">
-            局部修改预览（共 {patchPayload.patches.length} 处）
+        <div className="vs-cocreate-block">
+          <p className="vs-mark vs-step-label">
+            <span className="vs-num vs-num-dim">01</span>
+            确认方向
           </p>
+          <div className="vs-choice">
+            {clarification.options.map((opt, i) => (
+              <button
+                key={opt.id}
+                onClick={() => handleSelect('select_intent', i)}
+                className="vs-choice-item"
+              >
+                <span className="vs-num vs-num-dim">{String.fromCharCode(65 + i)}</span>
+                <span className="vs-choice-body">
+                  <span className="vs-choice-title">{opt.label}</span>
+                  <span className="vs-choice-desc">{opt.description}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── 02 选择改法 ── */}
+      {proposal && !busy && (
+        <div className="vs-cocreate-block">
+          <p className="vs-mark vs-step-label">
+            <span className="vs-num vs-num-dim">02</span>
+            选择改法
+          </p>
+          <div className="vs-plan">
+            {proposal.plans.map((plan, i) => (
+              <button
+                key={plan.id}
+                onClick={() => handleSelect('select_plan', i)}
+                className="vs-plan-item"
+              >
+                <span className="vs-plan-head">
+                  <span className="vs-plan-title">
+                    <span className="vs-num vs-num-dim">{String.fromCharCode(65 + i)}</span>
+                    {plan.title}
+                  </span>
+                  <span className="vs-plan-tag">
+                    {plan.strategy === 'rewrite' ? '全文重写' : '局部修改'}
+                  </span>
+                </span>
+                <span className="vs-note block mt-2 leading-relaxed">{plan.description}</span>
+                <span className="vs-plan-meta">
+                  <span>
+                    <span className="vs-plan-key">影响</span>
+                    {plan.expectedImpact}
+                  </span>
+                  {plan.modificationArea.length > 0 && (
+                    <span>
+                      <span className="vs-plan-key">范围</span>
+                      {plan.modificationArea.join('、')}
+                    </span>
+                  )}
+                  <span>
+                    <span className="vs-plan-key">保持</span>
+                    {plan.preserveItems.join('、')}
+                  </span>
+                </span>
+                {plan.risk && (
+                  <span className="vs-note vs-note-warn block mt-2">注意：{plan.risk}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── 03 查看改动 ── */}
+      {patchPayload && patchPayload.patches.length > 0 && !busy && (
+        <div className="vs-cocreate-block">
+          <p className="vs-mark vs-step-label">
+            <span className="vs-num vs-num-dim">03</span>
+            查看改动
+          </p>
+          <p className="vs-note">共 {patchPayload.patches.length} 处局部修改</p>
           {preview?.preserveItems && preview.preserveItems.length > 0 && (
-            <p className="text-[11px] text-zinc-500 mb-2">
-              <span className="text-zinc-600">保持不变：</span>
-              {preview.preserveItems.join('、')}
-            </p>
+            <p className="vs-note">保持不变：{preview.preserveItems.join('、')}</p>
           )}
-          <div className="space-y-2 mb-3">
+          <div className="vs-diff">
             {patchPayload.patches.map((p, i) => (
-              <details key={i} className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">
-                <summary className="text-xs text-zinc-300 cursor-pointer select-none">
-                  第 {p.segmentIndex} 段 · {p.reason || '优化表达'}
+              <details key={i} className="vs-diff-item">
+                <summary>
+                  <span className="vs-num vs-num-dim">第 {p.segmentIndex} 段</span>
+                  <span>{p.reason || '优化表达'}</span>
                 </summary>
-                <div className="mt-2 space-y-2">
-                  <p className="text-[11px] text-zinc-500 leading-relaxed line-through decoration-zinc-700">
-                    {p.originalExcerpt.slice(0, 300)}
-                  </p>
-                  <p className="text-[11px] text-emerald-300 leading-relaxed">
-                    {p.revisedText.slice(0, 600)}
-                  </p>
+                <div className="vs-diff-body">
+                  <p className="vs-diff-before">{p.originalExcerpt.slice(0, 300)}</p>
+                  <p className="vs-diff-after">{p.revisedText.slice(0, 600)}</p>
                 </div>
               </details>
             ))}
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="vs-cocreate-actions">
             <button
               onClick={() => handleDecide(true, patchPayload, lastAssistant?.content ?? '')}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-600 hover:bg-emerald-500 transition"
+              className="vs-btn vs-btn-primary vs-btn-sm"
             >
-              ✓ 接受，生成新版本
+              接受，生成新版本
             </button>
             <button
               onClick={() => handleDecide(false, patchPayload, lastAssistant?.content ?? '')}
-              className="px-3 py-1.5 rounded-lg text-xs text-zinc-400 border border-zinc-700 hover:border-zinc-500 hover:text-zinc-200 transition"
+              className="vs-btn vs-btn-ghost vs-btn-sm"
             >
               都不满意
             </button>
             <button
               onClick={() => setMessages((prev) => prev.slice(0, -1))}
-              className="px-3 py-1.5 rounded-lg text-xs text-zinc-500 hover:text-zinc-300 transition"
+              className="vs-btn vs-btn-ghost vs-btn-sm"
             >
               换个方案
             </button>
@@ -630,42 +646,44 @@ export function WorkAgentChat({
 
       {/* ── 提示区 ── */}
       {degradedReason && (
-        <p className="text-[11px] text-amber-500/90 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 mb-3">
-          部分上下文未能加载：{degradedReason}（不影响对话，AI 会少一些你的素材与画像参考）
+        <p className="vs-note vs-note-warn">
+          部分上下文未能加载：{degradedReason}（不影响共创，AI 会少一些你的素材与画像参考）
         </p>
       )}
-      {error && <p className="text-xs text-red-400 mb-3">{error}</p>}
+      {error && <p className="vs-error">{error}</p>}
 
-      {/* ── 输入区 ── */}
-      <textarea
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void handleSend()
-        }}
-        placeholder="说说你的想法，例如：这篇太平了，没什么记忆点…"
-        rows={2}
-        disabled={busy}
-        className="w-full bg-zinc-900/60 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 resize-none dark-scroll disabled:opacity-50"
-      />
-      <div className="flex items-center gap-3 mt-2">
-        <button
-          onClick={handleSend}
-          disabled={!input.trim() || busy}
-          className="px-4 py-2 rounded-lg text-sm font-medium bg-indigo-600 hover:bg-indigo-500 transition disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {stage === 'clarify' ? '思考中…' : '发送'}
-        </button>
-        <span className="text-[11px] text-zinc-600">⌘/Ctrl + Enter 快速发送</span>
+      {/* ── 输入：编辑线，不是聊天输入框 ── */}
+      <div>
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void handleSend()
+          }}
+          placeholder="说说你的想法，例如：这篇太平了，没什么记忆点…"
+          rows={2}
+          disabled={busy}
+          className="vs-input vs-input-area dark-scroll"
+        />
+        <div className="vs-cocreate-send">
+          <button
+            onClick={handleSend}
+            disabled={!input.trim() || busy}
+            className="vs-btn vs-btn-primary vs-btn-sm"
+          >
+            {stage === 'clarify' ? '进行中' : '发送'}
+          </button>
+          <span className="vs-note">⌘/Ctrl + Enter 快速发送</span>
+        </div>
       </div>
 
       {/* ── 快捷方向（6 类）：对话未开始时才展示 ──
           不是装饰——有些用户已经很清楚要什么，不该被强制走完三轮对话。
           但一旦开始对话就隐藏，避免"直接改全文"的旧习惯把共创流程架空。 */}
       {messages.length === 0 && !busy && (
-        <div className="mt-6">
-          <p className="text-xs text-zinc-500 mb-2">或者直接选择优化方向：</p>
-          <div className="flex flex-wrap gap-2">
+        <div className="vs-cocreate-alt">
+          <p className="vs-mark">或者直接选择优化方向</p>
+          <div className="vs-chip-row">
             {NEXT_ACTION_META.map((m) => (
               <button
                 key={m.key}
@@ -673,9 +691,9 @@ export function WorkAgentChat({
                   onQuickDirection?.(m.key, m.key === 'custom' ? input.trim() || undefined : undefined)
                 }
                 title={m.blurb}
-                className="px-3.5 py-2 rounded-lg text-xs font-medium transition border bg-zinc-900 border-zinc-700 text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800"
+                className="vs-chip"
               >
-                {m.emoji} {m.label}
+                {m.label}
               </button>
             ))}
           </div>
@@ -693,40 +711,38 @@ export function WorkAgentChat({
  * 以及要求保持的内容有没有被顺手改掉——这些本来只能靠用户自己通读全文去发现。
  */
 function AlignmentCard({ report }: { report: AlignmentReport }) {
-  const tone =
+  // 落实是中性白，只有"部分/不符"才带颜色：结论靠文字说，不靠色块喊
+  const verdict =
     report.verdict === 'aligned'
-      ? { label: '已落实你的反馈', cls: 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' }
+      ? { label: '已落实', key: 'aligned' }
       : report.verdict === 'partial'
-        ? { label: '部分落实', cls: 'text-amber-300 border-amber-500/40 bg-amber-500/10' }
-        : { label: '与反馈方向不符', cls: 'text-rose-300 border-rose-500/40 bg-rose-500/10' }
+        ? { label: '部分落实', key: 'partial' }
+        : { label: '与方向不符', key: 'off' }
   const broken = report.preserved.filter((p) => !p.intact)
 
   return (
     <div>
-      <div className="flex items-center justify-between gap-3 mb-1.5">
-        <span className="text-xs font-medium text-zinc-300">方向验收</span>
-        <span className={`text-[11px] px-2 py-0.5 rounded-full border shrink-0 ${tone.cls}`}>
-          {tone.label} · {report.score} 分
-        </span>
-      </div>
-      <p className="text-xs text-zinc-400 leading-relaxed">{report.summary}</p>
+      <span className="vs-verdict" data-verdict={verdict.key}>
+        {verdict.label} · {report.score} 分
+      </span>
+      <p className="vs-note mt-2.5">{report.summary}</p>
       {report.addressed.length > 0 && (
-        <ul className="mt-2 space-y-1">
+        <ul className="vs-check-list mt-3">
           {report.addressed.map((a, i) => (
-            <li key={i} className="text-[11px] text-zinc-500 flex gap-1.5 leading-relaxed">
-              <span className={a.hit ? 'text-emerald-400' : 'text-rose-400'}>
+            <li key={i}>
+              <span className="vs-check-mark" data-hit={a.hit}>
                 {a.hit ? '✓' : '✗'}
               </span>
               <span>
                 {a.target}
-                {a.evidence ? <span className="text-zinc-600"> — {a.evidence}</span> : null}
+                {a.evidence ? <span className="vs-plan-key"> — {a.evidence}</span> : null}
               </span>
             </li>
           ))}
         </ul>
       )}
       {broken.length > 0 && (
-        <p className="mt-2 text-[11px] text-amber-400">
+        <p className="vs-note vs-note-warn mt-3">
           注意：要求保持的「{broken.map((p) => p.item).join('、')}」被改动了
         </p>
       )}
@@ -734,21 +750,32 @@ function AlignmentCard({ report }: { report: AlignmentReport }) {
   )
 }
 
-function MessageBubble({ message }: { message: WorkAgentMessage }) {
+/**
+ * 修改守门提示卡。
+ *
+ * 语气上是"我不同意这个改法"，不是"我不干"——
+ * 用户看完坚持，下面的候选/方案按钮照常可点，AI 不会替他放弃。
+ */
+function AdvisoryCard({ advisory }: { advisory: AgentAdvisory }) {
+  return (
+    <div className="vs-cocreate-block">
+      <p className="vs-mark vs-mark-row">一个不同意见</p>
+      <p className="vs-body">{advisory.concern}</p>
+      <p className="vs-note mt-2.5">{advisory.why}</p>
+      <p className="vs-note mt-2">更建议：{advisory.better}</p>
+      <p className="vs-note mt-2">这只是判断。你要坚持，就按你的方向改。</p>
+    </div>
+  )
+}
+
+function LogRow({ index, message }: { index: number; message: WorkAgentMessage }) {
   const isUser = message.role === 'user'
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`max-w-[85%] rounded-xl px-3.5 py-2.5 ${
-          isUser
-            ? 'bg-indigo-600/20 border border-indigo-500/30'
-            : 'bg-zinc-900/60 border border-zinc-800'
-        }`}
-      >
-        <p className="text-[10px] text-zinc-500 mb-1">{isUser ? '你' : 'AI 编辑伙伴'}</p>
-        <p className="text-xs text-zinc-200 leading-relaxed whitespace-pre-wrap">
-          {message.content}
-        </p>
+    <div className="vs-log-row" data-role={message.role}>
+      <span className="vs-num vs-num-dim">{String(index + 1).padStart(2, '0')}</span>
+      <div className="vs-log-body">
+        <p className="vs-log-label">{isUser ? '你' : 'AI'}</p>
+        <p className="vs-log-text">{message.content}</p>
       </div>
     </div>
   )

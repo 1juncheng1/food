@@ -11,6 +11,7 @@
 // ============================================================
 
 import type { FeedbackAnalysis } from './workAgent'
+import type { PreferenceReason } from './preferenceReason'
 
 /** style_profiles.editing_profile 的持久化结构 */
 export interface EditingProfileState {
@@ -96,8 +97,14 @@ function normalizeStatement(s: string): string {
  *
  * 语义：
  *   - accept：AI 提出的修改点（modificationTargets）→ like 强化（用户认可往这个方向改）；
- *     preserveItems → like 强化（用户确认要保持的内容）
+ *     preserveItems → like 强化（用户确认要保持的内容）；
+ *     reasons（"为什么改"）→ 按语义写入：avoid 记他不要什么，同时把
+ *     alternative 作为 like 记下他真正要什么
  *   - reject：modificationTargets → avoid 强化（用户拒绝往这个方向改，下次少提）
+ *
+ * 为什么 reasons 只在 accept 时生效：
+ *   用户拒绝这次改动，说明"这次改得不好"，不等于"他不想要他说的那个东西"。
+ *   把拒绝时的原话也当成偏好，会把"改坏了"误记成"不想要"。
  */
 export function applyMemoryEvent(
   prev: EditingProfileState,
@@ -105,6 +112,8 @@ export function applyMemoryEvent(
     accepted: boolean
     freeText: string
     analysis?: FeedbackAnalysis | null
+    /** 从反馈原话抽出的"为什么改"（见 preferenceReason.ts） */
+    reasons?: PreferenceReason[]
   }
 ): EditingProfileState {
   const preferences = prev.preferences.map((p) => ({ ...p, examples: [...p.examples] }))
@@ -143,6 +152,17 @@ export function applyMemoryEvent(
   if (event.accepted) {
     for (const t of analysis?.modificationTargets ?? []) upsert('like', t)
     for (const t of analysis?.preserveItems ?? []) upsert('like', t)
+    // "为什么改"比"改了什么"更值得记：
+    // 「不要太像新闻」→ avoid「新闻通稿式口径」+ like「带个人观点的表达」。
+    // 只记 avoid 的话，AI 只知道不该做什么，不知道该往哪走。
+    for (const r of event.reasons ?? []) {
+      if (r.kind === 'avoid') {
+        upsert('avoid', r.statement)
+        if (r.alternative) upsert('like', r.alternative)
+      } else {
+        upsert('like', r.statement)
+      }
+    }
   } else {
     for (const t of analysis?.modificationTargets ?? []) upsert('avoid', t)
   }

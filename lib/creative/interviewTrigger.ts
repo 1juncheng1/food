@@ -10,7 +10,9 @@ import {
   normalizeCreatorDeclaration,
   isDeclarationEmpty,
   isDeclarationComplete,
+  missingIdentityDimensions,
   type CreatorDeclaration,
+  type DeclarationDimension,
 } from './creatorDeclaration'
 import { CURRENT_INTERVIEW_VERSION } from './interviewQuestions'
 
@@ -21,8 +23,14 @@ export interface InterviewTriggerResult {
   shouldTrigger: boolean
   /** 触发原因（UI 展示给用户） */
   reason?: string
-  /** 触发类型：首次 / 未完成 / 版本过期 */
-  triggerType?: 'first_time' | 'incomplete' | 'version_outdated'
+  /** 触发类型：首次 / 未完成 / 增量补问 / 版本过期 */
+  triggerType?: 'first_time' | 'incomplete' | 'supplement' | 'version_outdated'
+  /**
+   * 增量补问时需要补的维度（仅 triggerType='supplement' 有值）。
+   * 调用方把它传给 /api/creative/interview 只取这几问的问题，
+   * 避免"新增 3 个问题就要求老用户重答 13 问"。
+   */
+  missingDimensions?: DeclarationDimension[]
 }
 
 /**
@@ -64,7 +72,22 @@ export function shouldTriggerInterview(
     }
   }
 
-  // 3. 版本过期 → 重新访谈（未来问题集调整时触发）
+  // 3. 增量补问：核心维度已完整，但「我是谁」三问还没答。
+  //    这三问是后来加的（2026-09-24），老用户没有这些数据却不该被当成"未访谈"，
+  //    更不该被要求重答全部问题 —— 只补缺的那几问，成本最低、抵触最小。
+  //    刻意放在版本过期判断之前：补齐缺口优先于全量重访。
+  const missingIdentity = missingIdentityDimensions(declaration)
+  if (missingIdentity.length > 0) {
+    return {
+      shouldTrigger: true,
+      reason:
+        '再补 3 个问题，让 AI 知道你是谁、坚持什么、要去哪里',
+      triggerType: 'supplement',
+      missingDimensions: missingIdentity,
+    }
+  }
+
+  // 4. 版本过期 → 重新访谈（未来问题集调整时触发）
   if (
     declaration.interviewVersion &&
     declaration.interviewVersion < CURRENT_INTERVIEW_VERSION
@@ -76,7 +99,7 @@ export function shouldTriggerInterview(
     }
   }
 
-  // 4. 完整 + 版本号匹配 → 不触发
+  // 5. 完整 + 版本号匹配 → 不触发
   return { shouldTrigger: false }
 }
 

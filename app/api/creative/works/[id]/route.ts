@@ -16,8 +16,11 @@ import { authFailureResponse } from '@/lib/apiAuth'
 import { createServerClient } from '@/lib/supabaseServer'
 import { trackEvent } from '@/lib/creative/interest/eventTracker'
 import { runBuild } from '@/lib/creative/interest/builder'
+import { afterResponse } from '@/lib/afterResponse'
+import { parseVectorColumn } from '@/lib/creative/interest/vectorMath'
 
-export const maxDuration = 20
+// 后台增量重建（20–150s）挂在响应之后执行，需要实例存活窗口兜底
+export const maxDuration = 60
 export const dynamic = 'force-dynamic'
 
 export async function DELETE(
@@ -50,7 +53,7 @@ export async function DELETE(
     // ── 查行：不存在 / 他人作品（RLS 下同样查不到）一律 404，不暴露存在性 ──
     const { data: row, error: queryErr } = await supabase
       .from('generation_history')
-      .select('id, user_id, project_id, topic')
+      .select('id, user_id, project_id, topic, embedding')
       .eq('id', id)
       .maybeSingle()
 
@@ -89,11 +92,17 @@ export async function DELETE(
       targetType: 'generation',
       targetId: id,
       topicExcerpt: typeof row.topic === 'string' ? row.topic : null,
+      // 带上作品向量：scoreClusters 的负事件按"最近质心"归属，无向量的删除事件
+      // 会被整段跳过 —— 那样 -0.5 弱负分等于没生效，删除只剩"撤回"没有"惩罚"。
+      // 行马上要被删，必须在这里把向量读出来。
+      embedding: parseVectorColumn(row.embedding),
     })
 
-    // 删除是低频高信号行为：立即增量重建让推荐队列尽快反映删除（fire-and-forget，
-    // 在途折叠由 runBuild 步骤 0 兜底）；失败不影响删除结果
-    void runBuild(supabase, userId, 'incremental').catch(() => {})
+    // 删除是低频高信号行为：立即增量重建让推荐队列尽快反映删除。
+    // 走 afterResponse 而非 void：serverless 下响应一发出进程即可能被冻结，
+    // 20–150s 的 build 会跑不完就死（"删了作品推荐不变"的静默根因之一）。
+    // 在途折叠仍由 runBuild 步骤 0 兜底；失败不影响删除结果。
+    afterResponse(() => runBuild(supabase, userId, 'incremental').catch(() => {}))
 
     return NextResponse.json({ ok: true, id })
   } catch (error) {

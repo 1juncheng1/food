@@ -172,7 +172,7 @@ export default function AdminPointsPage() {
   if (loading) {
     return (
       <PageShell width="default">
-        <div className="flex items-center justify-center gap-2 py-24 text-sm text-zinc-500">
+        <div className="flex items-center justify-center gap-2 py-24 vs-note">
           <Loader2 size={16} className="animate-spin" />
           正在加载配置…
         </div>
@@ -201,7 +201,7 @@ export default function AdminPointsPage() {
         <SurfaceCard>
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-[260px] flex-1">
-              <label className="mb-1.5 block text-[12px] text-zinc-500" htmlFor="target-user">
+              <label className="vs-note mb-1.5 block" htmlFor="target-user">
                 用户 ID
               </label>
               <input
@@ -209,11 +209,11 @@ export default function AdminPointsPage() {
                 value={targetUser}
                 onChange={(e) => setTargetUser(e.target.value)}
                 placeholder="auth.users 的 uuid"
-                className="w-full rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-indigo-500/40"
+                className="vs-input vs-input-field w-full placeholder:text-[var(--vs-ink-5)]"
               />
             </div>
             <div className="w-32">
-              <label className="mb-1.5 block text-[12px] text-zinc-500" htmlFor="delta">
+              <label className="vs-note mb-1.5 block" htmlFor="delta">
                 积分增减
               </label>
               <input
@@ -223,13 +223,13 @@ export default function AdminPointsPage() {
                 type="number"
                 step={1}
                 placeholder="+100 / -50"
-                className="w-full rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-indigo-500/40"
+                className="vs-input vs-input-field w-full placeholder:text-[var(--vs-ink-5)]"
               />
             </div>
             <button
               onClick={submitAdjust}
               disabled={adjusting}
-              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+              className="vs-btn vs-btn-primary disabled:opacity-50"
             >
               {adjusting && <Loader2 size={14} className="animate-spin" />}
               提交调整
@@ -237,7 +237,7 @@ export default function AdminPointsPage() {
           </div>
 
           <div className="mt-4">
-            <label className="mb-1.5 block text-[12px] text-zinc-500" htmlFor="reason">
+            <label className="vs-note mb-1.5 block" htmlFor="reason">
               原因（必填）
             </label>
             <input
@@ -246,14 +246,14 @@ export default function AdminPointsPage() {
               onChange={(e) => setReason(e.target.value)}
               maxLength={200}
               placeholder="例如：补偿用户 / 测试修正 / 活动奖励 / 退款"
-              className="w-full rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-indigo-500/40"
+              className="vs-input vs-input-field w-full placeholder:text-[var(--vs-ink-5)]"
             />
             <div className="mt-2 flex flex-wrap gap-2">
               {QUICK_REASONS.map((r) => (
                 <button
                   key={r}
                   onClick={() => setReason(r)}
-                  className="rounded-lg border border-white/[0.1] px-3 py-1 text-[12px] text-zinc-400 transition hover:border-white/20 hover:text-zinc-200"
+                  className="rounded-lg border border-[var(--vs-line)] px-3 py-1 text-[12px] text-[var(--vs-ink-3)] transition hover:border-white/20 hover:text-[var(--vs-ink)]"
                 >
                   {r}
                 </button>
@@ -262,7 +262,7 @@ export default function AdminPointsPage() {
           </div>
 
           {adjustFeedback && (
-            <p className={`mt-3 text-[13px] ${adjustFeedback.ok ? 'text-emerald-300' : 'text-red-300'}`}>
+            <p className={`mt-3 text-[13px] ${adjustFeedback.ok ? 'text-[var(--vs-ink)]' : 'vs-error-text'}`}>
               {adjustFeedback.message}
             </p>
           )}
@@ -276,7 +276,7 @@ export default function AdminPointsPage() {
         <SurfaceCard>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="mb-1.5 block text-[12px] text-zinc-500" htmlFor="pay-method">
+              <label className="vs-note mb-1.5 block" htmlFor="pay-method">
                 收款方式
               </label>
               <input
@@ -284,11 +284,11 @@ export default function AdminPointsPage() {
                 value={method}
                 onChange={(e) => setMethod(e.target.value)}
                 maxLength={40}
-                className="w-full rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-100 outline-none focus:border-indigo-500/40"
+                className="vs-input vs-input-field w-full"
               />
             </div>
             <div>
-              <label className="mb-1.5 block text-[12px] text-zinc-500" htmlFor="pay-account">
+              <label className="vs-note mb-1.5 block" htmlFor="pay-account">
                 收款账户名（可选）
               </label>
               <input
@@ -296,13 +296,13 @@ export default function AdminPointsPage() {
                 value={accountName}
                 onChange={(e) => setAccountName(e.target.value)}
                 maxLength={60}
-                className="w-full rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-100 outline-none focus:border-indigo-500/40"
+                className="vs-input vs-input-field w-full"
               />
             </div>
           </div>
 
           <div className="mt-4">
-            <label className="mb-1.5 block text-[12px] text-zinc-500" htmlFor="pay-qr">
+            <label className="vs-note mb-1.5 block" htmlFor="pay-qr">
               二维码图片地址（http/https）
             </label>
             <input
@@ -310,12 +310,12 @@ export default function AdminPointsPage() {
               value={qrUrl}
               onChange={(e) => setQrUrl(e.target.value)}
               placeholder="https://..."
-              className="w-full rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-indigo-500/40"
+              className="vs-input vs-input-field w-full placeholder:text-[var(--vs-ink-5)]"
             />
           </div>
 
           <div className="mt-4">
-            <label className="mb-1.5 block text-[12px] text-zinc-500" htmlFor="pay-instruction">
+            <label className="vs-note mb-1.5 block" htmlFor="pay-instruction">
               收款说明
             </label>
             <textarea
@@ -324,14 +324,14 @@ export default function AdminPointsPage() {
               onChange={(e) => setInstruction(e.target.value)}
               maxLength={300}
               rows={2}
-              className="w-full rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-100 outline-none focus:border-indigo-500/40"
+              className="vs-input vs-input-field w-full"
             />
           </div>
 
           <button
             onClick={savePayment}
             disabled={savingPayment}
-            className="mt-5 inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+            className="mt-5 vs-btn vs-btn-primary disabled:opacity-50"
           >
             {savingPayment && <Loader2 size={14} className="animate-spin" />}
             <Save size={15} />
@@ -339,7 +339,7 @@ export default function AdminPointsPage() {
           </button>
 
           {paymentFeedback && (
-            <p className={`mt-3 text-[13px] ${paymentFeedback.ok ? 'text-emerald-300' : 'text-red-300'}`}>
+            <p className={`mt-3 text-[13px] ${paymentFeedback.ok ? 'text-[var(--vs-ink)]' : 'vs-error-text'}`}>
               {paymentFeedback.message}
             </p>
           )}
@@ -356,7 +356,7 @@ export default function AdminPointsPage() {
         <SurfaceCard>
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
-              <label className="mb-1.5 block text-[12px] text-zinc-500" htmlFor="cfg-ppy">
+              <label className="vs-note mb-1.5 block" htmlFor="cfg-ppy">
                 1 元 = ? 积分
               </label>
               <input
@@ -366,11 +366,11 @@ export default function AdminPointsPage() {
                 type="number"
                 min={1}
                 step={1}
-                className="w-full rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-100 outline-none focus:border-indigo-500/40"
+                className="vs-input vs-input-field w-full"
               />
             </div>
             <div>
-              <label className="mb-1.5 block text-[12px] text-zinc-500" htmlFor="cfg-min">
+              <label className="vs-note mb-1.5 block" htmlFor="cfg-min">
                 最低充值（元）
               </label>
               <input
@@ -380,11 +380,11 @@ export default function AdminPointsPage() {
                 type="number"
                 min={0}
                 step={1}
-                className="w-full rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-100 outline-none focus:border-indigo-500/40"
+                className="vs-input vs-input-field w-full"
               />
             </div>
             <div>
-              <label className="mb-1.5 block text-[12px] text-zinc-500" htmlFor="cfg-max">
+              <label className="vs-note mb-1.5 block" htmlFor="cfg-max">
                 单笔上限（元）
               </label>
               <input
@@ -394,12 +394,12 @@ export default function AdminPointsPage() {
                 type="number"
                 min={1}
                 step={1}
-                className="w-full rounded-xl border border-white/[0.1] bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-100 outline-none focus:border-indigo-500/40"
+                className="vs-input vs-input-field w-full"
               />
             </div>
           </div>
 
-          <p className="mt-3 inline-flex items-center gap-2 text-[12px] text-zinc-500">
+          <p className="mt-3 inline-flex items-center gap-2 vs-note">
             <Wallet size={13} />
             当前：1 元 = {config?.pointsPerYuan ?? 20} 积分，注册赠送{' '}
             {config?.registerBonusPoints ?? 20} 积分
@@ -409,7 +409,7 @@ export default function AdminPointsPage() {
             <button
               onClick={saveConfig}
               disabled={savingConfig}
-              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+              className="vs-btn vs-btn-primary disabled:opacity-50"
             >
               {savingConfig && <Loader2 size={14} className="animate-spin" />}
               <Save size={15} />
@@ -418,7 +418,7 @@ export default function AdminPointsPage() {
           </div>
 
           {configFeedback && (
-            <p className={`mt-3 text-[13px] ${configFeedback.ok ? 'text-emerald-300' : 'text-red-300'}`}>
+            <p className={`mt-3 text-[13px] ${configFeedback.ok ? 'text-[var(--vs-ink)]' : 'vs-error-text'}`}>
               {configFeedback.message}
             </p>
           )}

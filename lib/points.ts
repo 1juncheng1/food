@@ -44,6 +44,8 @@ export const CONFIG_KEYS = {
   AI_PRECHARGE_BLUEPRINT: 'AI_PRECHARGE_BLUEPRINT',
   AI_PRECHARGE_DIAGNOSIS: 'AI_PRECHARGE_DIAGNOSIS',
   AI_PRECHARGE_CHAT: 'AI_PRECHARGE_CHAT',
+  AI_PRECHARGE_ANALYSIS: 'AI_PRECHARGE_ANALYSIS',
+  AI_PRECHARGE_KNOWLEDGE: 'AI_PRECHARGE_KNOWLEDGE',
 } as const
 
 export type ConfigKey = (typeof CONFIG_KEYS)[keyof typeof CONFIG_KEYS]
@@ -66,6 +68,8 @@ export interface PointConfig {
     blueprint: number
     diagnosis: number
     chat: number
+    analysis: number
+    knowledge: number
   }
 }
 
@@ -76,7 +80,7 @@ export const FALLBACK_CONFIG: PointConfig = {
   maxRechargeAmount: DEFAULT_MAX_RECHARGE_AMOUNT,
   registerBonusPoints: DEFAULT_REGISTER_BONUS_POINTS,
   minGenerationCost: DEFAULT_MIN_GENERATION_COST,
-  precharge: { generation: 10, blueprint: 5, diagnosis: 5, chat: 3 },
+  precharge: { generation: 10, blueprint: 5, diagnosis: 5, chat: 3, analysis: 5, knowledge: 3 },
 }
 
 // ── 进程内短缓存：配置读一次管 60 秒 ──────────────────────────
@@ -124,6 +128,8 @@ export async function getPointConfig(supabase: SupabaseClient): Promise<PointCon
         blueprint: pick(raw, CONFIG_KEYS.AI_PRECHARGE_BLUEPRINT, 5),
         diagnosis: pick(raw, CONFIG_KEYS.AI_PRECHARGE_DIAGNOSIS, 5),
         chat: pick(raw, CONFIG_KEYS.AI_PRECHARGE_CHAT, 3),
+        analysis: pick(raw, CONFIG_KEYS.AI_PRECHARGE_ANALYSIS, 5),
+        knowledge: pick(raw, CONFIG_KEYS.AI_PRECHARGE_KNOWLEDGE, 3),
       },
     }
     configCache = { at: now, data: cfg }

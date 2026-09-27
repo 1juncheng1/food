@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { withAiDeadline } from '@/lib/aiDeadline'
 import { IDENTITY_TEMPLATES } from '@/lib/identityTemplates'
 import { authenticateRequest, type AuthResult } from '@/lib/apiAuth'
 import { callDeepSeekChat, isLlmNetworkError, llmUserMessage, type ChatMessage } from '@/lib/llm'
@@ -18,26 +19,10 @@ import {
   type CreativeDiagnosis,
   type NextActionKey,
 } from '@/lib/creative/diagnosis'
-import {
-  formatStyleDimensions,
-  parseStyleDimensions,
-  recordDirectionSignal,
-} from '@/lib/creative/styleLearning'
-import {
-  formatEditingProfileForPrompt,
-  parseEditingProfile,
-} from '@/lib/creative/editingMemory'
-import {
-  formatCreatorModel,
-  type PersonalizationEvidence,
-} from '@/lib/creative/creatorModel'
-import {
-  normalizeCreatorDeclaration,
-  formatDeclarationForPrompt,
-  isDeclarationEmpty,
-  extractDeclarationTraits,
-  type DeclarationTrait,
-} from '@/lib/creative/creatorDeclaration'
+import { parseStyleDimensions, recordDirectionSignal } from '@/lib/creative/styleLearning'
+import { buildCreatorContextBlocks } from '@/lib/creative/creatorContext'
+import { type PersonalizationEvidence } from '@/lib/creative/creatorModel'
+import { type DeclarationTrait } from '@/lib/creative/creatorDeclaration'
 import {
   resolveMode,
   planPersonalization,
@@ -59,7 +44,7 @@ import type { UsageTag } from '@/lib/creative/knowledgeItem'
 import { normalizeInspirationAnalysis } from '@/lib/creative/inspirationAnalyzer'
 import { trackEvent } from '@/lib/creative/interest/eventTracker'
 import { runBuild } from '@/lib/creative/interest/builder'
-import { buildInterestBlock } from '@/lib/creative/interest/promptBlock'
+import { afterResponse } from '@/lib/afterResponse'
 import { retrieveMaterials, MAX_INJECT_TOTAL } from '@/lib/material/retrieval'
 import {
   buildKnowledgeInjection,
@@ -69,8 +54,10 @@ import type { CreatorKnowledgeUnit } from '@/lib/creative/knowledgeUnit'
 import type { InjectedUnitSummary } from '@/lib/creative/knowledgeInject'
 import {
   sanitizeMaterialAnnotations,
+  MATERIAL_TYPE_RULES,
   type MaterialAnnotation,
   type MaterialRetrievalResult,
+  type MaterialType,
 } from '@/lib/creative/material'
 import { inferUsageFilter } from '@/lib/material/usageFilter'
 import {
@@ -206,7 +193,10 @@ async function authenticateRequired(req: Request): Promise<AuthResult> {
   return authenticateRequest(req, '请先登录后再生成文案')
 }
 
-export async function POST(req: Request) {
+// 下面的 60 必须等于本文件的 maxDuration。
+// 本路由串行跑多段 LLM（工作分析 3 次重试 + 主提示词生成 55s），
+// 各拿一份预算会远超 maxDuration → 被平台硬杀、预扣退不回。见 lib/aiDeadline.ts
+async function handlePost(req: Request) {
   // ── AI 计费状态（Phase 4）─────────────────────────────────────
   // 刻意声明在 try **之外**：任何异常分支都要能读到它，把预扣退回去。
   //   预扣成功 → 生成 → 结算（多退少补）
@@ -485,68 +475,25 @@ ${prevText.slice(0, 6000)}
         | null
 
       if (styleProfile) {
-        // 构建风格描述段（拼入 prompt，让 AI 参考用户个人风格）
-        const toneTags = styleProfile.tone_tags?.length
-          ? styleProfile.tone_tags.join('、')
-          : '暂无'
-        // 阶段 5：从反馈/定稿/选方向行为学习出的五维画像（样本不足时为空串）
-        const learnedDims = formatStyleDimensions(styleProfile.style_dimensions)
-        const dimState = parseStyleDimensions(styleProfile.style_dimensions)
-        evidence.dimensionSamples = dimState.samples
-        if (learnedDims) evidence.layers.push('五维风格画像')
-        styleText = `\n\n【用户的创作风格特征】\n语气：${toneTags}\n节奏：${styleProfile.pace_preference}\n常用开头：${styleProfile.common_opening}\n平均长度：${styleProfile.avg_length} 字/篇\n请尽量体现这些风格特征。${learnedDims ? `\n\n${learnedDims}` : ''}`
-
-        // 个人化引擎：创作者人格块（用户可在生成页显式关闭）
-        if (creatorEnabled) {
-          const block = formatCreatorModel(styleProfile)
-          creatorText = block.text
-          creatorAvoid = block.avoid
-          evidence.layers.push(...block.layers)
-          // 第七阶段：本次采用的创作者特征（DNA 真实统计，供作品页"本次作品采用"展示）
-          evidence.traits = block.traits
-        }
-
-        // 创作者声明（访谈结果，用户主动表达，优先级 > AI 推断的 CreatorReport）
-        const declaration = normalizeCreatorDeclaration(styleProfile.creator_declaration)
-        if (!isDeclarationEmpty(declaration)) {
-          const declText = formatDeclarationForPrompt(declaration)
-          if (declText) {
-            creatorText = (creatorText ? creatorText + '\n' : '') + declText
-            evidence.layers.push('创作者声明')
-            // avoid_preference 与 avoid_elements 合并（硬约束，string[] 去重 push）
-            if (
-              declaration.avoid_preference &&
-              !creatorAvoid.includes(declaration.avoid_preference)
-            ) {
-              creatorAvoid = [...creatorAvoid, declaration.avoid_preference]
-            }
-            // 收集本次生效声明维度，回传前端展示
-            declarationTraits = extractDeclarationTraits(declaration)
-          }
-        }
-
-        // AI 协作修改（P5）：编辑偏好记忆注入（samples<2 或无有效偏好时为空串）
-        const editingState = parseEditingProfile(styleProfile.editing_profile)
-        const editingText = formatEditingProfileForPrompt(editingState)
-        if (editingText) {
-          creatorText = (creatorText ? creatorText + '\n' : '') + editingText
-          evidence.layers.push('修改偏好记忆')
-          // 高置信 avoid 偏好并入生成硬规则（硬约束，string[] 去重 push）
-          for (const p of editingState.preferences) {
-            if (p.type === 'avoid' && p.sourceCount >= 2 && !creatorAvoid.includes(p.statement)) {
-              creatorAvoid = [...creatorAvoid, p.statement]
-            }
-          }
-        }
+        // 个人数据注入统一走装配器（Creator Context）：与方案 / 蓝图同口径。
+        // 各块的取舍、顺序、预算、硬禁忌合并规则都收敛在装配器里，
+        // 这里只负责把结果接进本次生成的 styleText / creatorText / 硬禁忌。
+        const blocks = buildCreatorContextBlocks(styleProfile, { stage: 'article' })
+        styleText = `\n\n${blocks.styleText}`
+        creatorText = blocks.creatorText
+        creatorAvoid = [...blocks.avoid]
+        evidence.layers.push(...blocks.layers)
+        declarationTraits = blocks.declarationTraits
+        // 第七阶段：本次采用的创作者特征（DNA 真实统计，供作品页"本次作品采用"展示）
+        evidence.traits = blocks.traits
+        evidence.dimensionSamples = parseStyleDimensions(styleProfile.style_dimensions).samples
 
         // Creator Understanding Engine：长期关注领域注入。
         // 修复背景：interest_profile 由 builder 持续计算，但生成链路此前从未 select 该列，
         // 导致「AI 不知道用户关注什么」。此处只拼入 creatorText 作软参考，
         // 不进入 creatorAvoid —— 行为推断出的负向倾向不构成硬约束。
-        const interestBlock = buildInterestBlock(styleProfile.interest_profile)
-        if (interestBlock.text) {
-          creatorText = (creatorText ? creatorText + '\n' : '') + interestBlock.text
-          evidence.layers.push('长期关注领域')
+        if (blocks.interestText) {
+          creatorText = (creatorText ? creatorText + '\n' : '') + blocks.interestText
         }
       }
 
@@ -579,12 +526,14 @@ ${prevText.slice(0, 6000)}
         const bpEarly = improveCtx
           ? improveCtx.blueprint
           : normalizeBlueprint(body.blueprint)
+        // blueprint 跨模块传递、结构宽松：这里只取两个可选字段，用最小结构断言代替 any
+        type BlueprintShape = { content_type?: string; usage_tag?: string }
         const currentContentType = improveCtx
-          ? ((improveCtx.blueprint as any)?.content_type ?? '')
-          : ((bpEarly as any)?.content_type ?? '')
+          ? ((improveCtx.blueprint as BlueprintShape | null)?.content_type ?? '')
+          : ((bpEarly as BlueprintShape | null)?.content_type ?? '')
         const currentUsageTag = improveCtx
-          ? ((improveCtx.blueprint as any)?.usage_tag as string | undefined)
-          : ((bpEarly as any)?.usage_tag as string | undefined)
+          ? (improveCtx.blueprint as BlueprintShape | null)?.usage_tag
+          : (bpEarly as BlueprintShape | null)?.usage_tag
         // improve 模式下把 prevUsageTags 包成 WorkTags 形态喂给 inferUsageFilter
         const prevWorkTagsForInfer: WorkTags | null = improveCtx?.prevUsageTags?.length
           ? ({
@@ -632,6 +581,16 @@ ${prevText.slice(0, 6000)}
             return `｜使用要求：${parts.join('；')}`
           }
 
+          // 素材类型使用规则（9 种类型各自的使用约束）：
+          //   此前只展示在 UI 上（/add、AI 理解抽屉、素材选择器），AI 生成时收不到，
+          //   导致「金句优先保留原表达」「经历不得擅自变成客观事实」这类约束实际不生效。
+          //   这里随素材原文一起注入 prompt；无类型（legacy 素材）时返回空串，不注入。
+          const formatTypeRule = (t: MaterialType | null | undefined): string => {
+            if (!t) return ''
+            const rule = MATERIAL_TYPE_RULES[t]?.usageRule
+            return `素材类型：${t}（使用规则：${rule ?? '按上下文灵活使用'}）\n`
+          }
+
           // ── 创作根基：role=foundation 的用户指定素材，独立权威区块 ──
           // 放宽截断到 1000 字（根基常含产品完整定位）；被 RLS 静默丢弃时
           // （annotationMap 有 id 但 retrieved 无此条）自然不会出现，零副作用。
@@ -645,7 +604,7 @@ ${prevText.slice(0, 6000)}
               `\n\n【创作根基 · 本篇最高优先级的事实来源】\n` +
               `以下素材是用户明确指定的本篇创作根基。其中的名称、定位与事实必须严格遵循，` +
               `严禁虚构与其冲突的信息；它决定本篇"表达什么"，优先级高于其他参考素材与通用创作经验：\n` +
-              `1. 素材原文：${foundationItem.content.slice(0, FOUNDATION_SLICE)}` +
+              `1. ${formatTypeRule(foundationItem.materialType)}素材原文：${foundationItem.content.slice(0, FOUNDATION_SLICE)}` +
               `${formatUsage(annotationMap.get(foundationItem.materialId))}`
           }
 
@@ -663,7 +622,7 @@ ${prevText.slice(0, 6000)}
                 const head = selectedIdSet.has(m.materialId)
                   ? '（用户指定）'
                   : `（相似度 ${Math.round(m.relevanceScore * 100)}%）`
-                return `${head}${m.content.slice(0, 500)}｜理由：${m.relevanceReason}${formatUsage(
+                return `${head}${formatTypeRule(m.materialType)}${m.content.slice(0, 500)}｜理由：${m.relevanceReason}${formatUsage(
                   annotationMap.get(m.materialId)
                 )}`
               })
@@ -854,7 +813,7 @@ ${taskMode === 'new' ? '本次任务模式：新独立创作（New Creative Task
 文风风格：${writingStyle || '由身份自然决定'}
 ${categoryLine}
 目标字数：${wordCount} 字
-${memBlockFirst ? `\n${memBlockFirst}` : ''}${styleText}${effectiveCreatorText}${characterBlock.text}${foundationContent}${referenceContent ? `\n\n【用户素材库中与主题相关的参考内容】\n${referenceContent}` : ''}${historyWorksBlock}${priorityBlock}
+${memBlockFirst ? `\n${memBlockFirst}` : ''}${styleText}${effectiveCreatorText}${characterBlock.text}${foundationContent}${referenceContent ? `\n\n【用户素材库中与主题相关的参考内容】\n（每条素材标注的"使用规则"是该类型素材的使用约束，生成时必须遵守）\n${referenceContent}` : ''}${historyWorksBlock}${priorityBlock}
 
 要求：
 1. 严格按 5 个板块结构输出
@@ -1213,8 +1172,10 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
 
         // 行为A：新增作品是画像变更事件（与删作品路径对称），立即异步重建，
         // 让用户创作完回到 dashboard 后尽快拿到基于新作品的推荐；
-        // fire-and-forget 失败不影响生成主流程（下次进推荐页仍有按需触发兜底）。
-        void runBuild(auth.supabase, auth.userId, 'incremental').catch(() => {})
+        // 走 afterResponse：serverless 下 void 的任务在响应后会被冻死，
+        // 表现为"写了新作品推荐毫无反应"。失败不影响生成主流程
+        // （下次进推荐页仍有按需补货兜底）。
+        afterResponse(() => runBuild(auth.supabase, auth.userId, 'incremental').catch(() => {}))
 
         // ── Material Library 2.0 Phase 5：material_usages 反馈闭环 ──
         // 两个写入都在 generation_history 成功落库（trackedEvent 非 null）后触发，
@@ -1319,3 +1280,5 @@ ${creatorAvoid.length ? `个性化硬禁忌（该创作者明确排斥，出现�
     return NextResponse.json({ error: '服务器内部错误' }, { status: 500 })
   }
 }
+
+export const POST = withAiDeadline(60, handlePost)

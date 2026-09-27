@@ -1,3 +1,5 @@
+import { HOME_IMAGES } from './vision-assets'
+
 // ────────────────────────────────────────────────────────────
 // 首页 Landing Page 静态内容
 //
@@ -14,10 +16,14 @@ export interface GrowthPathItem {
   system: string
   /** 卡片描述 */
   desc: string
-  /** 预留图片路径（不存在时优雅降级为占位区域） */
+  /** 图片路径，统一来自 /images/vision/ 注册表 */
   image: string
-  /** 占位区域上的说明文字 */
-  placeholder: string
+  /**
+   * 素材原始像素尺寸。三张封面比例各不相同，按原尺寸渲染才能做到「不裁切」；
+   * 换图时这里必须跟着改，否则裁切会以「毫无报错」的方式回来。
+   */
+  width: number
+  height: number
 }
 
 export const GROWTH_PATH: GrowthPathItem[] = [
@@ -26,24 +32,27 @@ export const GROWTH_PATH: GrowthPathItem[] = [
     title: '收集你的灵感',
     system: 'Personal Knowledge Base',
     desc: '将文章、视频、想法和知识沉淀下来，让AI逐渐理解你的创作世界。',
-    image: '/images/home/inspiration.png',
-    placeholder: '灵感收集',
+    image: HOME_IMAGES.path[0],
+    width: 736,
+    height: 920,
   },
   {
     id: 'knowledge',
     title: '形成你的观点',
     system: 'Creator Knowledge System',
     desc: 'AI结合你的知识、经历和思考方式，帮助你从信息中形成独特视角。',
-    image: '/images/home/knowledge.png',
-    placeholder: '观点形成',
+    image: HOME_IMAGES.path[1],
+    width: 736,
+    height: 920,
   },
   {
     id: 'creation',
     title: '创作你的作品',
     system: 'AI生成 + Work Agent',
     desc: '从一个模糊想法开始，与AI共同完善结构、观点和表达。',
-    image: '/images/home/creation.png',
-    placeholder: '作品创作',
+    image: HOME_IMAGES.path[2],
+    width: 725,
+    height: 1080,
   },
 ]
 

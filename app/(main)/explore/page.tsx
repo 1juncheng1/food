@@ -381,14 +381,14 @@ export default function ExplorePage() {
           <>
             <Link
               href="/publish"
-              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500"
+              className="vs-btn vs-btn-primary"
             >
               发布灵感
             </Link>
             <button
               onClick={handleRefresh}
               disabled={refreshing}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.1] px-3.5 py-2.5 text-[13px] font-medium text-zinc-300 transition hover:border-white/20 hover:text-white disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--vs-line)] px-3.5 py-2.5 text-[13px] font-medium text-[var(--vs-ink-2)] transition hover:border-white/20 hover:text-[var(--vs-ink)] disabled:opacity-40"
             >
               <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
               {refreshing ? '刷新中…' : '刷新'}
@@ -454,7 +454,7 @@ export default function ExplorePage() {
             className="flex items-center justify-center py-6"
           >
             {loadingMore && (
-              <span className="animate-pulse text-sm text-zinc-500">加载更多…</span>
+              <span className="animate-pulse vs-note">加载更多…</span>
             )}
           </div>
         )}
@@ -462,7 +462,7 @@ export default function ExplorePage() {
         {/* ── 已加载全部 ── */}
         {!loading && !hasMore && posts.length > 0 && (
           <div className="flex items-center justify-center py-6">
-            <span className="text-xs text-zinc-600">已经看到最后一条了</span>
+            <span className="vs-note">已经看到最后一条了</span>
           </div>
         )}
     </PageShell>

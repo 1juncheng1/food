@@ -1,23 +1,567 @@
 /* ══════════════════════════════════════════════════════════════
-   VS Design System —— 全站统一视觉层
-   新增文件，不修改 globals.css 内任何既有规则（避免破坏三套历史样式）
-   只提供 .vs-* 前缀的原子样式 + 动效，其余一律用 Tailwind 工具类
+   VISION VISUAL LANGUAGE · 视界视觉语言
+   ──────────────────────────────────────────────────────────────
+   一句话定义：黑色是空间，白色是思想，冷蓝微光代表科技，
+   图片与人物代表人，文字代表观点。
+
+   三条硬规则：
+   1. 只有一种强调色（冷蓝微光 --vs-beam），全站零渐变。
+   2. 只有一套圆角尺度（--vs-r 一家），不做大量圆角矩形。
+   3. 动效只服务层级与叙事，慢、克制、可关闭。
+
+   本文件在 globals.css 之后加载，是视觉层的唯一来源。
+   所有 .vs-* 前缀 = 视界视觉语言，跨页通用。
    ══════════════════════════════════════════════════════════════ */
 
 :root {
-  --vs-surface: rgba(255, 255, 255, 0.03);
-  --vs-surface-hover: rgba(255, 255, 255, 0.055);
-  --vs-border: rgba(255, 255, 255, 0.08);
-  --vs-border-hover: rgba(255, 255, 255, 0.16);
-  --vs-radius: 18px;
+  /* ── 空间：黑是空间 ────────────────────────────────── */
+  --vs-void: #07080b;        /* 页面底：比纯黑浅一度，保留纵深 */
+  --vs-void-1: #0a0c10;      /* 抬升一层 */
+  --vs-void-2: #0e1116;      /* 面板底 */
+  --vs-graphite: #16191f;    /* 石墨灰：可交互面的底色 */
+  --vs-graphite-hi: #1d2129; /* 石墨灰高态 */
+
+  /* 深紫只作为空间深处的阴影色，绝不作为 UI 用色 */
+  --vs-depth: #14121a;
+
+  /* ── 界面：界 ────────────────────────────────────── */
+  --vs-line: rgba(255, 255, 255, 0.07);        /* 默认细线 */
+  --vs-line-2: rgba(255, 255, 255, 0.12);      /* 强调细线 */
+  --vs-line-3: rgba(255, 255, 255, 0.2);       /* 取景框角标 */
+
+  /* ── 思想：白是思想 ────────────────────────────────── */
+  --vs-ink: #f2f4f7;                           /* 标题 / 正文 */
+  --vs-ink-2: rgba(242, 244, 247, 0.68);       /* 次级正文 */
+  --vs-ink-3: rgba(242, 244, 247, 0.46);       /* 说明文字 */
+  --vs-ink-4: rgba(242, 244, 247, 0.3);        /* 弱化信息 */
+  --vs-ink-5: rgba(242, 244, 247, 0.18);       /* 几乎消失的信息 */
+
+  /* ── 科技：冷蓝微光（唯一强调色，低饱和） ─────────────── */
+  --vs-beam: #8a9bb8;                          /* 银灰冷蓝 */
+  --vs-beam-text: #a9b8cd;                     /* 冷蓝文字（保证对比度） */
+  --vs-beam-line: rgba(138, 155, 184, 0.32);
+  --vs-beam-wash: rgba(138, 155, 184, 0.08);   /* 极淡的微光面 */
+  --vs-beam-glow: rgba(138, 155, 184, 0.16);   /* 焦点态光晕，面积受控 */
+
+  /* ── 字阶（排版即层级，不靠颜色喊话） ─────────────── */
+  --vs-display: clamp(38px, 6.2vw, 72px);
+  --vs-h1: clamp(30px, 4.2vw, 50px);
+  --vs-h2: clamp(23px, 2.9vw, 34px);
+  --vs-h3: 18px;
+  --vs-lead: clamp(16px, 1.6vw, 19px);
+  --vs-body: 15px;
+  --vs-meta: 12px;
+  --vs-micro: 11px;
+
+  /* ── 空间尺度（呼吸感来自这里） ────────────────────── */
+  --vs-section: clamp(76px, 9.5vw, 136px);     /* 区块上下留白 */
+  --vs-gutter: clamp(20px, 4vw, 48px);         /* 页面左右安全边距 */
+  --vs-measure: 62ch;                          /* 正文可读宽度上限 */
+
+  /* ── 形状一致性锁：全站一套圆角 ────────────────────── */
+  --vs-r: 4px;                                 /* 所有面 / 框 / 按钮 */
+  --vs-r-sm: 3px;                              /* 标签等更小的元素 */
+
+  /* ── 动效：慢、克制、只做 transform 与 opacity ───────── */
+  --vs-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --vs-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --vs-dur-fast: 220ms;
+  --vs-dur: 420ms;
+  --vs-dur-slow: 760ms;
 }
 
-/* ── 骨架屏：柔和扫光，替代裸露的 animate-pulse ── */
+/* ══════════════════════════════════════════════════════════════
+   一、排版原语
+   ══════════════════════════════════════════════════════════════ */
+
+.vs-display {
+  font-size: var(--vs-display);
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -0.035em;
+  color: var(--vs-ink);
+  text-wrap: balance;
+}
+
+.vs-h1 {
+  font-size: var(--vs-h1);
+  font-weight: 600;
+  line-height: 1.14;
+  letter-spacing: -0.028em;
+  color: var(--vs-ink);
+  text-wrap: balance;
+}
+
+.vs-h2 {
+  font-size: var(--vs-h2);
+  font-weight: 600;
+  line-height: 1.22;
+  letter-spacing: -0.024em;
+  color: var(--vs-ink);
+  text-wrap: balance;
+}
+
+.vs-h3 {
+  font-size: var(--vs-h3);
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  color: var(--vs-ink);
+}
+
+/* 引言：比正文大一号，是观点不是说明 */
+.vs-lead {
+  font-size: var(--vs-lead);
+  font-weight: 400;
+  line-height: 1.6;
+  color: var(--vs-ink-2);
+  max-width: 34ch;
+  text-wrap: pretty;
+}
+
+.vs-body {
+  font-size: var(--vs-body);
+  line-height: 1.78;
+  color: var(--vs-ink-3);
+  max-width: var(--vs-measure);
+  text-wrap: pretty;
+}
+
+/* 眉标：全站配额每 3 个区块至多 1 个，不能到处贴 */
+.vs-mark {
+  font-size: var(--vs-micro);
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--vs-ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 数据 / 序号：一律等宽，是精密感的来源（不设颜色，便于继承语境） */
+.vs-num {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+/* 弱化的数据 / 序号（默认用法） */
+.vs-num-dim {
+  color: var(--vs-ink-4);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   二、结构原语：界（边界线、网格、空间层次）
+   ══════════════════════════════════════════════════════════════ */
+
+/* 细线：单向渐隐，不是上下都描边的盒子 */
+.vs-rule {
+  height: 1px;
+  border: 0;
+  background: linear-gradient(
+    90deg,
+    var(--vs-line-2),
+    var(--vs-line) 45%,
+    transparent
+  );
+}
+
+.vs-rule-v {
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    var(--vs-line-2),
+    var(--vs-line) 45%,
+    transparent
+  );
+}
+
+/* 网格底纹：数字空间的暗示，永远在内容之下、极低对比 */
+.vs-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(78% 78% at 50% 50%, #000, transparent);
+  mask-image: radial-gradient(78% 78% at 50% 50%, #000, transparent);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   三、取景框：视（观察窗口、边界、看见）
+   用于所有"被观看"的内容：主视觉、作品、人物、场景。
+   ══════════════════════════════════════════════════════════════ */
+
+.vs-frame {
+  position: relative;
+  border: 1px solid var(--vs-line);
+  border-radius: var(--vs-r);
+  background: var(--vs-void-1);
+  overflow: hidden;
+}
+
+/* 四角角标：只出现在一级视觉主体上，二级内容不用 */
+.vs-frame-marked::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--vs-line-3), var(--vs-line-3)) left top / 16px 1px no-repeat,
+    linear-gradient(var(--vs-line-3), var(--vs-line-3)) left top / 1px 16px no-repeat,
+    linear-gradient(var(--vs-line-3), var(--vs-line-3)) right top / 16px 1px no-repeat,
+    linear-gradient(var(--vs-line-3), var(--vs-line-3)) right top / 1px 16px no-repeat,
+    linear-gradient(var(--vs-line-3), var(--vs-line-3)) left bottom / 16px 1px no-repeat,
+    linear-gradient(var(--vs-line-3), var(--vs-line-3)) left bottom / 1px 16px no-repeat,
+    linear-gradient(var(--vs-line-3), var(--vs-line-3)) right bottom / 16px 1px no-repeat,
+    linear-gradient(var(--vs-line-3), var(--vs-line-3)) right bottom / 1px 16px no-repeat;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   四、图片槽：所有需要视觉内容的位置都走这里
+   真实图片放进 public/images/vision/ 即自动生效，无需改代码。
+   ══════════════════════════════════════════════════════════════ */
+
+.vs-slot {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background:
+    radial-gradient(70% 60% at 50% 0%, rgba(138, 155, 184, 0.05), transparent 72%),
+    var(--vs-void-1);
+}
+
+.vs-slot-img {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  animation: vs-img-in 900ms var(--vs-ease-out) both;
+}
+
+/* 图片渐显：电影感来自"慢慢出现"，不是特效 */
+@keyframes vs-img-in {
+  from {
+    opacity: 0;
+    transform: scale(1.015);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 占位态：明确标注"这里用于后续替换真实图片" */
+.vs-slot-empty {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  text-align: center;
+}
+
+.vs-slot-empty-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px dashed var(--vs-line-2);
+  border-radius: var(--vs-r);
+  color: var(--vs-ink-4);
+}
+
+.vs-slot-empty-kind {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: var(--vs-micro);
+  letter-spacing: 0.22em;
+  color: var(--vs-ink-3);
+}
+
+.vs-slot-empty-note {
+  font-size: var(--vs-meta);
+  line-height: 1.6;
+  color: var(--vs-ink-5);
+  max-width: 30ch;
+}
+
+/* 图片加载完成后压暗，保证叠加文字可读 */
+.vs-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to top,
+    rgba(7, 8, 11, 0.72),
+    rgba(7, 8, 11, 0.18) 46%,
+    rgba(7, 8, 11, 0.06)
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   五、布局骨架
+   ══════════════════════════════════════════════════════════════ */
+
+.vs-shell {
+  position: relative;
+  overflow-x: clip;
+}
+
+.vs-container {
+  width: 100%;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding-inline: var(--vs-gutter);
+  position: relative;
+}
+
+.vs-container-wide {
+  width: 100%;
+  max-width: 1560px;
+  margin: 0 auto;
+  padding-inline: var(--vs-gutter);
+  position: relative;
+}
+
+.vs-section {
+  position: relative;
+  padding-block: var(--vs-section);
+  scroll-margin-top: 24px;
+}
+
+/* 区块标题：左对齐 + 竖向堆叠，不做"左大标题右小段落"的漂浮排版 */
+.vs-section-head {
+  max-width: 720px;
+  margin-bottom: clamp(40px, 5vw, 68px);
+}
+
+.vs-section-head-center {
+  max-width: 720px;
+  margin-inline: auto;
+  margin-bottom: clamp(40px, 5vw, 68px);
+  text-align: center;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   六、交互：精密感来自极小的位移与正确的焦点态
+   ══════════════════════════════════════════════════════════════ */
+
+.vs-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px 26px;
+  border-radius: var(--vs-r);
+  border: 1px solid transparent;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color var(--vs-dur-fast) var(--vs-ease),
+    border-color var(--vs-dur-fast) var(--vs-ease),
+    color var(--vs-dur-fast) var(--vs-ease),
+    transform var(--vs-dur-fast) var(--vs-ease),
+    box-shadow var(--vs-dur-fast) var(--vs-ease);
+}
+
+/* 主行动：唯一一个被允许"亮起来"的面，用冷蓝微光不用紫渐变 */
+.vs-btn-primary {
+  background: var(--vs-beam);
+  color: #0a0c10;
+  box-shadow: 0 0 0 0 var(--vs-beam-glow);
+}
+
+.vs-btn-primary:hover {
+  background: #9dabc4;
+  box-shadow: 0 10px 30px -12px var(--vs-beam-glow);
+  transform: translateY(-1px);
+}
+
+.vs-btn-primary:active {
+  transform: translateY(0) scale(0.99);
+}
+
+/* 次行动：细线勾边，不抢注意力 */
+.vs-btn-ghost {
+  background: transparent;
+  border-color: var(--vs-line-2);
+  color: var(--vs-ink-2);
+}
+
+.vs-btn-ghost:hover {
+  border-color: var(--vs-beam-line);
+  background: var(--vs-beam-wash);
+  color: var(--vs-ink);
+}
+
+.vs-btn-ghost:active {
+  transform: scale(0.99);
+}
+
+.vs-btn:focus-visible,
+.vs-link:focus-visible {
+  outline: 1px solid var(--vs-beam);
+  outline-offset: 3px;
+}
+
+/* 紧凑按钮：只用于导航栏这类高度受限的位置 */
+.vs-btn-sm {
+  padding: 9px 16px;
+  font-size: 13px;
+}
+
+.vs-btn:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* 首屏主视觉视频：素材 720×900 正好 4:5，与 box 同比例，cover 不会剪掉画面。
+   注意 height 交给 aspect-ratio 算，不要写死——写死就等于重新开始裁切。 */
+.vs-hero-video {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4 / 5;
+  object-fit: cover;
+  background: var(--vs-void-1);
+  animation: vs-img-in 900ms var(--vs-ease-out) both;
+}
+
+/* 品牌文字标（透明底反白字标） */
+.vs-logo-text {
+  display: block;
+  height: 20px;
+  width: auto;
+}
+
+/* 顶部导航：单行、不超过 72px、只因层级需要才加毛玻璃 */
+.vs-nav {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  border-bottom: 1px solid var(--vs-line);
+  background: rgba(7, 8, 11, 0.78);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+}
+
+.vs-nav-link {
+  position: relative;
+  font-size: 14px;
+  color: var(--vs-ink-3);
+  text-decoration: none;
+  transition: color var(--vs-dur-fast) var(--vs-ease);
+}
+
+.vs-nav-link:hover {
+  color: var(--vs-ink);
+}
+
+.vs-nav-link:focus-visible {
+  outline: 1px solid var(--vs-beam);
+  outline-offset: 4px;
+}
+
+.vs-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--vs-ink-2);
+  text-decoration: none;
+  transition: color var(--vs-dur-fast) var(--vs-ease);
+}
+
+.vs-link:hover {
+  color: var(--vs-ink);
+}
+
+.vs-link .vs-link-arrow {
+  transition: transform var(--vs-dur-fast) var(--vs-ease);
+}
+
+.vs-link:hover .vs-link-arrow {
+  transform: translateX(3px);
+}
+
+/* 危险动作：与 vs-error 同源的红，只用于删除这类不可逆操作 */
+.vs-link-danger {
+  display: inline-flex;
+  align-items: center;
+  font-size: 14px;
+  color: var(--vs-danger);
+}
+
+.vs-link-danger:hover {
+  color: #fecaca;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   七、滚动入场：内容缓慢出现，不做闪烁与粒子
+   ══════════════════════════════════════════════════════════════ */
+
+.vs-reveal {
+  opacity: 0;
+  transform: translateY(20px);
+  transition:
+    opacity var(--vs-dur-slow) var(--vs-ease-out),
+    transform var(--vs-dur-slow) var(--vs-ease-out);
+  will-change: opacity, transform;
+}
+
+.vs-reveal[data-revealed='true'] {
+  opacity: 1;
+  transform: none;
+  will-change: auto;
+}
+
+@media (scripting: none) {
+  .vs-reveal {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   八、沿用组件（components/vision/* 依赖，颜色已改为新语言）
+   ══════════════════════════════════════════════════════════════ */
+
+:root {
+  --vs-surface: rgba(255, 255, 255, 0.026);
+  --vs-surface-hover: rgba(255, 255, 255, 0.05);
+  --vs-border: var(--vs-line);
+  --vs-border-hover: var(--vs-line-2);
+  --vs-radius: var(--vs-r);
+
+  /* 语义色：全站仅保留两套，琥珀=需要注意，红=硬禁忌/不可逆。其余一律走中性层级 */
+  --vs-warn: var(--vs-warn);
+  --vs-warn-line: rgba(252, 211, 77, 0.28);
+  --vs-warn-wash: rgba(252, 211, 77, 0.07);
+  --vs-danger: var(--vs-danger);
+  --vs-danger-line: var(--vs-danger-line);
+  --vs-danger-wash: var(--vs-danger-wash);
+}
+
+/* 骨架屏：柔和扫光，替代裸露的 animate-pulse */
 .vs-skeleton {
   position: relative;
   overflow: hidden;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.045);
+  border-radius: var(--vs-r-sm);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .vs-skeleton::after {
@@ -27,7 +571,7 @@
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(255, 255, 255, 0.07),
+    rgba(255, 255, 255, 0.06),
     transparent
   );
   transform: translateX(-100%);
@@ -40,7 +584,7 @@
   }
 }
 
-/* ── AI 呼吸点：三点点阵，表达"AI 正在想" ── */
+/* AI 呼吸点：三点点阵，表达系统在工作（不拟人、不说话） */
 .vs-ai-dot {
   display: inline-block;
   width: 5px;
@@ -70,7 +614,7 @@
   }
 }
 
-/* ── AI 区域细渐变描边（克制，不做霓虹灯） ── */
+/* AI 区域：细冷蓝描边，不做霓虹、不做紫渐变 */
 .vs-ai-frame {
   position: relative;
 }
@@ -83,9 +627,9 @@
   padding: 1px;
   background: linear-gradient(
     135deg,
-    rgba(99, 102, 241, 0.5),
-    rgba(139, 92, 246, 0.16),
-    rgba(16, 185, 129, 0.3)
+    var(--vs-beam-line),
+    rgba(138, 155, 184, 0.06) 55%,
+    var(--vs-beam-line)
   );
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
@@ -98,7 +642,7 @@
   pointer-events: none;
 }
 
-/* ── 顶部细进度条（AI 分步推进时的不确定进度） ── */
+/* 不确定进度：细线，不使用彩色渐变条 */
 .vs-bar-track {
   position: relative;
   height: 2px;
@@ -113,7 +657,7 @@
   bottom: 0;
   width: 32%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #6366f1, #8b5cf6, #10b981);
+  background: var(--vs-beam);
   animation: vs-bar 2.4s ease-in-out infinite;
 }
 
@@ -126,9 +670,9 @@
   }
 }
 
-/* ── 入场动效：所有区块统一轻微上浮 ── */
+/* 入场：所有区块统一轻微上浮 */
 .vs-rise {
-  animation: vs-rise 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: vs-rise var(--vs-dur) var(--vs-ease-out) both;
 }
 
 @keyframes vs-rise {
@@ -142,38 +686,1073 @@
   }
 }
 
-/* ── 卡片悬停：极克制的抬升 ── */
+/* 卡片悬停：极克制的抬升 */
 .vs-lift {
   transition:
-    border-color 0.22s ease,
-    background-color 0.22s ease,
-    transform 0.22s ease;
+    border-color var(--vs-dur-fast) var(--vs-ease),
+    background-color var(--vs-dur-fast) var(--vs-ease),
+    transform var(--vs-dur-fast) var(--vs-ease);
 }
 
 .vs-lift:hover {
   transform: translateY(-2px);
 }
 
-/* ── 分隔线 ── */
+/* 分隔线 */
 .vs-divider {
   height: 1px;
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0.09),
-    rgba(255, 255, 255, 0.02)
-  );
+  background: linear-gradient(90deg, var(--vs-line-2), var(--vs-line));
 }
 
-/* ── 无障碍：减少动效 ── */
+/* ══════════════════════════════════════════════════════════════
+   九、创作工作台
+   两栏（命题 / 上下文）+ 全宽产出区。
+   工作台不是仪表盘：面板只靠细线与留白区分，不靠阴影与卡片堆叠。
+   ══════════════════════════════════════════════════════════════ */
+
+.vs-bench-page {
+  padding-block: clamp(28px, 4vw, 48px) clamp(56px, 7vw, 96px);
+}
+
+.vs-bench-head {
+  margin-bottom: clamp(32px, 4vw, 52px);
+}
+
+.vs-bench {
+  display: grid;
+  gap: clamp(20px, 2.4vw, 32px);
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 1024px) {
+  .vs-bench {
+    grid-template-columns: minmax(0, 1.28fr) minmax(0, 0.72fr);
+    align-items: start;
+  }
+
+  .vs-bench-side {
+    position: sticky;
+    top: 24px;
+  }
+}
+
+.vs-bench-main,
+.vs-bench-side {
+  min-width: 0;
+}
+
+.vs-bench-results {
+  grid-column: 1 / -1;
+  margin-top: clamp(24px, 3vw, 40px);
+}
+
+/* 面板：1px 细线 + 极低白，不做玻璃质感 */
+.vs-panel {
+  border: 1px solid var(--vs-line);
+  border-radius: var(--vs-r);
+  background: var(--vs-void-1);
+  padding: clamp(20px, 2.4vw, 28px);
+}
+
+.vs-panel > * + * {
+  margin-top: 22px;
+}
+
+.vs-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.vs-panel-head + * {
+  margin-top: 18px;
+}
+
+/* ── 命题输入：编辑线，不是输入框 ────────────────────────── */
+
+.vs-field-label {
+  display: block;
+  font-size: 13px;
+  color: var(--vs-ink-3);
+  margin-bottom: 10px;
+}
+
+.vs-input {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--vs-line-2);
+  padding: 10px 0 12px;
+  font-size: clamp(17px, 1.9vw, 21px);
+  line-height: 1.5;
+  color: var(--vs-ink);
+  transition: border-color var(--vs-dur-fast) var(--vs-ease);
+}
+
+.vs-input::placeholder {
+  color: var(--vs-ink-5);
+}
+
+.vs-input:focus {
+  outline: none;
+  border-bottom-color: var(--vs-beam);
+}
+
+.vs-input:disabled {
+  opacity: 0.5;
+}
+
+.vs-input.is-dirty {
+  border-bottom-color: rgba(252, 211, 77, 0.6);
+}
+
+/* ── 说明文字 / 提示 ───────────────────────────────────── */
+
+.vs-note {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--vs-ink-4);
+}
+
+.vs-note-warn {
+  color: var(--vs-warn);
+}
+
+/* 警告块：左侧一道琥珀细线，不做底色块 */
+.vs-warn {
+  border-left: 1px solid var(--vs-warn-line);
+  padding-left: 14px;
+}
+
+.vs-error {
+  border: 1px solid var(--vs-danger-line);
+  border-radius: var(--vs-r);
+  background: var(--vs-danger-wash);
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--vs-danger);
+}
+
+/* 行内错误文字：与 .vs-error 同色，用于不该加边框/背景的行内场景 */
+.vs-error-text {
+  color: var(--vs-danger);
+}
+
+/* 危险区域：不可逆操作区。全站唯一保留红色警示的场景，红=危险而非"失败" */
+.vs-danger-zone {
+  border: 1px solid var(--vs-danger-line);
+  border-radius: var(--vs-r);
+  background: rgba(248, 113, 113, 0.05);
+}
+
+.vs-btn-danger {
+  background: rgba(248, 113, 113, 0.14);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  color: var(--vs-danger);
+}
+
+.vs-btn-danger:hover {
+  background: rgba(248, 113, 113, 0.22);
+}
+
+.vs-balance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--vs-ink-4);
+}
+
+.vs-balance-warn {
+  align-items: center;
+  gap: 12px;
+  color: var(--vs-warn);
+}
+
+/* ── 创作方式：两个细线选项，不是彩色按钮 ──────────────────── */
+
+.vs-modes {
+  display: grid;
+  gap: 10px;
+}
+
+.vs-mode {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--vs-line);
+  border-radius: var(--vs-r);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--vs-dur-fast) var(--vs-ease),
+    background-color var(--vs-dur-fast) var(--vs-ease);
+}
+
+.vs-mode:hover {
+  border-color: var(--vs-line-2);
+}
+
+.vs-mode[data-active] {
+  border-color: var(--vs-beam-line);
+  background: var(--vs-beam-wash);
+}
+
+.vs-mode:focus-visible {
+  outline: 1px solid var(--vs-beam);
+  outline-offset: 2px;
+}
+
+.vs-mode-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border: 1px solid var(--vs-line);
+  border-radius: var(--vs-r);
+  color: var(--vs-ink-3);
+  transition: color var(--vs-dur-fast) var(--vs-ease);
+}
+
+.vs-mode[data-active] .vs-mode-icon {
+  border-color: var(--vs-beam-line);
+  color: var(--vs-beam-text);
+}
+
+.vs-mode-body {
+  min-width: 0;
+}
+
+.vs-mode-title {
+  display: block;
+  font-size: 14.5px;
+  font-weight: 500;
+  color: var(--vs-ink);
+}
+
+.vs-mode-desc {
+  display: block;
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--vs-ink-3);
+}
+
+/* ── AI 理解过程：一条状态轨 ─────────────────────────────── */
+
+.vs-process {
+  margin-top: clamp(20px, 2.4vw, 28px);
+  border-top: 1px solid var(--vs-line);
+  padding-top: 20px;
+}
+
+.vs-process-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--vs-beam-text);
+}
+
+.vs-process-lead {
+  font-size: 14px;
+  color: var(--vs-ink-2);
+}
+
+.vs-process-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.vs-process-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--vs-ink-5);
+  transition: color var(--vs-dur) var(--vs-ease);
+}
+
+.vs-process-item[data-state='active'] {
+  color: var(--vs-ink);
+}
+
+.vs-process-item[data-state='done'] {
+  color: var(--vs-ink-3);
+}
+
+.vs-process-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 进行中：一个极小的光标，不做闪烁特效 */
+.vs-process-caret {
+  display: inline-block;
+  width: 6px;
+  height: 12px;
+  background: var(--vs-beam);
+  animation: vs-caret 1.2s steps(2, end) infinite;
+}
+
+@keyframes vs-caret {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  50.01%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.vs-process-tick {
+  margin-left: auto;
+  font-size: 11px;
+  color: rgb(110 231 183 / 0.8);
+}
+
+.vs-process-foot {
+  margin-top: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ── 创作上下文（AI 正在参考） ────────────────────────────── */
+
+.vs-ctx-list {
+  display: grid;
+  gap: 18px;
+}
+
+.vs-ctx-value {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--vs-ink-2);
+}
+
+.vs-ctx-value.is-empty {
+  color: var(--vs-ink-5);
+}
+
+.vs-ctx-sep {
+  height: 1px;
+  background: var(--vs-line);
+}
+
+.vs-meter {
+  height: 2px;
+  margin-top: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.vs-meter i {
+  display: block;
+  height: 100%;
+  background: var(--vs-beam);
+  transition: width var(--vs-dur-slow) var(--vs-ease-out);
+}
+
+/* ── 加载 / 状态块 ──────────────────────────────────────── */
+
+.vs-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(40px, 6vw, 72px) 24px;
+  border: 1px solid var(--vs-line);
+  border-radius: var(--vs-r);
+  background: var(--vs-void-1);
+  text-align: center;
+}
+
+.vs-spinner {
+  display: block;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--vs-line-2);
+  border-top-color: var(--vs-beam);
+  border-radius: 999px;
+  animation: vs-spin 900ms linear infinite;
+}
+
+@keyframes vs-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   十、氛围层：空间深度 + 胶片颗粒
+   一层极慢的冷蓝微光（38s 一循环）+ 一层噪点。
+   不做粒子、不做流星、不做星野、不做闪烁。
+   ══════════════════════════════════════════════════════════════ */
+
+.vs-ambient {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.vs-ambient-wash {
+  position: absolute;
+  inset: -20%;
+  background:
+    radial-gradient(46% 38% at 18% 6%, rgba(138, 155, 184, 0.07), transparent 70%),
+    radial-gradient(52% 44% at 86% 78%, rgba(138, 155, 184, 0.045), transparent 72%),
+    radial-gradient(64% 52% at 50% 38%, rgba(20, 18, 26, 0.85), transparent 78%);
+  animation: vs-wash 38s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+@keyframes vs-wash {
+  from {
+    transform: translate3d(-1.5%, -1%, 0) scale(1);
+  }
+  to {
+    transform: translate3d(1.5%, 1.5%, 0) scale(1.06);
+  }
+}
+
+/* 胶片噪点：极低透明度，只用来打破"纯色屏幕"的塑料感 */
+.vs-grain {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.028;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ══════════════════════════════════════════════════════════════
+   十、AI 共创空间（Work Agent）
+   这不是聊天：没有左右气泡、没有"AI 正在思考"。
+   它是三段决策（确认方向 → 选择改法 → 查看改动）+ 一条决策记录，
+   AI 的状态用点与进度条表达，不拟人、不说话。
+   ══════════════════════════════════════════════════════════════ */
+
+.vs-mark-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.vs-cocreate {
+  border-top: 1px solid var(--vs-line);
+  padding-top: clamp(20px, 2.4vw, 28px);
+}
+
+.vs-cocreate-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.vs-cocreate-head-end {
+  justify-content: flex-end;
+}
+
+.vs-cocreate > * + * {
+  margin-top: 18px;
+}
+
+/* ── 决策记录：手稿式的逐条记录，不是对话气泡 ─────────────── */
+
+.vs-cocreate-log {
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.vs-log-row {
+  display: flex;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--vs-line);
+}
+
+.vs-log-row:first-child {
+  border-top: 0;
+}
+
+.vs-log-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.vs-log-row[data-role='user'] {
+  /* 用户的话是这一轮的起点：用左侧细线标出，不用气泡 */
+  border-left: 1px solid var(--vs-line-2);
+  padding-left: 12px;
+  margin-left: -12px;
+}
+
+.vs-log-label {
+  font-size: 11px;
+  color: var(--vs-ink-5);
+}
+
+.vs-log-text {
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--vs-ink-2);
+  white-space: pre-wrap;
+}
+
+.vs-log-row[data-role='assistant'] .vs-log-text {
+  color: var(--vs-ink-3);
+}
+
+/* ── 系统正在处理：点 + 一行状态，不写"AI 正在……" ─────────── */
+
+.vs-cocreate-run {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 12px;
+  font-size: 12.5px;
+  color: var(--vs-ink-3);
+}
+
+.vs-ai-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--vs-beam-text);
+}
+
+/* ── 每个决策块 ─────────────────────────────────────────── */
+
+.vs-cocreate-block {
+  border: 1px solid var(--vs-line);
+  border-radius: var(--vs-r);
+  background: var(--vs-void-1);
+  padding: clamp(16px, 2vw, 22px);
+}
+
+.vs-cocreate-block > * + * {
+  margin-top: 14px;
+}
+
+/* 01 / 02 / 03：把流程写在明面上 */
+.vs-step-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+/* ── 候选项：细线列表，选中态只用唯一强调色 ────────────────── */
+
+.vs-choice {
+  display: grid;
+  gap: 8px;
+}
+
+.vs-choice-item {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--vs-line);
+  border-radius: var(--vs-r-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--vs-dur-fast) var(--vs-ease),
+    background-color var(--vs-dur-fast) var(--vs-ease);
+}
+
+.vs-choice-item:hover {
+  border-color: var(--vs-beam-line);
+  background: var(--vs-beam-wash);
+}
+
+.vs-choice-item:focus-visible {
+  outline: 1px solid var(--vs-beam);
+  outline-offset: 2px;
+}
+
+.vs-choice-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.vs-choice-title {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--vs-ink);
+}
+
+.vs-choice-desc {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--vs-ink-3);
+}
+
+/* ── 候选项：方案卡 ─────────────────────────────────────── */
+
+.vs-plan {
+  display: grid;
+  gap: 8px;
+}
+
+.vs-plan-item {
+  display: block;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--vs-line);
+  border-radius: var(--vs-r-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--vs-dur-fast) var(--vs-ease),
+    background-color var(--vs-dur-fast) var(--vs-ease);
+}
+
+.vs-plan-item:hover {
+  border-color: var(--vs-beam-line);
+  background: var(--vs-beam-wash);
+}
+
+.vs-plan-item:focus-visible {
+  outline: 1px solid var(--vs-beam);
+  outline-offset: 2px;
+}
+
+.vs-plan-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.vs-plan-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vs-ink);
+}
+
+.vs-plan-tag {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--vs-ink-4);
+  border: 1px solid var(--vs-line);
+  border-radius: var(--vs-r-sm);
+  padding: 1px 7px;
+}
+
+.vs-plan-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--vs-ink-3);
+}
+
+.vs-plan-key {
+  color: var(--vs-ink-5);
+  margin-right: 6px;
+}
+
+/* ── 改动对照：原稿划掉，新稿左侧一道冷蓝细线 ──────────────── */
+
+.vs-diff {
+  display: grid;
+  gap: 8px;
+}
+
+.vs-diff-item {
+  border: 1px solid var(--vs-line);
+  border-radius: var(--vs-r-sm);
+  background: var(--vs-void-2);
+  padding: 0 14px;
+}
+
+.vs-diff-item > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  font-size: 12.5px;
+  color: var(--vs-ink-2);
+  cursor: pointer;
+  list-style: none;
+}
+
+.vs-diff-item > summary::-webkit-details-marker {
+  display: none;
+}
+
+.vs-diff-item[open] > summary {
+  border-bottom: 1px solid var(--vs-line);
+}
+
+.vs-diff-body {
+  padding: 12px 0 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.vs-diff-before {
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--vs-ink-5);
+  text-decoration: line-through;
+  text-decoration-color: var(--vs-line-2);
+}
+
+.vs-diff-after {
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--vs-ink);
+  border-left: 1px solid var(--vs-beam);
+  padding-left: 12px;
+}
+
+.vs-cocreate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* ── 输入：编辑线 ───────────────────────────────────────── */
+
+.vs-input-area {
+  min-height: 76px;
+  resize: none;
+  font-size: 14.5px;
+  line-height: 1.7;
+}
+
+/* 长文编辑场景需要手动拖拽调高：叠加此类放开 .vs-input-area 的 resize: none。
+   注意 vision.css 在 globals.css 之后加载，同级工具类会被本文件的规则盖掉，故不用 resize-y。 */
+.vs-input-area.vs-resizable {
+  resize: vertical;
+}
+
+.vs-cocreate-send {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+/* ── 备选方向：细线 chip，不带 emoji ──────────────────────── */
+
+.vs-cocreate-alt {
+  border-top: 1px solid var(--vs-line);
+  padding-top: 18px;
+}
+
+.vs-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.vs-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 14px;
+  border: 1px solid var(--vs-line);
+  border-radius: var(--vs-r-sm);
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--vs-ink-3);
+  cursor: pointer;
+  transition:
+    border-color var(--vs-dur-fast) var(--vs-ease),
+    color var(--vs-dur-fast) var(--vs-ease);
+}
+
+.vs-chip:hover {
+  border-color: var(--vs-line-2);
+  color: var(--vs-ink);
+}
+
+.vs-chip:focus-visible {
+  outline: 1px solid var(--vs-beam);
+  outline-offset: 2px;
+}
+
+/* ── 方向验收结论：只有"部分/不符"才有颜色，落实是中性白 ────── */
+
+.vs-verdict {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  padding: 2px 9px;
+  border: 1px solid var(--vs-line);
+  border-radius: 999px;
+  color: var(--vs-ink-2);
+}
+
+.vs-verdict[data-verdict='partial'] {
+  border-color: rgba(252, 211, 77, 0.35);
+  color: rgba(252, 211, 77, 0.9);
+}
+
+.vs-verdict[data-verdict='off'] {
+  border-color: rgba(248, 113, 113, 0.35);
+  color: var(--vs-danger);
+}
+
+.vs-check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.vs-check-list li {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--vs-ink-3);
+}
+
+.vs-check-mark[data-hit='false'] {
+  color: var(--vs-danger);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   十之二、创作者档案（AI 理解报告）
+   这是一份档案，不是仪表盘：细线分段 + 眉标，不用卡片盒子套盒子。
+   ══════════════════════════════════════════════════════════════ */
+
+/* 双栏账本式排版：每项只有一条顶边细线，靠留白与列距分开 */
+.vs-archive {
+  display: grid;
+  grid-template-columns: 1fr;
+  column-gap: clamp(24px, 3vw, 48px);
+}
+
+@media (min-width: 640px) {
+  .vs-archive {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.vs-archive > * {
+  border-top: 1px solid var(--vs-line);
+  padding: 15px 0 22px;
+}
+
+/* 并列段的标题：眉标 + 内容，不用图标 */
+.vs-archive > * > .vs-mark {
+  display: block;
+  margin-bottom: 8px;
+}
+
+/* 逐条记录（偏好记忆 / 品味画像）：细线行，不是卡片列表 */
+.vs-record-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid var(--vs-line);
+  padding: 12px 0;
+}
+
+.vs-record-row:first-child {
+  border-top: 0;
+}
+
+/* 标签输入：编辑线下排一行 chip */
+.vs-tagedit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--vs-line-2);
+  padding: 6px 0 8px;
+  transition: border-color var(--vs-dur-fast) var(--vs-ease);
+}
+
+.vs-tagedit:focus-within {
+  border-bottom-color: var(--vs-beam);
+}
+
+.vs-tagedit input {
+  flex: 1 1 140px;
+  min-width: 120px;
+  background: transparent;
+  border: 0;
+  outline: none;
+  font-size: 13.5px;
+  color: var(--vs-ink);
+  padding: 2px 0;
+}
+
+.vs-tagedit input::placeholder {
+  color: var(--vs-ink-5);
+}
+
+/* chip 选中态：只用唯一强调色 */
+.vs-chip[data-on='true'] {
+  border-color: var(--vs-beam-line);
+  background: var(--vs-beam-wash);
+  color: var(--vs-ink);
+}
+
+/* 下拉选择：与 vs-input 同族的细线控件 */
+.vs-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--vs-line-2);
+  border-radius: 0;
+  padding: 6px 0 7px;
+  font-size: 13.5px;
+  color: var(--vs-ink-2);
+  outline: none;
+  cursor: pointer;
+  transition: border-color var(--vs-dur-fast) var(--vs-ease);
+}
+
+.vs-select:focus {
+  border-bottom-color: var(--vs-beam);
+}
+
+.vs-select option {
+  background: #0c0e13;
+  color: var(--vs-ink-2);
+}
+
+/* 表单字段：比 vs-input（大编辑线）小一号的单行输入 */
+.vs-input-field {
+  font-size: 15px;
+  padding: 8px 0 10px;
+}
+
+/* 浮层：一层遮罩 + 一个无装饰面板，不做阴影与渐变 */
+.vs-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(6, 7, 10, 0.72);
+}
+
+.vs-modal {
+  position: relative;
+  width: 100%;
+  max-width: 32rem;
+  max-height: 90vh;
+  overflow-y: auto;
+  background: #0c0e13;
+  border: 1px solid var(--vs-line-2);
+  border-radius: var(--vs-r);
+  padding: 24px;
+}
+
+/* 面板内分段：只靠一条顶边细线分开，不再一层层套盒子 */
+.vs-sec {
+  border-top: 1px solid var(--vs-line);
+  padding-top: 16px;
+}
+
+/* 行内小 chip：标签编辑器里的可移除标签 */
+.vs-chip-xs {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--vs-line);
+  border-radius: var(--vs-r-sm);
+  font-size: 12px;
+  color: var(--vs-ink-2);
+}
+
+/* 置信度：只有文字层级不同，不引入第二套颜色 */
+.vs-verdict[data-level='low'] {
+  color: var(--vs-ink-4);
+}
+
+.vs-verdict[data-level='mid'] {
+  color: var(--vs-ink-3);
+}
+
+/* DNA 比例条：2px 细线，不带渐变 */
+.vs-dna-track {
+  height: 2px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.vs-dna-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--vs-beam);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   十一、无障碍：所有动效可关闭
+   ══════════════════════════════════════════════════════════════ */
+
 @media (prefers-reduced-motion: reduce) {
   .vs-skeleton::after,
   .vs-ai-dot,
   .vs-bar,
-  .vs-rise {
+  .vs-rise,
+  .vs-slot-img,
+  .vs-spinner,
+  .vs-process-caret,
+  .vs-ambient-wash {
     animation: none !important;
   }
 
-  .vs-lift:hover {
-    transform: none;
+  .vs-reveal {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+
+  .vs-lift:hover,
+  .vs-btn-primary:hover {
+    transform: none !important;
   }
 }

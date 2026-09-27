@@ -14,7 +14,7 @@
 import type { Candidate } from './candidates'
 import type { TrendDirection } from './types'
 import {
-  RANKING_WEIGHTS_V2,
+  RANKING_WEIGHTS_V3,
   INTEREST_SEMANTIC_RATIO,
   INTEREST_TAG_RATIO,
   SEMANTIC_SIM_FLOOR,
@@ -24,7 +24,14 @@ import {
   EXPLORE_SLOT_FACTOR,
   RECENCY_LADDER,
   RECENCY_NO_EVENTS,
+  RECENCY_SIM_FLOOR,
+  RECENCY_SIM_RANGE,
+  RECENCY_NO_SIGNAL_SIM,
+  RECENT_BEHAVIOR_HALF_LIFE_DAYS,
+  TASTE_SLOT_PENALTY,
+  type DismissReasonCode,
 } from './config'
+import { cosineSimilarity } from './vectorMath'
 
 /**
  * core 簇 weight≥该阈值时，允许同簇出现 2 张（仍受总分上限约束）。
@@ -49,6 +56,25 @@ export interface CandidateScoreInput {
   trend: TrendDirection | null
   /** 距上次该簇事件的天数（null=新簇/无事件） */
   daysSinceLastInCluster: number | null
+  /**
+   * v3：候选与「近期行为质心」的余弦相似度。
+   * null = 算不出来（无质心 / 候选无向量）→ 该维度权重按比例重分配给其余维度。
+   *
+   * 与 daysSinceLastInCluster 的区别：后者回答"这个簇最近有没有动静"，
+   * 前者回答"这张卡贴不贴用户这两周正在做的事"。两者都叫"近期"，
+   * 但一个是簇维度、一个是候选维度，v2 把它们混在一起是"推荐复述历史"的根因。
+   */
+  recentSimilarity?: number | null
+  /**
+   * v3：知识资产覆盖度（0-1）。用户已确认的知识单元能支撑这个方向 → 更高。
+   * null = 该用户没有可用知识单元 → 权重重分配（没有知识库不该被扣分）。
+   */
+  knowledgeScore?: number | null
+  /**
+   * v3：口味惩罚乘子（0-1]，来自 ✕ 原因。默认 1（不惩罚）。
+   * 乘在加权和之后：它表达"这张卡能不能要"，不是"这个方向重不重要"。
+   */
+  tasteFactor?: number
 }
 
 export interface CandidateScore {
@@ -59,6 +85,12 @@ export interface CandidateScore {
     trend: number
     quality: number
     explore: number
+    /** v3：仅在 recentSimilarity 可用时出现 */
+    recency?: number
+    /** v3：仅在用户有可用知识单元时出现 */
+    knowledge?: number
+    /** v3：仅在做了口味惩罚时出现（<1） */
+    taste?: number
   }
 }
 
@@ -112,14 +144,40 @@ export function scoreCandidate(input: CandidateScoreInput): CandidateScore {
   // 5. 探索性（槽位维度）
   const explore = EXPLORE_SLOT_FACTOR[c.slot]
 
-  const w = RANKING_WEIGHTS_V2
-  const score =
-    w.interestMatch * interestMatch +
-    w.recentBehavior * recentBehavior +
-    w.trend * trendScore +
-    w.quality * quality +
-    w.explore * explore
+  // 6. v3 近期创作行为：候选贴不贴"用户这两周正在做的事"
+  const recency =
+    input.recentSimilarity === null || input.recentSimilarity === undefined
+      ? null
+      : clamp01((input.recentSimilarity - RECENCY_SIM_FLOOR) / RECENCY_SIM_RANGE)
 
+  // 7. v3 知识资产覆盖度
+  const knowledge =
+    input.knowledgeScore === null || input.knowledgeScore === undefined
+      ? null
+      : clamp01(input.knowledgeScore)
+
+  // ── 加权求和（信号缺失的维度按权重比例重分配，不按 0 计）──
+  const dims: Array<{ key: keyof typeof RANKING_WEIGHTS_V3; weight: number; value: number | null }> = [
+    { key: 'recency', weight: RANKING_WEIGHTS_V3.recency, value: recency },
+    { key: 'interestMatch', weight: RANKING_WEIGHTS_V3.interestMatch, value: interestMatch },
+    { key: 'knowledge', weight: RANKING_WEIGHTS_V3.knowledge, value: knowledge },
+    { key: 'trend', weight: RANKING_WEIGHTS_V3.trend, value: trendScore },
+    { key: 'recentBehavior', weight: RANKING_WEIGHTS_V3.recentBehavior, value: recentBehavior },
+    { key: 'quality', weight: RANKING_WEIGHTS_V3.quality, value: quality },
+    { key: 'explore', weight: RANKING_WEIGHTS_V3.explore, value: explore },
+  ]
+  const usable = dims.filter((d) => d.value !== null)
+  const weightSum = usable.reduce((a, d) => a + d.weight, 0)
+  const raw =
+    weightSum > 0
+      ? usable.reduce((a, d) => a + (d.weight / weightSum) * (d.value as number), 0)
+      : 0
+
+  // 口味惩罚：乘在最外层，只作用于"能不能要"，不污染任何维度的观测值
+  const taste = clamp01(input.tasteFactor ?? 1)
+  const score = raw * taste
+
+  const used = new Set(usable.map((d) => d.key))
   return {
     score: round3(clamp01(score)),
     breakdown: {
@@ -128,8 +186,102 @@ export function scoreCandidate(input: CandidateScoreInput): CandidateScore {
       trend: round3(trendScore),
       quality: round3(quality),
       explore: round3(explore),
+      ...(used.has('recency') ? { recency: round3(recency as number) } : {}),
+      ...(used.has('knowledge') ? { knowledge: round3(knowledge as number) } : {}),
+      ...(taste < 1 ? { taste: round3(taste) } : {}),
     },
   }
+}
+
+// ──────────────────────────────────────────────────────────
+// v3：近期行为质心（builder 与 refill 共用）
+// ──────────────────────────────────────────────────────────
+
+export interface CentroidSource {
+  centroid: number[] | null
+  weight: number
+  lastSeenAt: string
+}
+
+/**
+ * 按「簇权重 × 时间衰减」加权平均得到一个"近期行为质心"。
+ *
+ * 为什么用簇质心加权而不是重扫事件：builder 与 refill 手里都只有簇，
+ * 重扫事件意味着 refill 要多一次全量查询（它之所以快就是因为不扫事件）。
+ * 簇的 lastSeenAt 已经携带了新鲜度，用它做衰减是等价且零成本的近似。
+ *
+ * 返回 null = 没有任何可用质心 → 调用方传 null → 该维度权重重分配。
+ */
+export function recentBehaviorCentroid(
+  clusters: readonly CentroidSource[],
+  now: Date = new Date()
+): number[] | null {
+  const acc: number[] = []
+  let totalWeight = 0
+  for (const c of clusters) {
+    if (!c.centroid?.length) continue
+    const ageDays = Math.max(
+      0,
+      (now.getTime() - Date.parse(c.lastSeenAt)) / 86_400_000
+    )
+    if (!Number.isFinite(ageDays)) continue
+    // 指数衰减：21 天半衰期 —— 两个月前的方向只剩约 1/8 的话语权
+    const decay = Math.pow(0.5, ageDays / RECENT_BEHAVIOR_HALF_LIFE_DAYS)
+    const w = Math.max(0, c.weight) * decay
+    if (w <= 0) continue
+    for (let i = 0; i < c.centroid.length; i++) {
+      acc[i] = (acc[i] ?? 0) + c.centroid[i] * w
+    }
+    totalWeight += w
+  }
+  if (!totalWeight) return null
+  return acc.map((v) => v / totalWeight)
+}
+
+/**
+ * 候选与近期质心的相似度。
+ *
+ * 返回 null 的唯一情形是「整批都算不出」（没有质心）——那时全体一致地走权重重分配。
+ * 单张候选没有向量（S6 知识卡、无 embedding 的市场卡）时给中性值：
+ * 让它缺席会触发重分配，于是同批里有的卡按 7 维算、有的按 6 维算，
+ * 分数不再可比，排序失真。宁可给一个中性的"不知道"，也不要换一把尺子。
+ */
+export function recentSimilarityOf(
+  candidateEmbedding: number[] | null,
+  centroid: number[] | null
+): number | null {
+  if (!centroid?.length) return null
+  if (!candidateEmbedding?.length) return RECENCY_NO_SIGNAL_SIM
+  if (candidateEmbedding.length !== centroid.length) return RECENCY_NO_SIGNAL_SIM
+  return cosineSimilarity(candidateEmbedding, centroid)
+}
+
+// ──────────────────────────────────────────────────────────
+// v3：口味惩罚求值（簇级 × 槽位级，取更严的一个）
+// ──────────────────────────────────────────────────────────
+
+export interface TasteEntry {
+  /** 簇级乘子（来自 ✕ 原因） */
+  penalty: number
+  /** ✕ 原因码；null=未选原因（不参与槽位级约束） */
+  reason: DismissReasonCode | null
+}
+
+/**
+ * 把「这个方向被 ✕ 过」落到具体一张卡上：簇级乘子与槽位级约束取更严的一个。
+ *
+ * 为什么不叠加：叠加会让被 ✕ 过的方向彻底消失（0.75×0.6=0.45 已经够狠），
+ * 而推荐必须给创作者留一点"也许是我判断错了"的余地。
+ */
+export function tasteFactorFor(
+  entry: TasteEntry | undefined,
+  slot: SuggestionSlot
+): number {
+  if (!entry) return 1
+  const slotPenalty = entry.reason
+    ? TASTE_SLOT_PENALTY[entry.reason]?.[slot] ?? 1
+    : 1
+  return Math.min(entry.penalty, slotPenalty)
 }
 
 // ──────────────────────────────────────────────────────────
