@@ -3,7 +3,17 @@
 import Link from 'next/link'
 import { useAuth } from '@/components/auth-provider'
 import { IconArrowRight, IconPlay } from '@/components/vision'
-import { HOME_HERO_VIDEO } from '@/lib/vision-assets'
+import { HOME_HERO_VIDEO, HOME_IMAGES } from '@/lib/vision-assets'
+
+// 微信内置浏览器的私有属性（iOS WKWebView / 安卓 X5 内核）。
+// 缺了这些，微信会强制接管视频跳全屏播放器，或直接不显示画面。
+// 它们不是标准 HTML 属性，TS 的 JSX 类型里没有，所以收口成 Record 后整体展开。
+const WECHAT_VIDEO_PROPS: Record<string, string> = {
+  'webkit-playsinline': 'true', // iOS 微信：内联播放，不强制全屏
+  'x5-playsinline': 'true', // 安卓 X5：内联播放
+  'x5-video-player-type': 'h5', // 安卓 X5：用 H5 播放器，在页面内播放
+  'x5-video-player-fullscreen': 'true', // 安卓 X5：允许全屏
+}
 
 // ────────────────────────────────────────────────────────────
 // 首屏：电影级开场
@@ -15,8 +25,9 @@ import { HOME_HERO_VIDEO } from '@/lib/vision-assets'
 // 这是全站唯一需要优先加载的视觉，其余图片全部懒加载。
 //
 // 素材：public/vision.mp4（720×900 = 4:5，与框体比例一致，不产生裁切）
-// 这一位只放视频本身，不再放任何静态封面图：
-// 用户第一眼看到的就是画面在动，不存在先显示静态图再被视频盖住的过渡。
+// 封面：public/images/vision/home-opening-hero-image.png——
+// 微信内置浏览器一律拦截自动播放，不播时视频区会是一片黑，必须有封面图兜底。
+// 因此这里不做 autoPlay：显示封面 + 原生控件，由用户点击后才开始播放。
 // ────────────────────────────────────────────────────────────
 
 export function HeroSection() {
@@ -70,7 +81,7 @@ export function HeroSection() {
             </div>
           </div>
 
-          {/* 主视觉位：只有 vision.mp4，没有静态封面图 */}
+          {/* 主视觉位：封面图 + 原生控件，点击后才播放（微信不允许自动播放） */}
           <div
             className="vs-rise lg:ml-auto lg:w-full lg:max-w-[440px]"
             style={{ animationDelay: '300ms' }}
@@ -79,12 +90,13 @@ export function HeroSection() {
               <video
                 className="vs-hero-video"
                 src={HOME_HERO_VIDEO}
-                autoPlay
+                poster={HOME_IMAGES.hero}
+                controls
                 muted
                 loop
                 playsInline
-                preload="auto"
-                aria-hidden="true"
+                preload="metadata"
+                {...WECHAT_VIDEO_PROPS}
               />
             </div>
           </div>
