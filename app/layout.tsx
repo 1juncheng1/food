@@ -4,6 +4,7 @@ import "./globals.css";
 import "./vision.css";
 import { AuthProvider } from "@/components/auth-provider";
 import { VisionAmbient } from "@/components/vision/ambient";
+import { Analytics } from "@vercel/analytics/next";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -35,6 +36,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <body className="min-h-full flex flex-col bg-[var(--vs-void)]">
         <VisionAmbient />
         <AuthProvider>{children}</AuthProvider>
+        <Analytics />
       </body>
     </html>
   );
