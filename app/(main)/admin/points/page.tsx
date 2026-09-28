@@ -95,8 +95,9 @@ export default function AdminPointsPage() {
 
   async function submitAdjust() {
     const d = Number(delta)
-    if (!targetUser.trim()) {
-      setAdjustFeedback({ ok: false, message: '请填写用户 ID' })
+    const email = targetUser.trim()
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setAdjustFeedback({ ok: false, message: '请输入有效的用户邮箱' })
       return
     }
     if (!Number.isFinite(d) || d === 0) {
@@ -111,7 +112,7 @@ export default function AdminPointsPage() {
     setAdjustFeedback(null)
     const res = await api<{ balance: number; referenceId: string }>('/api/admin/points/adjust', {
       method: 'POST',
-      body: JSON.stringify({ userId: targetUser.trim(), delta: d, reason: reason.trim() }),
+      body: JSON.stringify({ email, delta: d, reason: reason.trim() }),
     })
     setAdjusting(false)
     setAdjustFeedback(
@@ -202,13 +203,13 @@ export default function AdminPointsPage() {
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-[260px] flex-1">
               <label className="vs-note mb-1.5 block" htmlFor="target-user">
-                用户 ID
+                用户邮箱
               </label>
               <input
                 id="target-user"
                 value={targetUser}
                 onChange={(e) => setTargetUser(e.target.value)}
-                placeholder="auth.users 的 uuid"
+                placeholder="user@example.com"
                 className="vs-input vs-input-field w-full placeholder:text-[var(--vs-ink-5)]"
               />
             </div>

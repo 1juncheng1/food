@@ -1,7 +1,7 @@
 // ============================================================
 // POST /api/admin/points/adjust —— 管理员手动调整积分
 //
-// body: { userId, delta（+加 / -减）, reason（必填） }
+// body: { email, delta（+加 / -减）, reason（必填） }
 //
 // 强制原因：三个月后回看一笔 +100，如果没有原因，它就只是一笔说不清的账。
 // 每次调整都会生成调整单号写进 point_ledger.reference_id，
@@ -15,7 +15,7 @@ import { adjustPoints } from '@/lib/adminPoints'
 export const dynamic = 'force-dynamic'
 
 const NO_STORE = { 'Cache-Control': 'no-store' } as const
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const MAX_REASON = 200
 /** 单次调整上限：防止手滑多打一个 0，把 100 输成 10000 */
 const MAX_ABS_DELTA = 100_000
@@ -27,17 +27,34 @@ export async function POST(req: Request) {
   const svc = await requireServiceClient()
   if (!svc.ok) return svc.response
 
-  let body: { userId?: unknown; delta?: unknown; reason?: unknown }
+  let body: { email?: unknown; delta?: unknown; reason?: unknown }
   try {
     body = (await req.json()) ?? {}
   } catch {
     return NextResponse.json({ error: '请求格式有误' }, { status: 400, headers: NO_STORE })
   }
 
-  const userId = typeof body.userId === 'string' ? body.userId : ''
-  if (!userId || !UUID_PATTERN.test(userId)) {
-    return NextResponse.json({ error: '请选择要调整的用户' }, { status: 400, headers: NO_STORE })
+  const rawEmail = typeof body.email === 'string' ? body.email.trim() : ''
+  if (!rawEmail || !EMAIL_PATTERN.test(rawEmail)) {
+    return NextResponse.json({ error: '请输入有效的用户邮箱' }, { status: 400, headers: NO_STORE })
   }
+  const email = rawEmail.toLowerCase()
+
+  const { data: userRow, error: userError } = await svc.db
+    .schema('auth')
+    .from('users')
+    .select('id')
+    .eq('email', email)
+    .maybeSingle()
+
+  if (userError) {
+    console.error('[admin] 按邮箱查询用户失败:', userError.message)
+    return NextResponse.json({ error: '查询用户失败，请稍后重试' }, { status: 503, headers: NO_STORE })
+  }
+  if (!userRow) {
+    return NextResponse.json({ error: '该邮箱未注册' }, { status: 404, headers: NO_STORE })
+  }
+  const userId = userRow.id
 
   const delta = typeof body.delta === 'number' ? body.delta : Number(body.delta)
   if (!Number.isFinite(delta) || delta === 0) {
