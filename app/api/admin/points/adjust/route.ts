@@ -40,21 +40,20 @@ export async function POST(req: Request) {
   }
   const email = rawEmail.toLowerCase()
 
-  const { data: userRow, error: userError } = await svc.db
-    .schema('auth')
-    .from('users')
-    .select('id')
-    .eq('email', email)
-    .maybeSingle()
+  const { data, error: userError } = await svc.db.auth.admin.listUsers({
+    page: 1,
+    perPage: 100,
+  })
 
   if (userError) {
     console.error('[admin] 按邮箱查询用户失败:', userError.message)
     return NextResponse.json({ error: '查询用户失败，请稍后重试' }, { status: 503, headers: NO_STORE })
   }
-  if (!userRow) {
+  const user = data?.users?.find((u) => u.email?.toLowerCase() === email)
+  if (!user) {
     return NextResponse.json({ error: '该邮箱未注册' }, { status: 404, headers: NO_STORE })
   }
-  const userId = userRow.id
+  const userId = user.id
 
   const delta = typeof body.delta === 'number' ? body.delta : Number(body.delta)
   if (!Number.isFinite(delta) || delta === 0) {
