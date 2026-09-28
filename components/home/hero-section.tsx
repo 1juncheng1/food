@@ -1,20 +1,9 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useAuth } from '@/components/auth-provider'
 import { IconArrowRight, IconPlay } from '@/components/vision'
-import { HOME_HERO_VIDEO, HOME_IMAGES } from '@/lib/vision-assets'
-
-// 微信内置浏览器的私有属性（iOS WKWebView / 安卓 X5 内核）。
-// 缺了这些，微信会强制接管视频跳全屏播放器，或直接不显示画面。
-// 它们不是标准 HTML 属性，TS 的 JSX 类型里没有，所以收口成 Record 后整体展开。
-const WECHAT_VIDEO_PROPS: Record<string, string> = {
-  'webkit-playsinline': 'true', // iOS 微信：内联播放，不强制全屏
-  'x5-playsinline': 'true', // 安卓 X5：内联播放
-  'x5-video-player-type': 'h5', // 安卓 X5：用 H5 播放器，在页面内播放
-  'x5-video-player-fullscreen': 'true', // 安卓 X5：允许全屏
-}
+import { HOME_HERO_GIF } from '@/lib/vision-assets'
 
 // ────────────────────────────────────────────────────────────
 // 首屏：电影级开场
@@ -25,47 +14,15 @@ const WECHAT_VIDEO_PROPS: Record<string, string> = {
 // 左侧是"人说的话"，右侧是"人本身"：被取景框圈住的一段创作现场。
 // 这是全站唯一需要优先加载的视觉，其余图片全部懒加载。
 //
-// 素材：public/vision.mp4（720×900 = 4:5，与框体比例一致，不产生裁切）
-// 目标：它看起来就是页面里一段会动的画面，而不是一个播放器——
-// 没有控件、没有播放按钮，用户不需要做任何操作。
-// 做法：autoPlay + muted + 内联属性自动起播；微信额外在 JSBridge 就绪后补一次 play()。
-// 封面：public/images/vision/home-opening-hero-image.png——
-// 只在极少数环境彻底拒绝播放时兜底，避免露出黑框。
+// 素材：public/vision.gif（480×600 = 4:5，与框体比例一致，不产生裁切）
+// 为什么用 GIF 而不是 video：
+//   微信内置浏览器会拦截 <video autoPlay>，导致页面只显示静态封面。
+//   GIF 对微信来说就是一张普通图片，会自动循环播放，没有控件，用户不需要点击。
 // ────────────────────────────────────────────────────────────
 
 export function HeroSection() {
   const { session, loading } = useAuth()
   const isLoggedIn = !!session
-  const videoRef = useRef<HTMLVideoElement>(null)
-
-  // 微信（尤其安卓 X5 内核）会拦掉 <video autoPlay>，页面里就只剩一张不动的画面。
-  // X5 唯一的放行时机是 JSBridge 就绪的那一刻，所以桥接完成后再补一次 play()。
-  // 起播之后它就是一段无声循环画面，没有任何控件，看不出这是个视频。
-  useEffect(() => {
-    const video = videoRef.current
-    if (!video) return
-
-    const tryPlay = () => {
-      void video.play().catch(() => {})
-    }
-
-    tryPlay()
-
-    type WeixinBridge = {
-      invoke: (name: string, params: Record<string, never>, callback: () => void) => void
-    }
-    const win = window as unknown as { WeixinJSBridge?: WeixinBridge }
-
-    if (win.WeixinJSBridge) {
-      win.WeixinJSBridge.invoke('getNetworkType', {}, tryPlay)
-    } else {
-      document.addEventListener('WeixinJSBridgeReady', tryPlay, false)
-    }
-
-    return () => {
-      document.removeEventListener('WeixinJSBridgeReady', tryPlay, false)
-    }
-  }, [])
 
   return (
     <section id="hero">
@@ -114,24 +71,19 @@ export function HeroSection() {
             </div>
           </div>
 
-          {/* 主视觉位：无声循环画面，自动起播，不给任何播放器控件 */}
+          {/* 主视觉位：GIF 动图，自动循环，无视频控件 */}
           <div
             className="vs-rise lg:ml-auto lg:w-full lg:max-w-[440px]"
             style={{ animationDelay: '300ms' }}
           >
             <div className="vs-frame vs-frame-marked">
-              <video
-                ref={videoRef}
+              <img
+                src={HOME_HERO_GIF}
+                alt=""
                 className="vs-hero-video"
-                src={HOME_HERO_VIDEO}
-                poster={HOME_IMAGES.hero}
-                autoPlay
-                muted
-                loop
-                playsInline
-                preload="auto"
+                loading="eager"
+                decoding="async"
                 aria-hidden="true"
-                {...WECHAT_VIDEO_PROPS}
               />
             </div>
           </div>

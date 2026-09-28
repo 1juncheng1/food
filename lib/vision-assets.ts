@@ -86,6 +86,12 @@ export const HOME_IMAGES = {
 export const HOME_HERO_VIDEO = '/vision.mp4'
 
 /**
+ * 首页首屏动图（480×600，4:5，循环播放）。
+ * 用于在微信内置浏览器里绕过 <video> 自动播放限制——对微信来说它只是一张普通图片。
+ */
+export const HOME_HERO_GIF = '/vision.gif'
+
+/**
  * 生成作品页（/generate）素材清单。
  *
  * 这两处不走 visionImage() 的 `${scope}-${name}-${kind}` 拼法：
