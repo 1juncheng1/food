@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useAuth } from '@/components/auth-provider'
 import { IconArrowRight, IconPlay } from '@/components/vision'
-import { HOME_HERO_VIDEO, HOME_IMAGES } from '@/lib/vision-assets'
+import { HOME_HERO_VIDEO } from '@/lib/vision-assets'
 
 // ────────────────────────────────────────────────────────────
 // 首屏：电影级开场
@@ -15,8 +15,8 @@ import { HOME_HERO_VIDEO, HOME_IMAGES } from '@/lib/vision-assets'
 // 这是全站唯一需要优先加载的视觉，其余图片全部懒加载。
 //
 // 素材：public/vision.mp4（720×900 = 4:5，与框体比例一致，不产生裁切）
-// 封面：public/images/vision/home-opening-hero-image.png——
-// 视频没加载出来或用户关闭自动播放时，看到的就是这张静态图，不会留黑框。
+// 这一位只放视频本身，不再放任何静态封面图：
+// 用户第一眼看到的就是画面在动，不存在先显示静态图再被视频盖住的过渡。
 // ────────────────────────────────────────────────────────────
 
 export function HeroSection() {
@@ -70,7 +70,7 @@ export function HeroSection() {
             </div>
           </div>
 
-          {/* 主视觉位：动态版本是 vision.mp4，封面用同名静态图兜底 */}
+          {/* 主视觉位：只有 vision.mp4，没有静态封面图 */}
           <div
             className="vs-rise lg:ml-auto lg:w-full lg:max-w-[440px]"
             style={{ animationDelay: '300ms' }}
@@ -79,7 +79,6 @@ export function HeroSection() {
               <video
                 className="vs-hero-video"
                 src={HOME_HERO_VIDEO}
-                poster={HOME_IMAGES.hero}
                 autoPlay
                 muted
                 loop
