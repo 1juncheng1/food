@@ -1,14 +1,18 @@
 // ============================================================
-// POST /api/seo/indexnow —— 触发 IndexNow 推送（Bing / Edge 即时收录）
+// /api/seo/indexnow —— 触发 IndexNow 推送（Bing / Edge 即时收录）
 //
-// 两个用法：
-//   1. 不带 body：推送站点当前全部公开 URL（取自 lib/seo.ts 的 PUBLIC_PATHS）
-//   2. 带 body { "urls": ["/post/xxx"] }：只推指定 URL
-//      —— 用于将来社区页开放公开阅读后，发布即推送
+// 调用方式二选一：
+//   1. 管理员 Bearer token（requireAdmin）
+//   2. Vercel Cron：请求头带 Authorization: Bearer $CRON_SECRET
+//      —— 定时任务没有用户身份，只能靠这个共享密钥
 //
-// 鉴权：requireAdmin
-//   这不是公开接口：IndexNow 的 key 被判为垃圾提交会连累整个域名，
-//   任何登录用户都能触发 = 任何人都能拿域名信誉开玩笑。
+// GET 与 POST 都支持：Vercel Cron 用 GET 调用，手动触发用 POST。
+//
+// 两种用法：
+//   · 不带参数：推送站点当前全部公开 URL（取自 lib/seo.ts 的 PUBLIC_PATHS）
+//   · body { "urls": ["/post/xxx"] }：只推指定 URL
+//     —— 用于将来社区页开放公开阅读后，发布即推送
+//
 // 限流：全局 5 次 / 分钟（跨用户共享，按用户限流没有意义）
 //
 // 幂等且安全：重复推送同一 URL 不会受罚，IndexNow 本身就去重。
@@ -27,9 +31,23 @@ const NO_STORE = { 'Cache-Control': 'no-store' } as const
 /** 单次最多接受的自定义 URL 数量 */
 const MAX_CUSTOM_URLS = 100
 
-export async function POST(req: Request) {
-  const admin = await requireAdmin(req)
-  if (!admin.ok) return admin.response
+/**
+ * 判断是否是 Vercel Cron 的调用。
+ *
+ * 未配置 CRON_SECRET 时一律返回 false —— 宁可让定时任务 401，
+ * 也不能在没配密钥的情况下把接口敞开。
+ */
+function isCronCaller(req: Request): boolean {
+  const secret = process.env.CRON_SECRET?.trim()
+  if (!secret) return false
+  return (req.headers.get('authorization') ?? '') === `Bearer ${secret}`
+}
+
+async function handle(req: Request): Promise<NextResponse> {
+  if (!isCronCaller(req)) {
+    const admin = await requireAdmin(req)
+    if (!admin.ok) return admin.response
+  }
 
   const rl = rateLimit('seo-indexnow', 5, 60_000)
   if (!rl.ok) return tooManyRequestsResponse(rl.retryAfterSec, '推送过于频繁，请稍后再试')
@@ -58,4 +76,12 @@ export async function POST(req: Request) {
 
   const result = await submitPublicUrlsToIndexNow()
   return NextResponse.json(result, { status: result.ok ? 200 : 502, headers: NO_STORE })
+}
+
+export async function GET(req: Request) {
+  return handle(req)
+}
+
+export async function POST(req: Request) {
+  return handle(req)
 }
