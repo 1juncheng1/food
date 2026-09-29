@@ -23,6 +23,17 @@ const securityHeaders = [
     : []),
 ];
 
+// ── 静态资源缓存 ────────────────────────────────────────
+// public/ 下的文件没有内容哈希，不能设 immutable；
+// 一周强缓存 + 后台续期（stale-while-revalidate）是体积与新鲜度的平衡点。
+// /_next/static/* 的指纹文件 Next 已自动下发一年 immutable，无需重复配置。
+const staticCacheHeaders = [
+  {
+    key: "Cache-Control",
+    value: "public, max-age=604800, stale-while-revalidate=86400",
+  },
+];
+
 const nextConfig: NextConfig = {
   /* config options here */
 
@@ -34,9 +45,40 @@ const nextConfig: NextConfig = {
 
   poweredByHeader: false,
 
+  // 图片优化：按浏览器能力优先输出 AVIF，其次 WebP（体积比原图小 30%+）。
+  // 同时放行 Supabase Storage 的公开图片，未来社区图片接入 next/image 时无需再改。
+  images: {
+    formats: ["image/avif", "image/webp"],
+    remotePatterns: [
+      {
+        protocol: "https",
+        hostname: "**.supabase.co",
+        pathname: "/storage/v1/object/public/**",
+      },
+    ],
+  },
+
+  // 301 永久重定向：旧地址直接在服务端跳到最终地址，
+  // 搜索引擎会把权重合并到新 URL，旧收藏也不会失效。
+  async redirects() {
+    return [
+      // 作品详情已统一迁移到「持续创作空间」/article/[id]
+      { source: "/works/:id", destination: "/article/:id", statusCode: 301 },
+    ];
+  },
+
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },
+      // public/ 静态资源：图片 / 图标 / 字体 / 音视频
+      {
+        source: "/:path*.:ext(png|jpeg|jpg|gif|webp|avif|svg|ico|mp4|woff2)",
+        headers: staticCacheHeaders,
+      },
+      {
+        source: "/images/:path*",
+        headers: staticCacheHeaders,
+      },
       // 用户私有数据（积分余额/流水/个人资料）禁止任何中间层缓存：
       // 这类响应一旦被 CDN 或浏览器缓存，会出现「看到别人的余额」。
       // 范围刻意收窄到 /api/user 与 /api/admin，不影响社区等可缓存接口的性能。
