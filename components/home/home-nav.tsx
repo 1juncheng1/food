@@ -46,7 +46,6 @@ export function HomeNav() {
     <header className="home-nav lp-nav">
       <Link href="/" className="flex items-center gap-2.5 shrink-0">
         <img src="/logo.png" alt="银河叙事 Logo" width={36} height={36} className="block shrink-0 logo-glow" />
-        <img src="/logo-text.png" alt="银河叙事" className="block h-6 w-auto shrink-0" />
       </Link>
 
       {/* 中部锚点导航：窄屏隐藏，靠 Hero 的按钮承担引导 */}
