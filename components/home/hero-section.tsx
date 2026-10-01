@@ -33,11 +33,13 @@ export function HeroSection() {
               AI 创作空间
             </p>
 
+            {/* 品牌名必须出现在 H1 里：H1 是相关性最强的信号之一，
+                之前只有 <title> 含「视界 Vision」，导致搜品牌名时排不上 */}
             <h1
               className="vs-display mt-5 vs-rise"
               style={{ animationDelay: '180ms' }}
             >
-              让 AI 越来越懂你的创作伙伴
+              视界 Vision · 让 AI 越来越懂你的创作伙伴
             </h1>
 
             <p
