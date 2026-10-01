@@ -83,7 +83,7 @@ export default function WelcomePage() {
       <div className="mx-auto w-full max-w-[760px] px-5 py-14">
         <div className="mb-9 text-center">
           <h1 className="text-[28px] font-semibold tracking-tight text-[var(--vs-ink)]">
-            欢迎来到视界
+            欢迎来到银河叙事
           </h1>
           <p className="mt-3 text-[14px] leading-relaxed text-[var(--vs-ink-4)]">
             {checking

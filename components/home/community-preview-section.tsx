@@ -24,7 +24,7 @@ export function CommunityPreviewSection() {
           <p className="vs-mark">灵感社区</p>
           <h2 className="vs-h2 mt-4">连接创作者的想法</h2>
           <p className="vs-body mt-4">
-            视界不只陪伴你一个人创作。分享作品、交流观点，也能看见别人如何思考。
+            银河叙事不只陪伴你一个人创作。分享作品、交流观点，也能看见别人如何思考。
           </p>
         </Reveal>
 

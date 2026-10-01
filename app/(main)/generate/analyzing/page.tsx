@@ -37,8 +37,8 @@ export default function CreationAnalyzingPage() {
   const steps = inspirationTask ? INSPIRATION_STEPS : PLAN_STEPS
   const title = inspirationTask ? '正在判断这个想法' : '正在理解你的创作'
   const aside = inspirationTask
-    ? '视界正在判断它有没有值得继续的空间。'
-    : '视界正在把你的想法整理成可以确认的创作方向。'
+    ? '银河叙事正在判断它有没有值得继续的空间。'
+    : '银河叙事正在把你的想法整理成可以确认的创作方向。'
 
   useEffect(() => {
     if (!hydrated || !account.authReady) return
@@ -76,7 +76,7 @@ export default function CreationAnalyzingPage() {
             <ArrowLeft size={15} strokeWidth={1.7} aria-hidden="true" />
             返回生成作品
           </button>
-          <span className={styles.brandWord}>VISION ANALYSIS</span>
+          <span className={styles.brandWord}>NARRATIVE ANALYSIS</span>
         </nav>
 
         <div className={styles.analysisGrid}>

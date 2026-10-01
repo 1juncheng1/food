@@ -87,7 +87,7 @@ export default function CreationResultPage() {
             <ArrowLeft size={15} strokeWidth={1.7} aria-hidden="true" />
             返回生成作品
           </button>
-          <span className={styles.brandWord}>VISION RESULT</span>
+          <span className={styles.brandWord}>NARRATIVE RESULT</span>
         </nav>
 
         <header className={styles.resultHeader}>

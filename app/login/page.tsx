@@ -66,7 +66,7 @@ export default function LoginPage() {
     <div className="inner-page flex items-center justify-center p-4" data-mode="inspiration">
       <div className="vs-frame w-full max-w-md rounded-2xl p-8">
         <h1 className="text-2xl font-bold text-[var(--vs-ink)] mb-2">登录</h1>
-        <p className="vs-note mb-6">登录你的视界账号</p>
+        <p className="vs-note mb-6">登录你的银河叙事账号</p>
 
         {message && (
           <div className="vs-frame p-3 mb-4 text-[14px]">

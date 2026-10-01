@@ -21,7 +21,7 @@ export function GrowthPathSection() {
           <p className="vs-mark">创作者成长路径</p>
           <h2 className="vs-h2 mt-4">在创作中成长，在成长中创作</h2>
           <p className="vs-body mt-4">
-            每一次创作都会沉淀为对你的理解。你用得越久，视界越接近你。
+            每一次创作都会沉淀为对你的理解。你用得越久，银河叙事越接近你。
           </p>
         </Reveal>
 

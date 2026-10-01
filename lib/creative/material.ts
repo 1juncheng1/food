@@ -258,7 +258,7 @@ export interface MaterialAnnotation {
   role: MaterialRole
   /** 白名单标签（≤4 个，去重） */
   tags: MaterialAnnotationTag[]
-  /** 自由备注（≤200 字），如"视界是我本人的产品，定位是灵感直通车" */
+  /** 自由备注（≤200 字），如"银河叙事是我本人的产品，定位是灵感直通车" */
   note: string
 }
 

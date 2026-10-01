@@ -34,19 +34,19 @@ export function HeroSection() {
             </p>
 
             {/* 品牌名必须出现在 H1 里：H1 是相关性最强的信号之一，
-                之前只有 <title> 含「视界 Vision」，导致搜品牌名时排不上 */}
+                之前只有 <title> 含品牌名，导致搜品牌名时排不上 */}
             <h1
               className="vs-display mt-5 vs-rise"
               style={{ animationDelay: '180ms' }}
             >
-              视界 Vision · 让 AI 越来越懂你的创作伙伴
+              银河叙事 · 让 AI 越来越懂你的创作伙伴
             </h1>
 
             <p
               className="vs-lead mt-6 vs-rise"
               style={{ animationDelay: '280ms' }}
             >
-              视界记住你的灵感、知识与表达方式，陪你把模糊的想法走成可以发布的作品。
+              银河叙事记住你的灵感、知识与表达方式，陪你把模糊的想法走成可以发布的作品。
             </p>
 
             <div
@@ -68,7 +68,7 @@ export function HeroSection() {
               )}
               <Link href="#growth" className="vs-btn vs-btn-ghost">
                 <IconPlay size={15} />
-                探索视界
+                探索银河叙事
               </Link>
             </div>
           </div>

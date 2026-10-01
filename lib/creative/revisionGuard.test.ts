@@ -21,7 +21,7 @@ describe('assessRevisionRequest', () => {
   it('模仿他人语气：这是产品定位层面最不能照做的一条', () => {
     const a = assessRevisionRequest('模仿那个大V的风格写')
     expect(a?.ruleId).toBe('imitate_others')
-    expect(a?.why).toContain('视界')
+    expect(a?.why).toContain('银河叙事')
   })
 
   it('整篇重写：提示会丢掉已满意的部分', () => {

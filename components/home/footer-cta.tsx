@@ -27,7 +27,7 @@ export function FooterCTA() {
               <div>
                 <h2 className="vs-h2">逃脱这通用人工智能的邋遢</h2>
                 <p className="vs-body mt-4">
-                  从一个模糊的想法开始，视界陪你走到可以真正发布的那一刻。
+                  从一个模糊的想法开始，银河叙事陪你走到可以真正发布的那一刻。
                 </p>
               </div>
 
@@ -59,19 +59,19 @@ export function FooterCTA() {
           <div className="flex items-center gap-2.5">
             <img
               src="/logo.png"
-              alt="视界 Logo"
+              alt="银河叙事 Logo"
               width={26}
               height={26}
               className="block shrink-0"
             />
             <img
               src="/logo-text.png"
-              alt="视界 Vision"
+              alt="银河叙事"
               className="vs-logo-text block shrink-0"
             />
           </div>
           <p className="vs-num vs-num-dim text-[12px]">
-            © 2026 视界 · 让 AI 学会你的表达
+            © 2026 银河叙事 · 让 AI 学会你的表达
           </p>
         </div>
       </footer>

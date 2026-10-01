@@ -83,7 +83,7 @@ export default function GenerateEntryPage() {
               你想创作什么？
             </h1>
             <p className={styles.lead}>
-              从一个主题开始。视界会先理解你的意图，再与你一起确定创作方向。
+              从一个主题开始。银河叙事会先理解你的意图，再与你一起确定创作方向。
             </p>
 
             <form
@@ -231,7 +231,7 @@ export default function GenerateEntryPage() {
             <figure className={styles.visualFrame}>
               <img
                 src={CREATION_IMAGES.hero}
-                alt="视界创作主视觉"
+                alt="银河叙事创作主视觉"
                 width={862}
                 height={1080}
                 className={styles.visualHero}

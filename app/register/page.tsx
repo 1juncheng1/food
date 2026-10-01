@@ -175,7 +175,7 @@ export default function RegisterPage() {
     <div className="inner-page flex items-center justify-center p-4" data-mode="inspiration">
       <div className="vs-frame w-full max-w-md rounded-2xl p-8">
         <h1 className="text-2xl font-bold text-[var(--vs-ink)] mb-2">注册</h1>
-        <p className="vs-note mb-6">创建你的视界账号</p>
+        <p className="vs-note mb-6">创建你的银河叙事账号</p>
 
         {step === 'idle' && (
           <form onSubmit={handleSendCode} className="space-y-4">

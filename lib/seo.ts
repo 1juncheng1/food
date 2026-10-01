@@ -27,13 +27,13 @@ export const SITE_URL = (
   (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
 ).replace(/\/+$/, '')
 
-export const SITE_NAME = '视界'
-export const SITE_NAME_FULL = '视界 Vision'
+export const SITE_NAME = '银河叙事'
+export const SITE_NAME_FULL = '银河叙事'
 export const SITE_DESCRIPTION =
-  '视界是一个越来越懂你的 AI 创作伙伴。它理解你的灵感、知识与表达方式，陪伴你把模糊想法变成有依据、有观点、可以真正发布的作品。'
+  '银河叙事是一个越来越懂你的 AI 创作伙伴。它理解你的灵感、知识与表达方式，陪伴你把模糊想法变成有依据、有观点、可以真正发布的作品。'
 
-/** 默认分享封面：public/og-cover.png（1200×630，约 154KB） */
-export const DEFAULT_OG_IMAGE = '/og-cover.png'
+/** 默认分享封面：public/og-cover.jpg（1200×630，约 73KB，品牌：银河叙事） */
+export const DEFAULT_OG_IMAGE = '/og-cover.jpg'
 export const LOCALE = 'zh-CN'
 
 /**
@@ -60,7 +60,7 @@ function clamp(text: string, max: number): string {
 }
 
 export type PageSeoInput = {
-  /** 页面主题（不带品牌后缀，最终渲染为「{title} · 视界」） */
+  /** 页面主题（不带品牌后缀，最终渲染为「{title} · 银河叙事」） */
   title: string
   description: string
   /** 规范路径，如 /dashboard */

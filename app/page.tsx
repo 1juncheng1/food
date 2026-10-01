@@ -24,9 +24,9 @@ import { organizationJsonLd, pageMetadata, websiteJsonLd } from '@/lib/seo'
 // ────────────────────────────────────────────────────────────
 
 export const metadata: Metadata = pageMetadata({
-  title: '视界 Vision · 让 AI 越来越懂你的创作伙伴',
+  title: '银河叙事 · 让 AI 越来越懂你的创作伙伴',
   description:
-    '视界是一个越来越懂你的 AI 创作伙伴。它理解你的灵感、知识与表达方式，陪伴你把模糊想法变成有依据、有观点、可以真正发布的作品。',
+    '银河叙事是一个越来越懂你的 AI 创作伙伴。它理解你的灵感、知识与表达方式，陪伴你把模糊想法变成有依据、有观点、可以真正发布的作品。',
   path: '/',
 })
 

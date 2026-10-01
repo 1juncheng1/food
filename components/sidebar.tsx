@@ -30,12 +30,12 @@ import { useIsAdmin } from '@/hooks/use-is-admin'
 // 图标统一使用 lucide-react（与全站一致），不再手写内联 SVG
 // ────────────────────────────────────────────────────────────
 
-/** 视界品牌 Logo：引用 public/logo.png */
+/** 银河叙事品牌 Logo：引用 public/logo.png */
 function LogoIcon({ size = 30 }: { size?: number }) {
   return (
     <img
       src="/logo.png"
-      alt="视界 Logo"
+      alt="银河叙事 Logo"
       width={size}
       height={size}
       className="block shrink-0 logo-glow"
@@ -140,11 +140,11 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
       <div className="h-14 flex items-center border-b border-[var(--vs-line)]">
         <Link
           href="/"
-          title="视界 · 首页"
+          title="银河叙事 · 首页"
           className={`flex-1 flex items-center ${collapsed ? 'justify-center' : 'gap-2.5 px-4'} transition-all duration-300`}
         >
           <LogoIcon size={collapsed ? 40 : 40} />
-          {!collapsed && <img src="/logo-text.png" alt="视界" className="block logo-text" />}
+          {!collapsed && <img src="/logo-text.png" alt="银河叙事" className="block logo-text" />}
         </Link>
         <button
           onClick={onToggle}
