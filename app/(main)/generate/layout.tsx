@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import { CreationFlowProvider } from '@/components/generate/creation-flow-provider'
 import { appPageMetadata } from '@/lib/seo'
 
 export const metadata: Metadata = appPageMetadata({
@@ -7,6 +8,9 @@ export const metadata: Metadata = appPageMetadata({
   path: '/generate',
 })
 
+// CreationFlowProvider 必须包住整个 generate 路由树（/generate、/analyzing、/result），
+// 这些页面都通过 useCreationFlow 读取创作流状态——上一轮加 metadata 时误删了它，
+// 导致 /generate 客户端崩溃（useCreationFlow must be used inside CreationFlowProvider）。
 export default function GenerateLayout({ children }: { children: React.ReactNode }) {
-  return <>{children}</>
+  return <CreationFlowProvider>{children}</CreationFlowProvider>
 }
