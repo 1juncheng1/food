@@ -144,7 +144,6 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           className={`flex-1 flex items-center ${collapsed ? 'justify-center' : 'gap-2.5 px-4'} transition-all duration-300`}
         >
           <LogoIcon size={collapsed ? 40 : 40} />
-          {!collapsed && <img src="/logo-text.png" alt="银河叙事" className="block logo-text" />}
         </Link>
         <button
           onClick={onToggle}

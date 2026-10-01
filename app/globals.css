@@ -1024,13 +1024,6 @@ html, body {
   filter: drop-shadow(0 0 10px rgba(138, 155, 184, 0.45)) drop-shadow(0 0 24px rgba(169, 184, 205, 0.22));
 }
 
-/* 品牌文字 logo（透明底反白字标，宽高比 427:179） */
-.logo-text {
-  display: block;
-  height: 24px;
-  width: auto;
-}
-
 /* 内页输入框聚焦光晕 */
 .inner-page input[type="text"]:focus,
 .inner-page textarea:focus,

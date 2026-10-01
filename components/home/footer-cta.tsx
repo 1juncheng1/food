@@ -56,18 +56,13 @@ export function FooterCTA() {
 
       <footer className="border-t border-[var(--vs-line)] py-9">
         <div className="vs-container flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center">
             <img
               src="/logo.png"
               alt="银河叙事 Logo"
               width={26}
               height={26}
               className="block shrink-0"
-            />
-            <img
-              src="/logo-text.png"
-              alt="银河叙事"
-              className="vs-logo-text block shrink-0"
             />
           </div>
           <p className="vs-num vs-num-dim text-[12px]">

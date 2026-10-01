@@ -441,13 +441,6 @@
   animation: vs-img-in 900ms var(--vs-ease-out) both;
 }
 
-/* 品牌文字标（透明底反白字标） */
-.vs-logo-text {
-  display: block;
-  height: 20px;
-  width: auto;
-}
-
 /* 顶部导航：单行、不超过 72px、只因层级需要才加毛玻璃 */
 .vs-nav {
   position: sticky;
